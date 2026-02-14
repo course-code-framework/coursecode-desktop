@@ -1,0 +1,42 @@
+appId: dev.coursecode.desktop
+productName: CourseCode Desktop
+copyright: Copyright © 2026 CourseCode
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - out/**/*
+  - "!node_modules/**/*"
+
+mac:
+  artifactName: "CourseCode-Desktop-v${version}-mac.${ext}"
+  target:
+    - target: dmg
+      arch:
+        - universal
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  identity: null
+  notarize: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: "CourseCode-Desktop-v${version}-win.${ext}"
+
+nsis:
+  oneClick: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+publish:
+  provider: github
+  owner: course-code-framework
+  repo: coursecode-desktop

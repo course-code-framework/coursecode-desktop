@@ -1,0 +1,119 @@
+:root {
+  /* --- Brand Palette (mirrors framework CSS source palette) --- */
+  --palette-white: #ffffff;
+  --palette-black: #000000;
+  --palette-gray: #808080;
+  --palette-charcoal: #23272e;
+  --palette-blue: #14213d;
+  --palette-blue-light: #4a6fa5;
+  --palette-green: #1d7648;
+  --palette-yellow: #f7b801;
+  --palette-amber: #f18701;
+  --palette-orange: #f35b04;
+  --palette-red: #c7322b;
+
+  /* --- Surfaces --- */
+  --bg-primary: #f7f8fb;
+  --bg-secondary: #eef1f7;
+  --bg-elevated: var(--palette-white);
+  --bg-sidebar: var(--palette-blue);
+  --bg-sidebar-hover: #1e3155;
+  --bg-input: var(--palette-white);
+  --bg-overlay: rgba(0, 0, 0, 0.4);
+  --bg-code: #0d1829;
+
+  /* --- Text --- */
+  --text-primary: #16233e;
+  --text-secondary: #4f5e7d;
+  --text-tertiary: #7c89a8;
+  --text-inverse: #f0f0f3;
+  --text-on-accent: var(--palette-blue);
+
+  /* --- Accents --- */
+  --accent: var(--palette-amber);
+  --accent-hover: #d97a01;
+  --accent-subtle: rgba(241, 135, 1, 0.1);
+  --info: var(--palette-blue-light);
+  --info-subtle: rgba(74, 111, 165, 0.1);
+  --success: var(--palette-green);
+  --success-subtle: rgba(29, 118, 72, 0.1);
+  --warning: var(--palette-yellow);
+  --warning-subtle: rgba(247, 184, 1, 0.1);
+  --error: var(--palette-red);
+  --error-subtle: rgba(199, 50, 43, 0.1);
+
+  /* --- Borders --- */
+  --border: #d9dfeb;
+  --border-strong: #bec9de;
+  --border-focus: var(--accent);
+
+  /* --- Shadows --- */
+  --shadow-sm: 0 1px 2px rgba(18, 28, 45, 0.05);
+  --shadow-md: 0 8px 24px rgba(18, 28, 45, 0.08);
+  --shadow-lg: 0 16px 36px rgba(18, 28, 45, 0.14);
+  --shadow-card-hover: 0 10px 28px rgba(241, 135, 1, 0.18);
+
+  /* --- Spacing --- */
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 16px;
+  --sp-lg: 24px;
+  --sp-xl: 32px;
+  --sp-2xl: 48px;
+
+  /* --- Radius --- */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* --- Typography --- */
+  --font-sans: 'Avenir Next', 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 32px;
+
+  /* --- Transitions --- */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 140ms;
+  --duration-normal: 220ms;
+  --duration-slow: 320ms;
+
+  /* --- Layout --- */
+  --toolbar-height: 36px;
+  --titlebar-height: 42px;
+}
+
+[data-theme="dark"] {
+  --bg-primary: #0b111d;
+  --bg-secondary: #131f33;
+  --bg-elevated: var(--palette-charcoal);
+  --bg-sidebar: #070c14;
+  --bg-sidebar-hover: #111b2e;
+  --bg-input: color-mix(in srgb, var(--palette-charcoal) 78%, #111b2e);
+  --bg-code: #070c14;
+
+  --text-primary: #ebf0fb;
+  --text-secondary: #a4b2cf;
+  --text-tertiary: #7383a6;
+  --text-inverse: var(--palette-blue);
+
+  --accent-subtle: rgba(241, 135, 1, 0.15);
+  --info-subtle: rgba(74, 111, 165, 0.15);
+  --success-subtle: rgba(29, 118, 72, 0.15);
+  --warning-subtle: rgba(247, 184, 1, 0.15);
+  --error-subtle: rgba(199, 50, 43, 0.15);
+
+  --border: #24344f;
+  --border-strong: #335077;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-card-hover: 0 8px 24px rgba(241, 135, 1, 0.2);
+}

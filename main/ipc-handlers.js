@@ -1,0 +1,189 @@
+import { ipcMain, app, shell, dialog } from 'electron';
+import { getAllSettings, saveSetting } from './settings.js';
+import { scanProjects, createProject, openProject, deleteProject } from './project-manager.js';
+import { startPreview, stopPreview, getPreviewStatus, getPreviewPort, getAllPreviewStatuses } from './preview-manager.js';
+import { exportBuild } from './build-manager.js';
+import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus } from './cloud-client.js';
+import { getSetupStatus, installCLI, configureMCP, getDownloadUrl } from './cli-installer.js';
+import { detectTools } from './tool-integrations.js';
+import { sendMessage, stopGeneration, clearConversation, loadHistory, buildMentionIndex, summarizeContext, getContextMemory } from './chat-engine.js';
+import { listRefs, readRef, convertRef } from './ref-manager.js';
+import { getProviders, saveApiKey, removeApiKey, hasApiKey, getCloudModels, getCloudUsage } from './llm-provider.js';
+import { loadToken } from './cloud-client.js';
+import { listSnapshots, createSnapshot, restoreSnapshot, getChanges, diffSnapshot, hasRepo } from './snapshot-manager.js';
+import { runWorkflow, cancelWorkflow } from './workflow-runner.js';
+import { readProjectFile, writeProjectFile, listDirectory } from './file-manager.js';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { wrapIpcHandler } from './errors.js';
+import { createLogger } from './logger.js';
+import { checkForUpdates, getUpdateStatus, installDownloadedUpdate } from './update-manager.js';
+
+const log = createLogger('ipc');
+
+/**
+ * Helper to register a wrapped IPC handler.
+ * Every handler gets automatic error logging + user-friendly translation.
+ */
+function handle(channel, fn) {
+    ipcMain.handle(channel, wrapIpcHandler(channel, fn));
+}
+
+export function registerIpcHandlers() {
+    // --- Projects ---
+    handle('projects:scan', () => scanProjects());
+    handle('projects:create', (_e, options) => createProject(options));
+    handle('projects:open', (_e, projectPath) => openProject(projectPath));
+    handle('projects:reveal', (_e, projectPath) => {
+        shell.showItemInFolder(projectPath);
+    });
+    handle('projects:delete', (_e, projectPath) => deleteProject(projectPath));
+
+    // --- Preview ---
+    handle('preview:start', (e, projectPath, opts) => startPreview(projectPath, e.sender, opts));
+    handle('preview:stop', (_e, projectPath) => stopPreview(projectPath));
+    handle('preview:status', (_e, projectPath) => getPreviewStatus(projectPath));
+    handle('preview:port', (_e, projectPath) => getPreviewPort(projectPath));
+    handle('preview:statusAll', () => getAllPreviewStatuses());
+
+    // --- Build ---
+    handle('build:export', (e, projectPath, format) => exportBuild(projectPath, format, e.sender));
+
+    // --- Cloud ---
+    handle('cloud:login', (e) => cloudLogin(e.sender));
+    handle('cloud:logout', () => cloudLogout());
+    handle('cloud:getUser', () => getCloudUser());
+    handle('cloud:deploy', (e, projectPath, options) => cloudDeploy(projectPath, e.sender, options));
+    handle('cloud:getDeployStatus', (_e, projectPath) => getDeployStatus(projectPath));
+
+    // --- Settings ---
+    handle('settings:get', () => getAllSettings());
+    handle('settings:set', (_e, key, value) => saveSetting(key, value));
+
+    // --- Setup & Tools ---
+    handle('setup:getStatus', () => getSetupStatus());
+    handle('setup:installCLI', (e) => installCLI(e.sender));
+    handle('setup:configureMCP', (_e, agent) => configureMCP(agent));
+    handle('setup:openDownloadPage', (_e, tool) => {
+        const url = getDownloadUrl(tool);
+        if (url) shell.openExternal(url);
+    });
+
+    handle('tools:detect', () => detectTools());
+    handle('tools:openInVSCode', (_e, projectPath) => {
+        const { spawn } = require('child_process');
+        spawn('code', [projectPath], { detached: true, stdio: 'ignore' }).unref();
+    });
+    handle('tools:openTerminal', (_e, projectPath) => {
+        if (process.platform === 'darwin') {
+            const { spawn } = require('child_process');
+            spawn('open', ['-a', 'Terminal', projectPath], { detached: true, stdio: 'ignore' }).unref();
+        }
+    });
+    handle('tools:openInFinder', (_e, projectPath) => {
+        shell.showItemInFolder(projectPath);
+    });
+    handle('tools:openCourseFolder', (_e, projectPath) => {
+        const coursePath = join(projectPath, 'course');
+        shell.showItemInFolder(existsSync(coursePath) ? coursePath : projectPath);
+    });
+
+    // --- Chat ---
+    handle('chat:send', (e, projectPath, message, mentions, mode) => {
+        sendMessage(projectPath, message, mentions, e.sender, mode);
+    });
+    handle('chat:stop', (_e, projectPath) => stopGeneration(projectPath));
+    handle('chat:clear', (_e, projectPath) => clearConversation(projectPath));
+    handle('chat:loadHistory', (_e, projectPath) => loadHistory(projectPath));
+    handle('chat:getMentions', (_e, projectPath) => buildMentionIndex(projectPath));
+    handle('chat:summarizeContext', (_e, projectPath) => summarizeContext(projectPath));
+    handle('chat:getContextMemory', (_e, projectPath) => getContextMemory(projectPath));
+
+    // --- References ---
+    handle('refs:list', (_e, projectPath) => listRefs(projectPath));
+    handle('refs:read', (_e, projectPath, filename) => readRef(projectPath, filename));
+    handle('refs:convert', (e, projectPath, filePath) => convertRef(projectPath, filePath, e.sender));
+
+    // --- AI Settings ---
+    handle('ai:getConfig', () => {
+        const settings = getAllSettings();
+        return {
+            provider: settings.aiProvider,
+            model: settings.aiModel,
+            hasKey: hasApiKey(settings.aiProvider),
+            customInstructions: settings.aiCustomInstructions
+        };
+    });
+    handle('ai:setProvider', (_e, provider) => saveSetting('aiProvider', provider));
+    handle('ai:setModel', (_e, model) => saveSetting('aiModel', model));
+    handle('ai:setApiKey', async (_e, provider, apiKey) => {
+        const { createProvider } = await import('./llm-provider.js');
+        const p = await createProvider(provider, apiKey);
+        const result = await p.validateKey();
+        if (result.valid) {
+            saveApiKey(provider, apiKey);
+        }
+        return result;
+    });
+    handle('ai:removeApiKey', (_e, provider) => removeApiKey(provider));
+    handle('ai:setCustomInstructions', (_e, text) => saveSetting('aiCustomInstructions', text));
+    handle('ai:getProviders', () => getProviders());
+    handle('ai:getCloudModels', async () => {
+        const token = loadToken();
+        if (!token) return [];
+        return await getCloudModels(token);
+    });
+    handle('ai:getCloudUsage', async () => {
+        const token = loadToken();
+        if (!token) return null;
+        return await getCloudUsage(token);
+    });
+
+    // --- App ---
+    handle('app:getVersion', () => app.getVersion());
+    handle('app:checkForUpdates', () => checkForUpdates());
+    handle('app:getUpdateStatus', () => getUpdateStatus());
+    handle('app:installUpdate', () => installDownloadedUpdate());
+    handle('dialog:pickFolder', async (_e, defaultPath) => {
+        const result = await dialog.showOpenDialog({
+            properties: ['openDirectory', 'createDirectory'],
+            defaultPath: defaultPath || undefined,
+            title: 'Choose Project Location'
+        });
+        return result.canceled ? null : result.filePaths[0];
+    });
+
+    // --- Outline ---
+    handle('outline:load', (_e, projectPath) => {
+        const outlinePath = join(projectPath, 'course', 'COURSE_OUTLINE.md');
+        if (existsSync(outlinePath)) {
+            return { content: readFileSync(outlinePath, 'utf-8'), exists: true };
+        }
+        return { content: '', exists: false };
+    });
+    handle('outline:save', (_e, projectPath, content) => {
+        const courseDir = join(projectPath, 'course');
+        mkdirSync(courseDir, { recursive: true });
+        writeFileSync(join(courseDir, 'COURSE_OUTLINE.md'), content, 'utf-8');
+        return { success: true };
+    });
+
+    // --- Workflows ---
+    handle('workflow:run', (e, workflowId, projectPath) => {
+        runWorkflow(workflowId, projectPath, e.sender);
+    });
+    handle('workflow:cancel', (_e, projectPath) => cancelWorkflow(projectPath));
+
+    // --- Files (Monaco Editor) ---
+    handle('files:read', (_e, projectPath, filePath) => readProjectFile(projectPath, filePath));
+    handle('files:write', (_e, projectPath, filePath, content) => writeProjectFile(projectPath, filePath, content));
+    handle('files:listDir', (_e, projectPath, relativePath) => listDirectory(projectPath, relativePath));
+
+    // --- Snapshots ---
+    handle('snapshots:list', (_e, projectPath) => listSnapshots(projectPath));
+    handle('snapshots:create', (_e, projectPath, label) => createSnapshot(projectPath, label));
+    handle('snapshots:restore', (_e, projectPath, snapshotId) => restoreSnapshot(projectPath, snapshotId));
+    handle('snapshots:changes', (_e, projectPath) => getChanges(projectPath));
+    handle('snapshots:diff', (_e, projectPath, snapshotId) => diffSnapshot(projectPath, snapshotId));
+    handle('snapshots:hasRepo', (_e, projectPath) => hasRepo(projectPath));
+}

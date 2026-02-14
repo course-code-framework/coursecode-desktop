@@ -1,0 +1,77 @@
+{
+    "_version": 1,
+    "_description": "Central registry for all external tool metadata. Update this file when third-party tools change their config paths, detection strategies, or download URLs.",
+    "tools": {
+        "cli": {
+            "name": "CourseCode Tools",
+            "description": "Powers course building, previewing, and AI integration.",
+            "detect": {
+                "command": "coursecode"
+            },
+            "install": {
+                "npmPackage": "coursecode",
+                "versionFlag": "--version"
+            }
+        },
+        "claudeCode": {
+            "name": "Claude Code",
+            "description": "AI assistant that can create entire courses from your source documents.",
+            "detect": {
+                "command": "claude"
+            },
+            "downloadUrl": "https://claude.ai/download",
+            "mcp": {
+                "configDir": ".claude",
+                "configFile": "mcp.json",
+                "serverKey": "mcpServers",
+                "entry": {
+                    "command": "coursecode",
+                    "args": [
+                        "mcp"
+                    ],
+                    "_managedBy": "coursecode-desktop"
+                },
+                "detectKeys": [
+                    "mcpServers.coursecode",
+                    "servers.coursecode"
+                ]
+            }
+        },
+        "vscode": {
+            "name": "VS Code",
+            "description": "Code editor for editing course files directly.",
+            "detect": {
+                "command": "code",
+                "fallbackPaths": {
+                    "darwin": [
+                        "/Applications/Visual Studio Code.app"
+                    ]
+                }
+            },
+            "downloadUrl": "https://code.visualstudio.com/download"
+        },
+        "git": {
+            "name": "Git",
+            "description": "Tracks file changes over time.",
+            "detect": {
+                "command": "git"
+            },
+            "downloadUrl": "https://git-scm.com/downloads"
+        },
+        "githubDesktop": {
+            "name": "GitHub Desktop",
+            "description": "Visual interface for Git.",
+            "detect": {
+                "fallbackPaths": {
+                    "darwin": [
+                        "/Applications/GitHub Desktop.app"
+                    ],
+                    "win32": [
+                        "%LOCALAPPDATA%\\GitHubDesktop\\GitHubDesktop.exe"
+                    ]
+                }
+            },
+            "downloadUrl": "https://desktop.github.com/"
+        }
+    }
+}

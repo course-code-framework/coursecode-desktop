@@ -1,0 +1,44 @@
+{
+  "name": "coursecode-desktop",
+  "version": "0.9.0",
+  "description": "A native GUI for CourseCode — create, preview, and deploy interactive courses",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:local": "COURSECODE_LOCAL=1 electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "package": "electron-vite build && electron-builder --config electron-builder.yml",
+    "package:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
+    "package:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "npx playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@vitest/coverage-v8": "^4.0.18",
+    "electron": "^34.1.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.0.0",
+    "svelte": "^5.19.9",
+    "vite": "^6.1.0",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@tiptap/core": "^3.19.0",
+    "@tiptap/markdown": "^3.19.0",
+    "@tiptap/starter-kit": "^3.19.0",
+    "coursecode": "^0.1.0",
+    "electron-updater": "^6.3.9",
+    "isomorphic-git": "^1.36.3",
+    "marked": "^17.0.1",
+    "monaco-editor": "^0.55.1",
+    "openai": "^6.21.0"
+  }
+}
