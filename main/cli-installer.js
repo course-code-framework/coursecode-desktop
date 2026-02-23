@@ -1,13 +1,11 @@
 import { spawn } from 'child_process';
-import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { homedir } from 'os';
 import { shell } from 'electron';
 import { getChildEnv, npmSpawnArgs, getCLISpawnArgs } from './node-env.js';
 import { saveSetting, getSetting } from './settings.js';
 import { loadToken } from './cloud-client.js';
-import { detectTools, getToolMeta } from './tool-integrations.js';
+import { detectTools } from './tool-integrations.js';
 import registry from './tool-registry.json';
 import { createLogger } from './logger.js';
 
@@ -36,17 +34,6 @@ export async function getSetupStatus() {
             installed: tools.cli,
             version: cliVersion,
             state: tools.cli ? 'installed-configured' : 'not-installed'
-        },
-        claudeCode: {
-            installed: tools.claudeCode,
-            configured: tools.claudeCode ? await isMCPConfigured('claudeCode') : false,
-            state: !tools.claudeCode ? 'not-installed'
-                : (await isMCPConfigured('claudeCode')) ? 'installed-configured'
-                    : 'installed-not-configured'
-        },
-        vscode: {
-            installed: tools.vscode,
-            state: tools.vscode ? 'installed-configured' : 'not-installed'
         },
         git: {
             installed: tools.git,
@@ -153,9 +140,13 @@ async function getCLIVersion() {
     return new Promise((resolve, reject) => {
         const cliMeta = registry.tools.cli;
         const { command, args } = getCLISpawnArgs([cliMeta.install.versionFlag]);
+        // On Windows, bare command names (e.g. 'coursecode') resolve via .cmd shims
+        // which require shell:true. When we have a direct path to cli.js we skip shell.
+        const useShell = process.platform === 'win32' && command === 'coursecode';
         const child = spawn(command, args, {
             env: getChildEnv(),
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: useShell
         });
 
         let output = '';
@@ -186,67 +177,8 @@ async function isBundledCLIReady(webContents) {
 }
 
 /**
- * Check if MCP is configured for a given agent.
- */
-async function isMCPConfigured(agentId) {
-    const meta = getToolMeta(agentId);
-    if (!meta?.mcp) return false;
-
-    const mcpPath = join(homedir(), meta.mcp.configDir, meta.mcp.configFile);
-    try {
-        if (!existsSync(mcpPath)) return false;
-        const content = JSON.parse(await readFile(mcpPath, 'utf-8'));
-
-        // Check all possible key paths from registry
-        return meta.mcp.detectKeys.some(keyPath => {
-            const parts = keyPath.split('.');
-            let obj = content;
-            for (const part of parts) {
-                obj = obj?.[part];
-            }
-            return obj !== undefined;
-        });
-    } catch (err) {
-        log.debug('Failed to check MCP config', err);
-        return false;
-    }
-}
-
-/**
- * Configure MCP for an AI agent using registry metadata.
- */
-export async function configureMCP(agentId) {
-    const meta = getToolMeta(agentId);
-    if (!meta?.mcp) {
-        throw new Error(`No MCP configuration defined for: ${agentId}`);
-    }
-
-    const configDir = join(homedir(), meta.mcp.configDir);
-    const mcpPath = join(configDir, meta.mcp.configFile);
-
-    // Read existing config or start fresh
-    let config = {};
-    try {
-        if (existsSync(mcpPath)) {
-            config = JSON.parse(await readFile(mcpPath, 'utf-8'));
-        }
-    } catch (err) { log.debug('Failed to read existing MCP config, starting fresh', err); }
-
-    // Write the MCP server entry from registry
-    const serverKey = meta.mcp.serverKey;
-    if (!config[serverKey]) config[serverKey] = {};
-    config[serverKey].coursecode = { ...meta.mcp.entry };
-
-    // Ensure directory exists and write
-    if (!existsSync(configDir)) await mkdir(configDir, { recursive: true });
-    await writeFile(mcpPath, JSON.stringify(config, null, 2));
-
-    return { success: true };
-}
-
-/**
  * Get download URL for a tool from the registry.
  */
 export function getDownloadUrl(toolId) {
-    return getToolMeta(toolId)?.downloadUrl || null;
+    return registry.tools[toolId]?.downloadUrl || null;
 }

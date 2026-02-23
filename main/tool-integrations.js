@@ -47,7 +47,8 @@ function detectTool(id, tool) {
 function checkBundledCLI() {
     try {
         const { command, args } = getCLISpawnArgs(['--version']);
-        const result = spawnSync(command, args, { stdio: 'ignore' });
+        const useShell = process.platform === 'win32' && command === 'coursecode';
+        const result = spawnSync(command, args, { stdio: 'ignore', shell: useShell });
         return result.status === 0;
     } catch {
         return false;

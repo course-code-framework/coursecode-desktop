@@ -37,10 +37,12 @@ function runCLI(args, { cwd } = {}) {
 
     return new Promise((resolve, reject) => {
         const { command, args: cliArgs } = getCLISpawnArgs(args);
+        const useShell = process.platform === 'win32' && command === 'coursecode';
         const child = spawn(command, cliArgs, {
             cwd,
             env,
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: useShell
         });
 
         let stdout = '';
@@ -78,9 +80,11 @@ export async function cloudLogin(webContents) {
     return new Promise((resolve, reject) => {
         const loginArgs = isLocalMode() ? ['login', '--local'] : ['login'];
         const { command, args: cliArgs } = getCLISpawnArgs(loginArgs);
+        const useShell = process.platform === 'win32' && command === 'coursecode';
         const child = spawn(command, cliArgs, {
             env,
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: useShell
         });
 
         child.stdout.on('data', data => {
@@ -163,10 +167,12 @@ export async function cloudDeploy(projectPath, webContents, options = {}) {
         const args = isLocalMode() ? ['deploy', '--local'] : ['deploy'];
         if (options.message) args.push('-m', options.message);
         const { command, args: cliArgs } = getCLISpawnArgs(args);
+        const useShell = process.platform === 'win32' && command === 'coursecode';
         const child = spawn(command, cliArgs, {
             cwd: projectPath,
             env,
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: useShell
         });
 
         child.stdout.on('data', data => {
