@@ -191,7 +191,7 @@ coursecode-desktop/
 │   │   │   ├── ProjectDetail.svelte ← Actions, chat workspace, console output
 │   │   │   ├── ChatPanel.svelte  ← AI chat interface (messages, input, model picker)
 │   │   │   ├── RefsPanel.svelte  ← Reference document sidebar (drag-and-drop)
-│   │   │   ├── SetupAssistant.svelte ← First-launch + revisitable tool setup
+│   │   │   ├── SetupAssistant.svelte ← First-launch + revisitable setup
 │   │   │   └── Settings.svelte   ← Preferences
 │   │   ├── components/
 │   │   │   ├── TabBar.svelte          ← Tab strip for home + open course tabs
@@ -296,13 +296,11 @@ All communication between renderer and main process flows through typed IPC chan
 - `api.settings.set(key, value)` → `void` — Update a single setting.
 
 ### Setup & Tools
-- `api.setup.getStatus()` → `SetupStatus` — Returns installation and configuration state for all tools (CLI, AI agent, editor, Git, cloud). Each tool has a state: `installed-configured`, `installed-not-configured`, `not-installed`.
+- `api.setup.getStatus()` → `SetupStatus` — Returns installation and configuration state for all tools (CLI, Git, cloud). Each tool has a state: `installed-configured`, `installed-not-configured`, `not-installed`.
 - `api.setup.installCLI()` → `{ success }` — Ensure CourseCode tools are ready. Uses bundled CLI first, and falls back to installation flow when needed. Streams progress via events.
 - `api.setup.onInstallProgress(callback)` → `unsubscribe` — Stream CLI install progress.
-- `api.setup.configureMCP(agent)` → `{ success }` — Write MCP configuration file for the specified AI agent (e.g., Claude Code). Creates/updates the agent's config file to register the `coursecode` MCP server.
-- `api.setup.openDownloadPage(tool)` → `void` — Open the download page for an external tool (VS Code, Claude Code, GitHub Desktop) in the default browser.
-- `api.tools.detect()` → `ToolMap` — Check which external tools are available: `{ cli, vscode, claudeCode, git, githubDesktop }`.
-- `api.tools.openInVSCode(projectPath)` → `void` — Launch VS Code at path.
+- `api.setup.openDownloadPage(tool)` → `void` — Open the download page for an external tool (GitHub Desktop) in the default browser.
+- `api.tools.detect()` → `ToolMap` — Check which external tools are available: `{ cli, git, githubDesktop }`.
 - `api.tools.openTerminal(projectPath)` → `void` — Open terminal at path.
 - `api.tools.openInFinder(projectPath)` → `void` — Open in Finder/Explorer.
 
@@ -385,7 +383,6 @@ Toolbar buttons (left to right):
 - | separator |
 - **AI Chat** (✨) — Toggle the chat workspace. Also controlled by `aiChatEnabled` setting.
 - | spacer |
-- **VS Code** — Hidden if VS Code not detected.
 - **Finder** — Reveal in Finder/Explorer.
 - **Terminal** — Open system terminal at project path.
 
@@ -434,8 +431,6 @@ A persistent status dashboard for the authoring environment. Shows every tool fr
 
 Tools shown:
 - **CourseCode CLI** — version, install/update status.
-- **AI Assistant** — Claude Code detection and MCP configuration status.
-- **Code Editor** — VS Code detection.
 - **Version Control** — Git and GitHub Desktop detection.
 - **CourseCode Cloud** — auth status, linked account.
 
@@ -575,31 +570,19 @@ Ensures CourseCode tools are available with a bundled-first strategy for non-tec
 
 **Update flow**: On app launch, compares the installed CLI version against the stored version in settings. Update flow (checking for newer versions, one-click update) is scaffolded for future implementation.
 
-### `tool-integrations.js` — External Tool Discovery & Configuration
+### `tool-integrations.js` — External Tool Discovery
 
-Detects, installs, and configures external tools in the CourseCode authoring environment. Extends beyond simple detection to include automated configuration of tool integrations.
+Detects external tools in the CourseCode authoring environment.
 
-**Tool registry**: Maintains a list of known tools with detection strategies, download URLs, and configuration logic.
+**Tool registry**: Maintains a list of known tools with detection strategies and download URLs.
 
 **Detection**:
 
 | Tool | macOS Detection | Windows Detection |
 |------|----------------|-------------------|
 | CourseCode CLI | Bundled CLI check, then `which coursecode` | Bundled CLI check, then `where coursecode` |
-| VS Code | `/usr/local/bin/code` or `.app` bundle | `code` on PATH |
-| Claude Code | `which claude` | `where claude` |
 | Git | `which git` | `where git` |
 | GitHub Desktop | `/Applications/GitHub Desktop.app` | Registry/PATH check |
-
-**AI Agent Configuration (MCP)**:
-
-The most important integration. When the user clicks "Configure" for Claude Code, the module:
-1. Locates the Claude Code MCP config file (`~/.claude/mcp.json` or creates it).
-2. Adds the `coursecode` MCP server entry, pointing to the `coursecode mcp` command (bundled-first resolution).
-3. The MCP config entry includes the server name, command, and args — no manual JSON editing needed.
-4. If a project-level `.mcp.json` is preferred, the module can write per-project configs instead.
-
-This is the bridge that enables AI-assisted course authoring. Once configured, users open Claude Code in a project directory and the AI has full access to CourseCode's MCP tools (preview, build, lint, navigate, interact, screenshot).
 
 **Download URLs**: Each tool has a platform-specific download URL. "Install" buttons open the download page in the default browser via `shell.openExternal()`. The app does not download or install third-party software itself — it directs users to official download pages.
 
@@ -653,27 +636,7 @@ After first launch, the Setup Assistant is accessible from Settings → Tools & 
 
 > ℹ️ **Why?** tooltip: "CourseCode Tools power everything — previews, builds, exports, and AI integration. This is the foundation."
 
-**Step 2 — AI Assistant** (recommended, skippable) — "Claude Code can create entire courses for you using AI."
-
-- Status: ✅ Installed & Configured / ⚙️ Installed, Needs Setup / ⬇️ Not Installed
-- If not installed: "Download Claude Code" button opens the download page in the browser.
-- If installed but not configured: "Connect to CourseCode" button runs MCP configuration automatically — writes the MCP config file so Claude Code discovers the `coursecode` server.
-- If installed and configured: Green checkmark.
-
-The card uses plain language throughout. No mention of "MCP", "CLI", or "config files." The framing is: "Connect your AI assistant so it can help you build courses."
-
-> ℹ️ **Why?** tooltip: "Claude Code can generate an entire 20-slide course from a single prompt. It's the fastest way to author content."
-
-**Step 3 — Code Editor** (recommended, skippable) — "A code editor lets you edit course files directly."
-
-- **VS Code** detection
-- Status: ✅ Installed / ⬇️ Not Installed
-- If not installed: "Download VS Code" button opens download page.
-- If installed: Green checkmark.
-
-> ℹ️ **Why?** tooltip: "VS Code gives you full control over your course files. It's also where Claude Code runs."
-
-**Step 4 — Version Control** (optional, skippable) — "Git and GitHub Desktop help you track changes and deploy automatically."
+**Step 2 — Version Control** (optional, skippable) — "Git and GitHub Desktop help you track changes and deploy automatically."
 
 Shows two ToolCards side-by-side:
 - **Git** — detection status
@@ -682,7 +645,7 @@ Shows two ToolCards side-by-side:
 
 > ℹ️ **Why?** tooltip: "Version control lets you undo mistakes, collaborate with teammates, and set up automatic deployments via GitHub."
 
-**Step 5 — CourseCode Cloud** (optional, skippable) — "Sign in to deploy courses to the web with one click."
+**Step 3 — CourseCode Cloud** (optional, skippable) — "Sign in to deploy courses to the web with one click."
 - "Sign In to CourseCode Cloud" button → spawns `coursecode login` (opens browser).
 - Shows ⏳ "Waiting for browser authentication…" spinner during polling.
 - On success: ✅ "Signed in as [name]" with email.
@@ -696,7 +659,7 @@ Each **"Why?"** tooltip is a small ℹ️ icon next to the step title. Clicking 
 
 ### Tool Card Component
 
-Each step (3-6) uses a reusable `ToolCard.svelte` component that shows:
+Each step (2-3) uses a reusable `ToolCard.svelte` component that shows:
 - Tool icon and name
 - One-sentence description in plain English
 - Status indicator: green checkmark (✅ ready), gear icon (⚙️ needs config), download icon (⬇️ not installed)
@@ -1148,7 +1111,7 @@ Light mode, dark mode, and system-follow. Implemented via CSS custom properties 
 
 ## What This Spec Does NOT Cover
 
-- Built-in course editor or WYSIWYG (courses are edited in VS Code / AI tools or via the framework's preview server visual editing)
+- Built-in course editor or WYSIWYG (courses are edited via the built-in AI chat or the framework's preview server visual editing)
 - Mobile app
 - Cloud admin dashboard (that's the cloud platform's web UI)
 - Linux distribution (can be added later with minimal effort)

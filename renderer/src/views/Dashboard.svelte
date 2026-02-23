@@ -448,10 +448,10 @@
                   Export
                 </button>
 
-                <div class="deploy-btn-wrapper" onclick={(e) => e.stopPropagation()}>
+                <div class="deploy-btn-wrapper">
                   <button
                     class="card-btn primary deploy"
-                    onclick={(e) => openDeployPopover(e, project)}
+                    onclick={(e) => { e.stopPropagation(); openDeployPopover(e, project); }}
                     disabled={!!inProgress}
                     title="Deploy"
                   >
@@ -477,7 +477,6 @@
                         placeholder="e.g. Fixed quiz on slide 3"
                         bind:value={deployReason}
                         onkeydown={(e) => handleDeployPopoverKeydown(e, project)}
-                        autofocus
                       />
                       <div class="deploy-popover-actions">
                         <button class="deploy-popover-cancel" onclick={(e) => { e.stopPropagation(); deployPopover = null; }}>Cancel</button>
@@ -489,11 +488,6 @@
               </div>
 
               <div class="actions-right">
-                <button class="card-btn subtle" onclick={(e) => openInVSCode(e, project.path)} title="Open in VS Code">
-                  <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-                    <path d="M10.5 1.5l4 3v7l-4 3-7.69-5.77L1 10.5v-5l1.81 1.77L10.5 1.5zm0 2.24L5.44 8l5.06 4.26V3.74z" fill="currentColor" opacity="0.8"/>
-                  </svg>
-                </button>
                 <button class="card-btn subtle" onclick={(e) => openInFinder(e, project.path)} title="Reveal in Finder">
                   <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
                     <path d="M2 4a2 2 0 012-2h3l2 2h3a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V4z" stroke="currentColor" stroke-width="1.3"/>
@@ -604,18 +598,7 @@
     min-width: 100px;
   }
 
-  .format-select {
-    border: none;
-    border-left: 1px solid var(--border);
-    background: transparent;
-    padding: 6px var(--sp-sm);
-    font-size: var(--text-xs);
-    color: var(--text-secondary);
-    cursor: pointer;
-    outline: none;
-    width: auto;
-  }
-
+  .format-select,
   .sort-select {
     border: none;
     border-left: 1px solid var(--border);

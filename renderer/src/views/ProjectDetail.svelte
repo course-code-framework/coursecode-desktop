@@ -212,7 +212,6 @@
               placeholder="e.g. Fixed quiz on slide 3"
               bind:value={deployReason}
               onkeydown={handleDeployKeydown}
-              autofocus
             />
             <div class="deploy-popover-actions">
               <button class="deploy-popover-cancel" onclick={() => deployPopoverOpen = false}>Cancel</button>

@@ -107,12 +107,9 @@
     border-bottom: 1px solid var(--border);
     padding: 0 var(--sp-md);
     width: 100%;
-    flex: 1;
-    min-width: 0;
     flex-shrink: 0;
     overflow: hidden;
     -webkit-app-region: no-drag;
-    height: 100%;
   }
 
   .tab-list {

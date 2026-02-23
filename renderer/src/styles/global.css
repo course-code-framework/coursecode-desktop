@@ -226,6 +226,22 @@ textarea:focus {
     box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 
+/* Reset inputs/selects inside the search bar so they blend in seamlessly */
+.search-bar input,
+.search-bar select {
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    width: auto;
+}
+
+.search-bar input:focus,
+.search-bar select:focus {
+    border-color: transparent;
+    box-shadow: none;
+}
+
 /* --- Cards --- */
 .card {
     background: var(--bg-elevated);

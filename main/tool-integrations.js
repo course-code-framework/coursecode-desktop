@@ -5,7 +5,7 @@ import { getCLISpawnArgs } from './node-env.js';
 
 /**
  * Detect installed external tools using the tool registry.
- * Returns { cli, vscode, claudeCode, git, githubDesktop }.
+ * Returns { cli, git, githubDesktop }.
  */
 export async function detectTools() {
     const results = {};

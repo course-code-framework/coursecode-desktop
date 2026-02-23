@@ -4,8 +4,7 @@ import { scanProjects, createProject, openProject, deleteProject } from './proje
 import { startPreview, stopPreview, getPreviewStatus, getPreviewPort, getAllPreviewStatuses } from './preview-manager.js';
 import { exportBuild } from './build-manager.js';
 import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus } from './cloud-client.js';
-import { getSetupStatus, installCLI, configureMCP, getDownloadUrl } from './cli-installer.js';
-import { detectTools } from './tool-integrations.js';
+import { getSetupStatus, installCLI, getDownloadUrl } from './cli-installer.js';
 import { sendMessage, stopGeneration, clearConversation, loadHistory, buildMentionIndex, summarizeContext, getContextMemory } from './chat-engine.js';
 import { listRefs, readRef, convertRef } from './ref-manager.js';
 import { getProviders, saveApiKey, removeApiKey, hasApiKey, getCloudModels, getCloudUsage } from './llm-provider.js';
@@ -63,17 +62,11 @@ export function registerIpcHandlers() {
     // --- Setup & Tools ---
     handle('setup:getStatus', () => getSetupStatus());
     handle('setup:installCLI', (e) => installCLI(e.sender));
-    handle('setup:configureMCP', (_e, agent) => configureMCP(agent));
     handle('setup:openDownloadPage', (_e, tool) => {
         const url = getDownloadUrl(tool);
         if (url) shell.openExternal(url);
     });
 
-    handle('tools:detect', () => detectTools());
-    handle('tools:openInVSCode', (_e, projectPath) => {
-        const { spawn } = require('child_process');
-        spawn('code', [projectPath], { detached: true, stdio: 'ignore' }).unref();
-    });
     handle('tools:openTerminal', (_e, projectPath) => {
         if (process.platform === 'darwin') {
             const { spawn } = require('child_process');

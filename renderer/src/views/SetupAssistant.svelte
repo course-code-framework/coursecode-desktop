@@ -11,8 +11,6 @@
   let cliPhase = $state('idle'); // idle | installing | verifying | complete
   let cliProgressLines = $state([]);
   let cliError = $state(null);
-  let mcpError = $state(null);
-  let mcpConfiguring = $state(false);
   let lastSavedStep = $state(null);
   let justDownloadedTool = $state(null);
   let loginStage = $state(null); // null | 'waiting' | 'complete' | 'error'
@@ -27,11 +25,9 @@
   const steps = [
     { id: 'welcome', title: 'Welcome', icon: '👋' },
     { id: 'cli', title: 'CourseCode Tools', icon: '🔧' },
-    { id: 'ai', title: 'AI Assistant', icon: '🤖' },
-    { id: 'editor', title: 'Code Editor', icon: '📝' },
-    { id: 'vcs', title: 'Version Control', icon: '🔄' },
-    { id: 'cloud', title: 'Cloud (Optional)', icon: '☁️' },
-    { id: 'done', title: 'All Set', icon: '🚀' }
+    { id: 'vcs', title: 'Auto-Deploy', icon: '🚀' },
+    { id: 'cloud', title: 'Cloud Account', icon: '☁️' },
+    { id: 'done', title: 'All Set', icon: '✅' }
   ];
 
   onMount(async () => {
@@ -158,19 +154,6 @@
     }
   }
 
-  async function configureMCP() {
-    mcpConfiguring = true;
-    mcpError = null;
-    try {
-      await window.api.setup.configureMCP('claudeCode');
-      await refreshSetupStatus();
-    } catch (err) {
-      mcpError = err?.message || 'Could not connect Claude Code right now. Please try again.';
-    } finally {
-      mcpConfiguring = false;
-    }
-  }
-
   function openDownload(tool) {
     justDownloadedTool = tool;
     window.api.setup.openDownloadPage(tool);
@@ -248,12 +231,12 @@
 
           <div class="preset-grid mt-lg">
             <button class="preset-card" class:active={workflowPreset === 'ai'} onclick={() => chooseWorkflow('ai')} data-testid="preset-ai">
-              <p class="preset-title">AI-Assisted</p>
-              <p class="preset-desc">AI chat visible by default. Preview servers stop when tabs close.</p>
+              <p class="preset-title">✨ AI-Assisted</p>
+              <p class="preset-desc">Have the AI help you build and improve courses. The chat panel is open by default.</p>
             </button>
             <button class="preset-card" class:active={workflowPreset === 'gui'} onclick={() => chooseWorkflow('gui')} data-testid="preset-gui">
-              <p class="preset-title">GUI + Preview</p>
-              <p class="preset-desc">AI chat hidden by default. Keep preview servers running in background.</p>
+              <p class="preset-title">🖥️ Manual</p>
+              <p class="preset-desc">Build courses yourself. No AI panel — just the editor and live preview.</p>
             </button>
           </div>
         </div>
@@ -261,7 +244,7 @@
       {:else if step === 1}
         <!-- CLI Install -->
         <h2>CourseCode Tools</h2>
-        <p class="step-desc mt-sm">These tools power course building, previewing, and AI integration.</p>
+        <p class="step-desc mt-sm">This installs everything needed to build, preview, and export your courses. It only takes a minute and happens automatically.</p>
 
         {#if setupStatus?.cli?.state === 'installed-configured'}
           <div class="status-card success mt-lg">
@@ -302,117 +285,38 @@
         {/if}
 
       {:else if step === 2}
-        <!-- AI Assistant -->
-        <h2>AI Assistant</h2>
-        <p class="step-desc mt-sm">Optional: Claude Code can create entire courses for you using AI. You can skip this and use the desktop app without AI.</p>
-
-        {#if setupStatus?.claudeCode?.state === 'installed-configured'}
-          <div class="status-card success mt-lg">
-            <span class="status-emoji">✅</span>
-            <div>
-              <p class="status-title">Claude Code is connected</p>
-              <p class="text-secondary text-sm">CourseCode tools are available to Claude Code for AI-powered course creation.</p>
-            </div>
-          </div>
-        {:else if setupStatus?.claudeCode?.state === 'installed-not-configured'}
-          <div class="status-card warning mt-lg">
-            <span class="status-emoji">⚙️</span>
-            <div>
-              <p class="status-title">Claude Code is installed but not connected</p>
-              <p class="text-secondary text-sm">Claude Code needs to know about CourseCode's tools so it can build, preview, and lint courses for you.</p>
-            </div>
-          </div>
-          <button class="btn-primary btn-lg mt-lg" onclick={configureMCP} disabled={mcpConfiguring}>
-            {mcpConfiguring ? 'Connecting...' : 'Connect to CourseCode'}
-          </button>
-          {#if mcpError}
-            <p class="error-text mt-sm">{mcpError}</p>
-          {/if}
-          <p class="connect-detail text-secondary text-sm mt-sm">This adds a CourseCode entry to your Claude Code configuration file <code>~/.claude/mcp.json</code> so the AI can access preview, build, and lint tools.</p>
-        {:else}
-          <div class="status-card neutral mt-lg">
-            <span class="status-emoji">🤖</span>
-            <div>
-              <p class="status-title">Claude Code is not installed</p>
-              <p class="text-secondary text-sm">Install it to use AI-powered course creation.</p>
-            </div>
-          </div>
-          <div class="step-actions mt-lg">
-            <button class="btn-primary btn-lg" onclick={() => openDownload('claudeCode')}>
-              Download Claude Code
-            </button>
-            <button class="btn-secondary" onclick={refreshSetupStatus} disabled={checkingStatus}>
-              {checkingStatus && justDownloadedTool === 'claudeCode' ? 'Checking...' : 'I installed it'}
-            </button>
-          </div>
-          <p class="text-secondary text-sm mt-sm">After installing Claude Code, return here and click "I installed it".</p>
-        {/if}
-
-      {:else if step === 3}
-        <!-- Code Editor -->
-        <h2>Code Editor</h2>
-        <p class="step-desc mt-sm">A code editor lets you edit course files directly. VS Code works great with CourseCode.</p>
-
-        {#if setupStatus?.vscode?.state === 'installed-configured'}
-          <div class="status-card success mt-lg">
-            <span class="status-emoji">✅</span>
-            <div>
-              <p class="status-title">VS Code is ready</p>
-              <p class="text-secondary text-sm">You can open any course in VS Code directly from the app.</p>
-            </div>
-          </div>
-        {:else}
-          <div class="status-card neutral mt-lg">
-            <span class="status-emoji">📝</span>
-            <div>
-              <p class="status-title">VS Code is not installed</p>
-              <p class="text-secondary text-sm">Optional but recommended for editing course content.</p>
-            </div>
-          </div>
-          <div class="step-actions mt-lg">
-            <button class="btn-primary btn-lg" onclick={() => openDownload('vscode')}>
-              Download VS Code
-            </button>
-            <button class="btn-secondary" onclick={refreshSetupStatus} disabled={checkingStatus}>
-              {checkingStatus && justDownloadedTool === 'vscode' ? 'Checking...' : 'I installed it'}
-            </button>
-          </div>
-          <p class="text-secondary text-sm mt-sm">After installing VS Code, return here and click "I installed it".</p>
-        {/if}
-
-      {:else if step === 4}
-        <!-- Version Control -->
-        <h2>Version Control</h2>
-        <p class="step-desc mt-sm">Git enables auto-deploy and version history for your courses. It's optional.</p>
+        <!-- Auto-Deploy -->
+        <h2>Auto-Deploy <span class="optional-badge">Optional</span></h2>
+        <p class="step-desc mt-sm">Want to publish your course to the web with one click? This sets up the connection. You can skip it now and set it up later.</p>
 
         {#if setupStatus?.git?.installed}
           <div class="status-card success mt-lg">
             <span class="status-emoji">✅</span>
             <div>
-              <p class="status-title">Git is ready</p>
-              <p class="text-secondary text-sm">You can use auto-deploy and track changes to your courses.</p>
+              <p class="status-title">You're ready to auto-deploy</p>
+              <p class="text-secondary text-sm">Publish courses to the web straight from the app.</p>
             </div>
           </div>
         {:else}
           <div class="status-card neutral mt-lg">
             <span class="status-emoji">🔄</span>
             <div>
-              <p class="status-title">Git is not installed</p>
-              <p class="text-secondary text-sm">GitHub Desktop is the easiest way to get Git — it includes everything you need.</p>
+              <p class="status-title">Not set up yet</p>
+              <p class="text-secondary text-sm">GitHub Desktop is the easiest way — a simple app that handles this for you behind the scenes. Totally free.</p>
             </div>
           </div>
           <div class="step-actions mt-lg">
             <button class="btn-primary btn-lg" onclick={() => openDownload('githubDesktop')}>
-              Download GitHub Desktop
+              Download GitHub Desktop (Free)
             </button>
             <button class="btn-secondary" onclick={refreshSetupStatus} disabled={checkingStatus}>
               {checkingStatus && justDownloadedTool === 'githubDesktop' ? 'Checking...' : 'I installed it'}
             </button>
           </div>
-          <p class="text-secondary text-sm mt-sm">After installing GitHub Desktop, return here and click "I installed it".</p>
+          <p class="text-secondary text-sm mt-sm">Download GitHub Desktop, open it, sign in, and click "I installed it" to continue.</p>
         {/if}
 
-      {:else if step === 5}
+      {:else if step === 3}
         <!-- Cloud Account -->
         <h2>Cloud Account</h2>
         <p class="step-desc mt-sm">Optional: sign in to deploy courses to the web with one click. You can skip this and sign in later from Settings.</p>
@@ -458,7 +362,7 @@
           </button>
         {/if}
 
-      {:else if step === 6}
+      {:else if step === 4}
         <!-- Done -->
         <div class="hero-step" data-testid="setup-done">
           <span class="hero-emoji">🎉</span>
@@ -480,7 +384,7 @@
         <button class="btn-primary btn-lg" onclick={finish} data-testid="setup-finish-btn">Get Started</button>
       {:else}
         <div class="footer-actions">
-          {#if step >= 1 && step <= 5}
+          {#if step >= 1 && step <= 3}
             <button class="btn-ghost" onclick={next} data-testid="setup-skip-btn">Skip</button>
           {/if}
           <button class="btn-primary" onclick={next} data-testid="setup-next-btn">
@@ -619,6 +523,20 @@
     color: var(--text-secondary);
     line-height: 1.6;
     max-width: 480px;
+  }
+
+  .optional-badge {
+    display: inline-block;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--text-tertiary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    padding: 1px 8px;
+    vertical-align: middle;
+    margin-left: var(--sp-sm);
+    letter-spacing: 0.02em;
   }
 
   .status-card {

@@ -263,18 +263,6 @@
             version={setupStatus.cli?.version}
           />
           <ToolCard
-            name="AI Assistant"
-            description="Claude Code — AI-powered course creation."
-            status={setupStatus.claudeCode?.state}
-            actionLabel={setupStatus.claudeCode?.state === 'installed-not-configured' ? 'Connect' : null}
-            onAction={() => window.api.setup.configureMCP('claudeCode')}
-          />
-          <ToolCard
-            name="Code Editor"
-            description="VS Code — edit course files directly."
-            status={setupStatus.vscode?.state}
-          />
-          <ToolCard
             name="Version Control"
             description="Git & GitHub Desktop — track changes."
             status={setupStatus.git?.state}

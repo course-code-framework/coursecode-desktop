@@ -13,43 +13,6 @@
                 "versionFlag": "--version"
             }
         },
-        "claudeCode": {
-            "name": "Claude Code",
-            "description": "AI assistant that can create entire courses from your source documents.",
-            "detect": {
-                "command": "claude"
-            },
-            "downloadUrl": "https://claude.ai/download",
-            "mcp": {
-                "configDir": ".claude",
-                "configFile": "mcp.json",
-                "serverKey": "mcpServers",
-                "entry": {
-                    "command": "coursecode",
-                    "args": [
-                        "mcp"
-                    ],
-                    "_managedBy": "coursecode-desktop"
-                },
-                "detectKeys": [
-                    "mcpServers.coursecode",
-                    "servers.coursecode"
-                ]
-            }
-        },
-        "vscode": {
-            "name": "VS Code",
-            "description": "Code editor for editing course files directly.",
-            "detect": {
-                "command": "code",
-                "fallbackPaths": {
-                    "darwin": [
-                        "/Applications/Visual Studio Code.app"
-                    ]
-                }
-            },
-            "downloadUrl": "https://code.visualstudio.com/download"
-        },
         "git": {
             "name": "Git",
             "description": "Tracks file changes over time.",

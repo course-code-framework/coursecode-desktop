@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawn } from 'child_process';
-import { getChildEnv, isLocalMode } from './node-env.js';
+import { getChildEnv, isLocalMode, getCLISpawnArgs } from './node-env.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('cloud');
@@ -36,7 +36,8 @@ function runCLI(args, { cwd } = {}) {
     const env = getChildEnv(token ? { COURSECODE_CLOUD_TOKEN: token } : {});
 
     return new Promise((resolve, reject) => {
-        const child = spawn('coursecode', args, {
+        const { command, args: cliArgs } = getCLISpawnArgs(args);
+        const child = spawn(command, cliArgs, {
             cwd,
             env,
             stdio: ['ignore', 'pipe', 'pipe']
@@ -75,7 +76,9 @@ export async function cloudLogin(webContents) {
     }
 
     return new Promise((resolve, reject) => {
-        const child = spawn('coursecode', isLocalMode() ? ['login', '--local'] : ['login'], {
+        const loginArgs = isLocalMode() ? ['login', '--local'] : ['login'];
+        const { command, args: cliArgs } = getCLISpawnArgs(loginArgs);
+        const child = spawn(command, cliArgs, {
             env,
             stdio: ['ignore', 'pipe', 'pipe']
         });
@@ -159,7 +162,8 @@ export async function cloudDeploy(projectPath, webContents, options = {}) {
     return new Promise((resolve, reject) => {
         const args = isLocalMode() ? ['deploy', '--local'] : ['deploy'];
         if (options.message) args.push('-m', options.message);
-        const child = spawn('coursecode', args, {
+        const { command, args: cliArgs } = getCLISpawnArgs(args);
+        const child = spawn(command, cliArgs, {
             cwd: projectPath,
             env,
             stdio: ['ignore', 'pipe', 'pipe']
