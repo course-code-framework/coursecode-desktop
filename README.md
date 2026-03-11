@@ -50,7 +50,7 @@ Cloud is optional. Desktop and Framework remain useful for local authoring and e
 
 - **Prefer the easiest setup:** Start with the Desktop site and install guide: [coursecodedesktop.com/docs/install](https://coursecodedesktop.com/docs/install)
 - **Want the full Desktop walkthrough:** See the repo guide: [`USER_GUIDE.md`](./USER_GUIDE.md)
-- **Prefer editing files and running commands:** Use the Framework repo: [coursecode-framework](https://github.com/course-code-framework/coursecode-framework)
+- **Prefer editing files and running commands:** Use the Framework repo: [coursecode](https://github.com/course-code-framework/coursecode)
 - **Need hosted sharing/deploy workflows:** See [CourseCode Cloud](https://coursecodecloud.com)
 
 ## For Contributors / Developers
