@@ -31,7 +31,7 @@ vi.mock('../../main/settings.js', async () => {
     };
 });
 
-const { scanProjects, openProject } = await import('../../main/project-manager.js');
+const { scanProjects, openProject, clearCloudBinding } = await import('../../main/project-manager.js');
 const settingsMod = await import('../../main/settings.js');
 
 let tempDir;
@@ -172,6 +172,20 @@ describe('openProject', () => {
         expect(project.frameworkVersion).toBe('2.0.0');
     });
 
+    it('reads cloud link metadata from .coursecoderc.json', async () => {
+        const projectDir = join(tempDir, 'with-cloud-link');
+        mkdirSync(projectDir);
+        writeFileSync(join(projectDir, 'course-config.js'), `export default {};`);
+        writeFileSync(join(projectDir, '.coursecoderc.json'), JSON.stringify({
+            cloudId: 'course_123',
+            sourceType: 'github',
+            githubRepo: 'acme/course'
+        }));
+        const project = await openProject(projectDir);
+        expect(project.cloudId).toBe('course_123');
+        expect(project.githubLinked).toBe(true);
+    });
+
     it('falls back to directory name for title', async () => {
         const projectDir = join(tempDir, 'fallback-name');
         mkdirSync(projectDir);
@@ -186,5 +200,57 @@ describe('openProject', () => {
         const project = await openProject(projectDir);
         expect(project.lastModified).toBeTruthy();
         expect(() => new Date(project.lastModified)).not.toThrow();
+    });
+});
+
+describe('clearCloudBinding', () => {
+
+    it('removes cloud-related keys while preserving other keys', async () => {
+        const projectDir = join(tempDir, 'clear-binding');
+        mkdirSync(projectDir);
+        writeFileSync(join(projectDir, '.coursecoderc.json'), JSON.stringify({
+            frameworkVersion: '2.1.0',
+            cloudId: 'course_abc',
+            orgId: 'org_123',
+            sourceType: 'github',
+            githubRepo: 'acme/my-course'
+        }));
+        await clearCloudBinding(projectDir);
+        const rc = JSON.parse(readFileSync(join(projectDir, '.coursecoderc.json'), 'utf-8'));
+        expect(rc.cloudId).toBeUndefined();
+        expect(rc.orgId).toBeUndefined();
+        expect(rc.sourceType).toBeUndefined();
+        expect(rc.githubRepo).toBeUndefined();
+        expect(rc.frameworkVersion).toBe('2.1.0');
+    });
+
+    it('does nothing when .coursecoderc.json does not exist', async () => {
+        const projectDir = join(tempDir, 'no-rc');
+        mkdirSync(projectDir);
+        await expect(clearCloudBinding(projectDir)).resolves.toBeUndefined();
+        expect(existsSync(join(projectDir, '.coursecoderc.json'))).toBe(false);
+    });
+
+    it('openProject reflects cleared binding', async () => {
+        const projectDir = join(tempDir, 'clear-verify');
+        mkdirSync(projectDir);
+        writeFileSync(join(projectDir, 'course-config.js'), `export default {};`);
+        writeFileSync(join(projectDir, '.coursecoderc.json'), JSON.stringify({
+            cloudId: 'course_xyz',
+            sourceType: 'github',
+            githubRepo: 'acme/repo'
+        }));
+
+        // Before clearing
+        let project = await openProject(projectDir);
+        expect(project.cloudId).toBe('course_xyz');
+        expect(project.githubLinked).toBe(true);
+
+        await clearCloudBinding(projectDir);
+
+        // After clearing
+        project = await openProject(projectDir);
+        expect(project.cloudId).toBeUndefined();
+        expect(project.githubLinked).toBeUndefined();
     });
 });

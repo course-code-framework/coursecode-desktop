@@ -10,6 +10,7 @@
   let outlineExists = $state(false);
   let loading = $state(true);
   let editorRef = $state(null);
+  let generating = $state(false);
 
   onMount(async () => {
     await loadOutline();
@@ -34,6 +35,18 @@
     } catch (err) {
       showToast({ type: 'error', message: `Failed to save outline: ${err.message}` });
     }
+  }
+
+  async function handleGenerate() {
+    generating = true;
+    try {
+      await window.api.workflow.run('build-outline', projectPath);
+      await loadOutline();
+      showToast({ type: 'success', message: 'Outline generated!' });
+    } catch (err) {
+      showToast({ type: 'error', message: `Failed to generate outline: ${err.message}` });
+    }
+    generating = false;
   }
 </script>
 
@@ -62,10 +75,15 @@
           <polyline points="14 2 14 8 20 8"/>
         </Icon>
         <p>No outline yet</p>
-        <span class="text-tertiary">Use "Build Course Outline" in the chat to generate one, or start writing below.</span>
-        <button class="btn-secondary btn-sm" onclick={() => { outlineContent = '# Course Title\n\n## Slide 1: Introduction\n\n'; outlineExists = false; }}>
-          Start from scratch
-        </button>
+        <span class="text-tertiary">Generate an outline from your reference documents, or start writing one manually.</span>
+        <div class="outline-empty-actions">
+          <button class="btn-primary btn-sm" onclick={handleGenerate} disabled={generating}>
+            {generating ? 'Generating…' : 'Generate from References'}
+          </button>
+          <button class="btn-secondary btn-sm" onclick={() => { outlineContent = '# Course Title\n\n## Slide 1: Introduction\n\n'; outlineExists = false; }}>
+            Start from scratch
+          </button>
+        </div>
       </div>
     {:else}
       <MarkdownEditor
@@ -142,5 +160,11 @@
     margin: 4px 0 0;
     font-weight: 500;
     color: var(--text-secondary);
+  }
+
+  .outline-empty-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
   }
 </style>

@@ -9,23 +9,40 @@ export const cloudReady = derived(user, $user => $user != null);
 /** Whether auth state is loading. */
 export const authLoading = writable(true);
 
+/** Last login error, if any. */
+export const loginError = writable(null);
+
 /** Load current cloud user. */
+let _loadPromise = null;
 export async function loadCloudUser() {
-    authLoading.set(true);
-    try {
-        const u = await window.api.cloud.getUser();
-        user.set(u);
-    } catch {
-        user.set(null);
-    } finally {
-        authLoading.set(false);
-    }
+    if (_loadPromise) return _loadPromise;
+    _loadPromise = (async () => {
+        authLoading.set(true);
+        try {
+            const u = await window.api.cloud.getUser();
+            user.set(u);
+            return u;
+        } catch {
+            user.set(null);
+            return null;
+        } finally {
+            authLoading.set(false);
+            _loadPromise = null;
+        }
+    })();
+    return _loadPromise;
 }
 
 /** Initiate login. */
 export async function login() {
-    await window.api.cloud.login();
-    await loadCloudUser();
+    loginError.set(null);
+    try {
+        await window.api.cloud.login();
+        return await loadCloudUser();
+    } catch (err) {
+        loginError.set(err);
+        throw err;
+    }
 }
 
 /** Log out. */

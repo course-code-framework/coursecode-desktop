@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { app } from 'electron';
-import { getCLISpawnArgs, getChildEnv } from './node-env.js';
+import { getCLISpawnArgs, getChildEnv, killProcessTree } from './node-env.js';
 import { getPreviewPort } from './preview-manager.js';
 import { createLogger } from './logger.js';
 
@@ -150,12 +150,19 @@ class McpConnection {
     }
 
     kill() {
-        if (!this.process.killed) {
-            this.process.kill('SIGTERM');
-            setTimeout(() => {
-                if (!this.process.killed) this.process.kill('SIGKILL');
-            }, 3000);
-        }
+        killProcessTree(this.process, 'SIGTERM');
+        this._killTimer = setTimeout(() => {
+            killProcessTree(this.process, 'SIGKILL');
+        }, 3000);
+    }
+
+    /**
+     * Immediately force-kill the process tree. Used during app quit
+     * when the event loop is tearing down and setTimeout won't fire.
+     */
+    forceKill() {
+        clearTimeout(this._killTimer);
+        killProcessTree(this.process, 'SIGKILL');
     }
 }
 
@@ -185,7 +192,10 @@ export async function getMcpClient(projectPath) {
         cwd: projectPath,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true
+        windowsHide: true,
+        // On Unix, make the child a process group leader so killProcessTree
+        // can kill the entire tree via negative PID.
+        ...(process.platform !== 'win32' ? { detached: true } : {})
     });
 
     const conn = new McpConnection(child);
@@ -221,7 +231,10 @@ export function stopMcpClient(projectPath) {
  */
 export function killAllMcpClients() {
     for (const [, conn] of connections) {
-        conn.kill();
+        // During quit the event loop is tearing down, so use forceKill
+        // (synchronous SIGKILL on the entire tree) instead of the graceful
+        // SIGTERM → setTimeout → SIGKILL path that conn.kill() uses.
+        conn.forceKill();
     }
     connections.clear();
 }

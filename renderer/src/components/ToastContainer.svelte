@@ -22,11 +22,11 @@
           <span class="toast-message">{toast.message}</span>
         </div>
         <div class="toast-actions">
-          {#if toast.action}
-            <button class="toast-action-btn" onclick={() => { toast.action.handler(); dismissToast(toast.id); }}>
-              {toast.action.label}
+          {#each toast.actions || [] as act}
+            <button class="toast-action-btn" onclick={() => { act.handler(); dismissToast(toast.id); }}>
+              {act.label}
             </button>
-          {/if}
+          {/each}
           <button class="toast-dismiss" onclick={() => dismissToast(toast.id)} title="Dismiss" aria-label="Dismiss">
             <Icon size={14}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></Icon>
           </button>

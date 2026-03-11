@@ -151,6 +151,8 @@ async function getCLIVersion() {
 
         let output = '';
         child.stdout.on('data', (data) => { output += data.toString(); });
+        // Drain stderr to prevent pipe buffer deadlock on Windows
+        child.stderr.resume();
         child.on('exit', (code) => {
             if (code === 0) resolve(output.trim());
             else reject(new Error('CLI not found'));

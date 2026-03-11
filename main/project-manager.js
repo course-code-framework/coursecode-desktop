@@ -6,6 +6,11 @@ import { shell } from 'electron';
 import { getSetting } from './settings.js';
 import { getChildEnv, getCLISpawnArgs } from './node-env.js';
 import { initRepo, createSnapshot } from './snapshot-manager.js';
+import { stopPreview } from './preview-manager.js';
+import { stopGeneration } from './chat-engine.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('project');
 
 const ALLOWED_FORMATS = new Set(['cmi5', 'scorm2004', 'scorm1.2', 'lti']);
 const ALLOWED_LAYOUTS = new Set(['article', 'traditional', 'presentation', 'focused', 'canvas']);
@@ -44,6 +49,9 @@ export async function scanProjects() {
             if (existsSync(rcPath)) {
                 const rc = JSON.parse(await readFile(rcPath, 'utf-8'));
                 if (rc.frameworkVersion) project.frameworkVersion = rc.frameworkVersion;
+                // Cloud binding — used by the Desktop UI for deploy guard and delete dialog
+                if (rc.cloudId) project.cloudId = rc.cloudId;
+                if (rc.sourceType === 'github') project.githubLinked = true;
             }
         } catch { /* ignore parse errors */ }
 
@@ -101,6 +109,8 @@ export async function createProject({ name, format, layout, blank, location }) {
         });
 
         let stderr = '';
+        // Drain stdout to prevent pipe buffer deadlock on Windows
+        child.stdout.resume();
         child.stderr.on('data', d => { stderr += d.toString(); });
 
         child.on('exit', async (code) => {
@@ -168,6 +178,8 @@ async function ensureCLIReady() {
         });
 
         let stderr = '';
+        // Drain stdout to prevent pipe buffer deadlock on Windows
+        child.stdout.resume();
         child.stderr.on('data', d => { stderr += d.toString(); });
 
         child.on('error', (err) => {
@@ -207,6 +219,8 @@ export async function openProject(projectPath) {
         if (existsSync(rcPath)) {
             const rc = JSON.parse(await readFile(rcPath, 'utf-8'));
             if (rc.frameworkVersion) project.frameworkVersion = rc.frameworkVersion;
+            if (rc.cloudId) project.cloudId = rc.cloudId;
+            if (rc.sourceType === 'github') project.githubLinked = true;
         }
     } catch { /* ignore */ }
 
@@ -229,8 +243,58 @@ export async function openProject(projectPath) {
 }
 
 /**
- * Delete a project by moving it to trash.
+ * Delete a project.
+ *
+ * Stops any running preview server and active AI chat first so file handles
+ * are released (required on Windows where open handles block trash/delete).
+ *
+ * options.deleteFromCloud: if true, removes the course from CourseCode Cloud
+ * first (via CLI), then moves local files to trash regardless.
+ * The Desktop UI is responsible for reading cloudId from .coursecoderc.json
+ * and showing any confirmation dialog (including GitHub-link warnings) before
+ * calling this.
  */
-export async function deleteProject(projectPath) {
-    await shell.trashItem(projectPath);
+export async function deleteProject(projectPath, options = {}) {
+    // Release file handles: stop preview server and abort active chat
+    try {
+        stopGeneration(projectPath);
+        await stopPreview(projectPath);
+    } catch (cleanupErr) {
+        log.warn('Pre-delete cleanup failed (continuing anyway)', cleanupErr);
+    }
+
+    if (options.deleteFromCloud) {
+        const { cloudDelete } = await import('./cloud-client.js');
+        await cloudDelete(projectPath);
+    }
+
+    try {
+        await shell.trashItem(projectPath);
+    } catch (err) {
+        const wrapped = new Error(
+            `Couldn't move "${basename(projectPath)}" to trash: ${err.message}`
+        );
+        wrapped.code = err.code;
+        wrapped.cause = err;
+        throw wrapped;
+    }
+}
+
+/**
+ * Remove cloud binding from a project's .coursecoderc.json.
+ *
+ * Deletes cloud-related keys while preserving other metadata
+ * (frameworkVersion, etc.).
+ */
+export async function clearCloudBinding(projectPath) {
+    const rcPath = join(projectPath, '.coursecoderc.json');
+    if (!existsSync(rcPath)) return;
+
+    const rc = JSON.parse(await readFile(rcPath, 'utf-8'));
+    delete rc.cloudId;
+    delete rc.orgId;
+    delete rc.sourceType;
+    delete rc.githubRepo;
+    await writeFile(rcPath, JSON.stringify(rc, null, 2) + '\n', 'utf-8');
+    log.info('Cleared cloud binding', { projectPath });
 }

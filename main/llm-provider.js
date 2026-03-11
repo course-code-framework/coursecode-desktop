@@ -1,4 +1,4 @@
-import { app, safeStorage } from 'electron';
+import { app, net, safeStorage } from 'electron';
 import { join } from 'path';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
 import { isLocalMode } from './node-env.js';
@@ -12,24 +12,17 @@ const log = createLogger('ai');
 const providers = {
     anthropic: {
         name: 'Anthropic',
-        models: [
-            { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', default: true },
-            { id: 'claude-opus-4-20250514', label: 'Claude Opus 4' }
-        ],
+        models: [],
         keyPlaceholder: 'sk-ant-...',
         keyPattern: /^sk-ant-/,
         docs: 'https://console.anthropic.com/settings/keys',
         pricing: {
-            'claude-sonnet-4-20250514': { input: 3, output: 15 },   // per 1M tokens
-            'claude-opus-4-20250514': { input: 15, output: 75 }
+            'claude-3-5-sonnet-latest': { input: 3, output: 15 }
         }
     },
     openai: {
         name: 'OpenAI',
-        models: [
-            { id: 'gpt-4o', label: 'GPT-4o', default: true },
-            { id: 'o3', label: 'o3' }
-        ],
+        models: [],
         keyPlaceholder: 'sk-...',
         keyPattern: /^sk-/,
         docs: 'https://platform.openai.com/api-keys',
@@ -83,18 +76,117 @@ export function hasApiKey(provider) {
 
 // --- Provider Info ---
 
-export function getProviders() {
-    return Object.entries(providers).map(([id, p]) => ({
-        id,
-        name: p.name,
-        models: p.models.map(m => {
+function labelFromModelId(modelId) {
+    return modelId
+        .replace(/[-_]+/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function markDefaultModel(models, preferredIds = []) {
+    if (!Array.isArray(models) || models.length === 0) return [];
+    const preferredId = preferredIds.find(id => models.some(m => m.id === id));
+    const firstId = preferredId || models[0].id;
+    return models.map(m => ({ ...m, default: m.id === firstId }));
+}
+
+async function fetchAnthropicModels(apiKey) {
+    const response = await net.fetch('https://api.anthropic.com/v1/models', {
+        headers: {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json'
+        }
+    });
+
+    if (!response.ok) {
+        throw Object.assign(new Error(`Anthropic model fetch failed: HTTP ${response.status}`), { status: response.status });
+    }
+
+    const payload = await response.json();
+    const discovered = (payload.data || [])
+        .map(m => m?.id)
+        .filter(id => typeof id === 'string' && id.startsWith('claude-'))
+        .map(id => ({ id, label: labelFromModelId(id) }));
+
+    return markDefaultModel(discovered, [
+        'claude-3-5-sonnet-latest',
+        'claude-3-7-sonnet-latest'
+    ]);
+}
+
+async function fetchOpenAIModels(apiKey) {
+    const response = await net.fetch('https://api.openai.com/v1/models', {
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'content-type': 'application/json'
+        }
+    });
+
+    if (!response.ok) {
+        throw Object.assign(new Error(`OpenAI model fetch failed: HTTP ${response.status}`), { status: response.status });
+    }
+
+    const payload = await response.json();
+    const discovered = (payload.data || [])
+        .map(m => m?.id)
+        .filter(id => typeof id === 'string' && (/^gpt-/.test(id) || /^o\d/.test(id)))
+        .map(id => ({ id, label: labelFromModelId(id) }));
+
+    return markDefaultModel(discovered, ['gpt-4o', 'o3']);
+}
+
+export async function getProviders() {
+    const entries = await Promise.all(Object.entries(providers).map(async ([id, p]) => {
+        const hasKey = hasApiKey(id);
+        let models = [];
+        let modelFetchFailed = false;
+        let modelFetchError = null;
+        const key = loadApiKey(id);
+
+        if (key) {
+            try {
+                if (id === 'anthropic') {
+                    const discovered = await fetchAnthropicModels(key);
+                    if (discovered.length > 0) {
+                        models = discovered;
+                    } else {
+                        modelFetchFailed = true;
+                        modelFetchError = `No models were returned by ${p.name}.`;
+                    }
+                } else if (id === 'openai') {
+                    const discovered = await fetchOpenAIModels(key);
+                    if (discovered.length > 0) {
+                        models = discovered;
+                    } else {
+                        modelFetchFailed = true;
+                        modelFetchError = `No models were returned by ${p.name}.`;
+                    }
+                }
+            } catch (err) {
+                modelFetchFailed = true;
+                modelFetchError = err?.message || `Failed to fetch models from ${p.name}.`;
+                log.warn(`Failed to refresh ${id} models`, err);
+            }
+        }
+
+        providers[id].models = models;
+
+        return {
+            id,
+            name: p.name,
+            models: models.map(m => {
             const pricing = p.pricing?.[m.id];
             return { ...m, costScore: pricing ? pricing.input + pricing.output : null };
         }),
         keyPlaceholder: p.keyPlaceholder,
         docs: p.docs,
-        hasKey: hasApiKey(id)
+        hasKey,
+        modelFetchFailed,
+        modelFetchError
+        };
     }));
+
+    return entries;
 }
 
 export function getProviderModels(providerId) {
@@ -157,11 +249,13 @@ async function createAnthropicProvider(apiKey) {
 
         async validateKey() {
             try {
-                await client.messages.create({
-                    model: 'claude-sonnet-4-20250514',
-                    max_tokens: 1,
-                    messages: [{ role: 'user', content: 'hi' }]
-                });
+                await net.fetch('https://api.anthropic.com/v1/models', {
+                    headers: {
+                        'x-api-key': apiKey,
+                        'anthropic-version': '2023-06-01',
+                        'content-type': 'application/json'
+                    }
+                }).then(r => { if (!r.ok) throw { status: r.status }; });
                 return { valid: true };
             } catch (err) {
                 if (err.status === 401) return { valid: false, error: 'Invalid API key' };
@@ -279,7 +373,7 @@ async function createCloudProxyProvider(token) {
             let res;
             try {
                 log.debug('Cloud proxy: fetching', { url: `${baseUrl}/api/ai/chat`, model });
-                res = await fetch(`${baseUrl}/api/ai/chat`, {
+                res = await net.fetch(`${baseUrl}/api/ai/chat`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${token}`,
@@ -364,7 +458,7 @@ async function createCloudProxyProvider(token) {
 
         async validateKey() {
             try {
-                await fetch(`${baseUrl}/api/ai/models`, {
+                await net.fetch(`${baseUrl}/api/ai/models`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 }).then(r => { if (!r.ok) throw { status: r.status }; });
                 return { valid: true };
@@ -378,7 +472,7 @@ async function createCloudProxyProvider(token) {
 
 export async function getCloudModels(token) {
     const baseUrl = getCloudBaseUrl();
-    const res = await fetch(`${baseUrl}/api/ai/models`, {
+    const res = await net.fetch(`${baseUrl}/api/ai/models`, {
         headers: { 'Authorization': `Bearer ${token}` }
     });
     if (!res.ok) {
@@ -386,12 +480,16 @@ export async function getCloudModels(token) {
         throw new Error(`Failed to fetch models: HTTP ${res.status}`);
     }
     const data = await res.json();
-    return data.models || [];
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.models)) return data.models;
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.items)) return data.items;
+    return [];
 }
 
 export async function getCloudUsage(token) {
     const baseUrl = getCloudBaseUrl();
-    const res = await fetch(`${baseUrl}/api/ai/usage`, {
+    const res = await net.fetch(`${baseUrl}/api/ai/usage`, {
         headers: { 'Authorization': `Bearer ${token}` }
     });
     if (!res.ok) {

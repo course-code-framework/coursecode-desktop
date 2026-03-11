@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { shell } from 'electron';
-import { getChildEnv, getCLISpawnArgs } from './node-env.js';
+import { getChildEnv, getCLISpawnArgs, killProcessTree } from './node-env.js';
 import { stopMcpClient, killAllMcpClients } from './mcp-client.js';
 import { createLogger } from './logger.js';
 import { getSetting, saveSetting } from './settings.js';
@@ -149,7 +149,10 @@ export async function startPreview(projectPath, webContents, { openBrowser = tru
         cwd: projectPath,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true
+        windowsHide: true,
+        // On Unix, make the child a process group leader so killProcessTree
+        // can kill the entire tree via negative PID.
+        ...(process.platform !== 'win32' ? { detached: true } : {})
     });
 
     child.on('error', (err) => {
@@ -203,8 +206,8 @@ export async function startPreview(projectPath, webContents, { openBrowser = tru
         rejectReady(e);
         // We don't delete here immediately to let the caller handle the error, 
         // but the process exit handler will clean up map.
-        // If the process is still running but unresponsive, we might want to kill it:
-        child.kill();
+        // If the process is still running but unresponsive, kill the entire tree:
+        killProcessTree(child, 'SIGKILL');
     }
 
     return { port };
@@ -220,14 +223,29 @@ export async function stopPreview(projectPath) {
     const entry = previews.get(projectPath);
     if (!entry) return;
 
-    entry.process.kill('SIGTERM');
+    // Wait for the process to actually exit so file handles are released
+    await new Promise((resolve) => {
+        const onExit = () => {
+            clearTimeout(killTimer);
+            resolve();
+        };
 
-    // Force kill after 5s
-    const killTimer = setTimeout(() => {
-        if (!entry.process.killed) entry.process.kill('SIGKILL');
-    }, 5000);
+        // If already dead, resolve immediately
+        if (entry.process.killed || entry.process.exitCode !== null) {
+            resolve();
+            return;
+        }
 
-    entry.process.on('exit', () => clearTimeout(killTimer));
+        entry.process.once('exit', onExit);
+        killProcessTree(entry.process, 'SIGTERM');
+
+        // Force kill the entire tree after 5s, then resolve regardless
+        const killTimer = setTimeout(() => {
+            killProcessTree(entry.process, 'SIGKILL');
+            resolve();
+        }, 5000);
+    });
+
     previews.delete(projectPath);
 }
 
@@ -272,17 +290,12 @@ export function killAllPreviews() {
     killAllMcpClients();
     for (const [, entry] of previews) {
         try {
-            // Robust kill: Try SIGTERM first, then force SIGKILL
-            if (!entry.process.killed) {
-                entry.process.kill('SIGTERM');
-                // Don't wait too long on quit
-                setTimeout(() => {
-                    if (!entry.process.killed) entry.process.kill('SIGKILL');
-                }, 1000); // 1s timeout for quit
-            }
+            // During quit the event loop is tearing down, so setTimeout-based
+            // fallbacks will never fire. Use synchronous SIGKILL on the entire
+            // process tree to guarantee no orphans survive.
+            killProcessTree(entry.process, 'SIGKILL');
         } catch (e) {
-            log.warn('Error killing preview process', e);
-            try { entry.process.kill('SIGKILL'); } catch (killErr) { log.debug('Force kill also failed', killErr); }
+            log.warn('Error killing preview process tree', e);
         }
     }
     previews.clear();

@@ -15,11 +15,21 @@
   let hasAnyKey = $derived(configuredProviders.length > 0);
 
   onMount(async () => {
-    providers = await window.api.ai.getProviders();
-    if ($cloudReady) {
-      fetchCloudModels();
+    await refreshAvailableModels();
+  });
+
+  $effect(() => {
+    if (open) {
+      refreshAvailableModels();
     }
   });
+
+  async function refreshAvailableModels() {
+    providers = await window.api.ai.getProviders();
+    if ($cloudReady) {
+      await fetchCloudModels();
+    }
+  }
 
   async function fetchCloudModels() {
     cloudLoading = true;
@@ -40,13 +50,15 @@
     }
     const provider = providers.find(p => p.id === $settings.aiProvider);
     const model = provider?.models?.find(m => m.id === $settings.aiModel);
-    return model?.label || $settings.aiModel || 'Select model';
+    const fallback = provider?.models?.find(m => m.default) || provider?.models?.[0];
+    return model?.label || fallback?.label || 'Select model';
   }
 
   function selectByokModel(providerId, modelId) {
     updateSetting('aiProvider', providerId);
     updateSetting('aiModel', modelId);
     updateSetting('defaultAiMode', 'byok');
+    updateSetting('aiModeInitialized', true);
     aiMode.set('byok');
     open = false;
     onClose?.();
@@ -55,6 +67,7 @@
   function selectCloudModel(modelId) {
     updateSetting('cloudAiModel', modelId);
     updateSetting('defaultAiMode', 'cloud');
+    updateSetting('aiModeInitialized', true);
     aiMode.set('cloud');
     open = false;
     onClose?.();
@@ -122,6 +135,11 @@
         {#each configuredProviders as provider}
           <div class="provider-group">
             <div class="provider-name">{provider.name}</div>
+            {#if provider.modelFetchFailed && provider.models.length === 0}
+              <div class="cloud-gate">
+                <span class="gate-text">Could not load models</span>
+              </div>
+            {/if}
             {#each provider.models as model}
               <button
                 class="model-option"

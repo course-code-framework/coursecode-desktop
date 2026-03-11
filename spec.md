@@ -256,7 +256,7 @@ All communication between renderer and main process flows through typed IPC chan
 - `api.cloud.login()` → `{ success, user }` — Spawn `coursecode login` (opens browser, nonce-based auth). Sends progress events during polling.
 - `api.cloud.logout()` → `void` — Spawn `coursecode logout` to clear credentials.
 - `api.cloud.getUser()` → `User | null` — Spawn `coursecode whoami --json` to get current auth state.
-- `api.cloud.deploy(projectPath, options?)` → `{ success, timestamp }` — Spawn `coursecode deploy`. Sends structured progress events. Options: `{ message?: string }` — optional deploy reason appended to the audit log via the CLI's `-m` flag.
+- `api.cloud.deploy(projectPath, options?)` → `{ success, timestamp }` — Spawn `coursecode deploy`. Sends structured progress events. Options: `{ message?: string, promote?: boolean, preview?: boolean }`. `message` is appended to the audit log via `-m`. `promote` passes `--promote` (force go live). `preview` passes `--preview` (update preview link).
 - `api.cloud.getDeployStatus(projectPath)` → `DeployStatus` — Spawn `coursecode status --json`.
 - `api.cloud.onLoginProgress(callback)` → `unsubscribe` — Stream login progress: `{ stage, message, user }`.
 - `api.cloud.onDeployProgress(callback)` → `unsubscribe` — Stream deploy progress: `{ stage, message, log }`.
@@ -277,7 +277,7 @@ All communication between renderer and main process flows through typed IPC chan
 ### References
 - `api.refs.list(projectPath)` → `Ref[]` — List converted reference documents in the project.
 - `api.refs.read(projectPath, filename)` → `string` — Read a reference document's markdown content.
-- `api.refs.convert(projectPath, filePath)` → `void` — Convert a file (PDF, DOCX, etc.) to markdown via `coursecode ingest`. Streams progress events.
+- `api.refs.convert(projectPath, filePath)` → `void` — Convert a file (PDF, DOCX, etc.) to markdown via `coursecode convert`. Streams progress events.
 - `api.refs.onConvertProgress(callback)` → `unsubscribe` — Stream conversion progress.
 
 ### AI Settings
@@ -343,6 +343,8 @@ The primary view. Displays all detected projects as cards in a responsive grid.
 **Empty state**: Full-width illustration with "Create Your First Course" heading, description of what CourseCode does, and a prominent "New Course" button. Friendly, not intimidating.
 
 **Project scanning**: On app launch and when returning to Dashboard, the main process scans the configured projects directory (one level deep) looking for directories containing `course-config.js` or `.coursecoderc.json`.
+
+**Cloud status polling**: For projects linked to CourseCode Cloud (those with a `cloudId` in `.coursecoderc.json`), the Dashboard polls `coursecode status --json` every **60 seconds** to refresh deploy status, preview link state, and stale binding detection. An immediate poll also fires on mount and after every user-initiated action (deploy, preview link change, delete). If the status response indicates the course's deployment source is GitHub (`source.type === 'github'`), the project's `githubLinked` flag is updated reactively so the deploy button locks to preview-only mode without requiring a full re-scan.
 
 ### Create Wizard
 
@@ -485,6 +487,10 @@ Returns an array of `Project` objects sorted by last modified (newest first).
 
 **Validation**: Before creation, validates that the target directory doesn't already exist and that the project name produces a valid directory name.
 
+**GitHub detection**: During scanning and project open, reads `sourceType` from `.coursecoderc.json`. If `sourceType === 'github'`, the project is flagged as `githubLinked`, which locks the deploy button to preview-only mode in the UI.
+
+**Cloud binding management**: `clearCloudBinding(projectPath)` removes all cloud-related keys (`cloudId`, `orgId`, `sourceType`, `githubRepo`) from `.coursecoderc.json` while preserving other metadata like `frameworkVersion`.
+
 ### `preview-manager.js` — Preview Server Lifecycle
 
 Manages one preview server process per project. Stores a `Map<projectPath, ChildProcess>`.
@@ -526,9 +532,9 @@ A thin wrapper that delegates all cloud operations to the `coursecode` CLI. No d
 
 **User info**: Spawns `coursecode whoami --json` and returns parsed JSON.
 
-**Deploy status**: Spawns `coursecode status --json` in the project directory.
+**Deploy status**: Spawns `coursecode status --json` in the project directory. The response includes `source.type` and `source.githubRepo` fields which the UI uses to detect GitHub-linked courses and lock the deploy button to preview-only mode.
 
-**Cloud project linking**: On first deploy, the CLI stamps a `cloudId` into `.coursecoderc.json`. Team members who clone the repo get this ID automatically, skipping slug-based resolution on subsequent deploys.
+**Cloud project linking**: On first deploy, the CLI stamps a `cloudId` into `.coursecoderc.json`. For GitHub-linked courses, the cloud also stamps `sourceType` and `githubRepo`. Team members who clone the repo get these fields automatically.
 
 ### `settings.js` — Persistent Preferences
 
@@ -687,7 +693,12 @@ Subsequent launches skip the Setup Assistant and go directly to the Dashboard.
 
 The desktop app delegates all deployment to the `coursecode deploy` CLI command.
 
-**Flow**: User clicks "Deploy" in Project Detail → desktop spawns `coursecode deploy` → CLI builds the project, uploads to CourseCode Cloud, and reports status → structured progress events are sent to the renderer.
+**Flow**: User clicks "Deploy" in Project Detail or Dashboard → a popover appears with:
+- **Reason** (optional text) — stored as a deploy audit log entry via `-m`
+- **Update Production** checkbox (off by default) — when checked, passes `--promote` to force the deployment live immediately, overriding the Cloud `deploy_mode` setting
+- **Update Preview** checkbox (off by default) — when checked, passes `--preview` to move the preview link to the new version
+
+After confirming, the desktop spawns `coursecode deploy` (plus flags) → CLI builds the project, uploads to CourseCode Cloud, and reports status → structured progress events are sent to the renderer.
 
 **Progress events**: The deploy sends `{ stage, message, log }` events to the renderer:
 - `building` — "Building course…"
@@ -704,6 +715,37 @@ The desktop app delegates all deployment to the `coursecode deploy` CLI command.
 - Deploy progress (Building → Uploading → Live)
 - Last deploy timestamp and URL
 - "View on Cloud" link (if `cloudId` is present in `.coursecoderc.json`)
+
+### GitHub Deploy Guard
+
+When a course is deployed to CourseCode Cloud via GitHub (GitHub Actions integration), the deployment source is GitHub — not the CLI. The desktop app enforces a deploy guard to prevent conflicting production deploys.
+
+**Detection**: The `sourceType` field in `.coursecoderc.json` is the primary local signal. When the cloud stamps `sourceType: 'github'` into the repo (via the GitHub Contents API on initial link), the desktop reads it during project scanning and sets `project.githubLinked = true`. As a secondary detection path, the cloud status polling (`coursecode status --json`) returns `source.type` in the response, which the UI reads every 60 seconds to update the `githubLinked` flag reactively.
+
+**UI behavior when `githubLinked` is `true`**:
+- The Deploy button tooltip indicates production deploys are managed via GitHub.
+- Production deploy is blocked — only preview deploys are allowed from the Desktop.
+- The project card shows a GitHub badge.
+
+**CLI-side guard**: The CLI `deploy()` command also checks `sourceType` in `.coursecoderc.json` before building. If `sourceType === 'github'` and `--preview` is not passed, the CLI blocks with exit code 1 and a `github_source_blocked` error.
+
+**Server-side safety net**: The cloud deploy endpoint rejects non-preview production deploys for GitHub-linked courses with HTTP 403 and `errorCode: 'github_source_blocked'`, regardless of CLI version.
+
+**Reconciliation**: The CLI reconciles local `.coursecoderc.json` with cloud state. When `coursecode status` or `coursecode deploy` detects that the cloud no longer reports GitHub as the deployment source (e.g., the GitHub integration was disconnected on the cloud side), the CLI removes `sourceType` and `githubRepo` from `.coursecoderc.json` so the local guard is lifted automatically. This ensures that unlinking a course from GitHub on the cloud side re-enables CLI deploys without manual file editing.
+
+### `.coursecoderc.json` Contract
+
+| Field | Type | Set By | Purpose |
+|-------|------|--------|---------|
+| `frameworkVersion` | `string` | CLI `create` | Framework version used to create the project |
+| `createdAt` | `string` | CLI `create` | ISO timestamp of project creation |
+| `createdWith` | `string` | CLI `create` | CLI package + version used |
+| `cloudId` | `string?` | CLI `deploy` / GitHub link | Course UUID on cloud |
+| `orgId` | `string?` | CLI `deploy` / GitHub link | Organization UUID |
+| `sourceType` | `string?` | GitHub link flow | `'github'` when GitHub-linked, absent for CLI-only |
+| `githubRepo` | `string?` | GitHub link flow | `'owner/repo'` format |
+
+`clearCloudBinding()` in `project-manager.js` removes `cloudId`, `orgId`, `sourceType`, and `githubRepo` while preserving all other fields.
 
 ---
 
@@ -725,7 +767,7 @@ A built-in AI assistant that can create, modify, and debug courses through natur
 - Project context (current project path, config, structure)
 - User custom instructions from settings
 
-**`ref-manager.js`** — Manages reference documents. Lists, reads, and converts files (PDF, DOCX, PPTX, etc.) to markdown using the `coursecode ingest` CLI command. Supports drag-and-drop conversion from the RefsPanel UI.
+**`ref-manager.js`** — Manages reference documents. Lists, reads, and converts files (PDF, DOCX, PPTX, etc.) to markdown using the `coursecode convert` CLI command. Supports drag-and-drop conversion from the RefsPanel UI.
 
 ### Tool Use
 
@@ -1058,7 +1100,7 @@ The CourseCode logo is an SVG depicting angle brackets `< >` with a lightbulb ic
 
 **Monochrome rule**: The logo and the "CourseCode" wordmark are always monochromatic. They use `--text-primary`, which resolves to **Prussian Blue** (`#14213d`) in light mode and **white** (`#e8e8f0`) in dark mode. No gradients, no accent colors on the logo or title.
 
-**App icon**: `build/icon.png` — a 1024×1024 PNG with the logo rendered in white on a Prussian Blue squircle background. `electron-builder` generates `.icns` (macOS) and `.ico` (Windows) from this source image.
+**App icon**: `build/icon.svg` is the editable source of truth. `build/icon.png` is the transparent 1024×1024 master export, and `npm run icons` generates `build/icon.icns` (macOS) and `build/icon.ico` (Windows) for packaging. Keep visual tweaks in the SVG so both platforms stay in sync.
 
 ### Desktop UI Conventions
 

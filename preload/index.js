@@ -1,12 +1,15 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 contextBridge.exposeInMainWorld('api', {
+    getFilePath: (file) => webUtils.getPathForFile(file),
+
     projects: {
         scan: () => ipcRenderer.invoke('projects:scan'),
         create: (options) => ipcRenderer.invoke('projects:create', options),
         open: (projectPath) => ipcRenderer.invoke('projects:open', projectPath),
         reveal: (projectPath) => ipcRenderer.invoke('projects:reveal', projectPath),
-        delete: (projectPath) => ipcRenderer.invoke('projects:delete', projectPath)
+        delete: (projectPath, options) => ipcRenderer.invoke('projects:delete', projectPath, options),
+        clearCloudBinding: (projectPath) => ipcRenderer.invoke('projects:clearCloudBinding', projectPath)
     },
 
     preview: {
@@ -28,7 +31,7 @@ contextBridge.exposeInMainWorld('api', {
     },
 
     build: {
-        export: (projectPath, format) => ipcRenderer.invoke('build:export', projectPath, format),
+        export: (projectPath, format, savePath) => ipcRenderer.invoke('build:export', projectPath, format, savePath),
         onProgress: (callback) => {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('build:progress', handler);
@@ -41,7 +44,8 @@ contextBridge.exposeInMainWorld('api', {
         logout: () => ipcRenderer.invoke('cloud:logout'),
         getUser: () => ipcRenderer.invoke('cloud:getUser'),
         deploy: (projectPath, options) => ipcRenderer.invoke('cloud:deploy', projectPath, options),
-        getDeployStatus: (projectId) => ipcRenderer.invoke('cloud:getDeployStatus', projectId),
+        getDeployStatus: (projectId, options) => ipcRenderer.invoke('cloud:getDeployStatus', projectId, options),
+        updatePreviewLink: (projectPath, options) => ipcRenderer.invoke('cloud:updatePreviewLink', projectPath, options),
         onLoginProgress: (callback) => {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('cloud:loginProgress', handler);
@@ -67,8 +71,11 @@ contextBridge.exposeInMainWorld('api', {
             ipcRenderer.on('setup:installProgress', handler);
             return () => ipcRenderer.removeListener('setup:installProgress', handler);
         },
-        configureMCP: (agent) => ipcRenderer.invoke('setup:configureMCP', agent),
         openDownloadPage: (tool) => ipcRenderer.invoke('setup:openDownloadPage', tool)
+    },
+
+    shell: {
+        openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
     },
 
     tools: {
@@ -109,7 +116,8 @@ contextBridge.exposeInMainWorld('api', {
     },
 
     dialog: {
-        pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pickFolder', defaultPath)
+        pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pickFolder', defaultPath),
+        saveFile: (defaultName) => ipcRenderer.invoke('dialog:saveFile', defaultName)
     },
 
     // --- Outline ---

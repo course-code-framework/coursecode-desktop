@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { loadSettings, settings } from './stores/settings.js';
-  import { loadCloudUser } from './stores/auth.js';
+  import { loadCloudUser, cloudReady } from './stores/auth.js';
   import { aiMode } from './stores/chat.js';
   import { tabs, activeTab, activeTabId, openCourseTab, closeTab } from './stores/tabs.js';
   import TabBar from './components/TabBar.svelte';
@@ -67,11 +67,16 @@
 
   onMount(async () => {
     await loadSettings();
-    loadCloudUser();
+    const cloudUser = await loadCloudUser();
 
     const s = $settings;
-    // Restore AI mode from persisted settings
-    if (s.defaultAiMode) aiMode.set(s.defaultAiMode);
+    // First-time AI mode default: prefer Cloud when user is authenticated.
+    // After first use/selection, restore the persisted mode.
+    if (s.aiModeInitialized) {
+      aiMode.set(s.defaultAiMode || 'byok');
+    } else {
+      aiMode.set(cloudUser ? 'cloud' : 'byok');
+    }
     if (!s.setupCompleted) {
       overlay = 'setup';
     }
@@ -119,6 +124,13 @@
     } else {
       document.documentElement.setAttribute('data-theme', theme);
     }
+  });
+
+  // First-time AI mode default should track cloud auth state until mode is initialized.
+  $effect(() => {
+    if (!ready) return;
+    if ($settings.aiModeInitialized) return;
+    aiMode.set($cloudReady ? 'cloud' : 'byok');
   });
 </script>
 

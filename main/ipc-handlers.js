@@ -1,9 +1,9 @@
 import { ipcMain, app, shell, dialog } from 'electron';
 import { getAllSettings, saveSetting } from './settings.js';
-import { scanProjects, createProject, openProject, deleteProject } from './project-manager.js';
+import { scanProjects, createProject, openProject, deleteProject, clearCloudBinding } from './project-manager.js';
 import { startPreview, stopPreview, getPreviewStatus, getPreviewPort, getAllPreviewStatuses } from './preview-manager.js';
 import { exportBuild } from './build-manager.js';
-import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus } from './cloud-client.js';
+import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus, updatePreviewLink } from './cloud-client.js';
 import { getSetupStatus, installCLI, getDownloadUrl } from './cli-installer.js';
 import { sendMessage, stopGeneration, clearConversation, loadHistory, buildMentionIndex, summarizeContext, getContextMemory } from './chat-engine.js';
 import { listRefs, readRef, convertRef } from './ref-manager.js';
@@ -36,7 +36,8 @@ export function registerIpcHandlers() {
     handle('projects:reveal', (_e, projectPath) => {
         shell.showItemInFolder(projectPath);
     });
-    handle('projects:delete', (_e, projectPath) => deleteProject(projectPath));
+    handle('projects:delete', (_e, projectPath, options) => deleteProject(projectPath, options));
+    handle('projects:clearCloudBinding', (_e, projectPath) => clearCloudBinding(projectPath));
 
     // --- Preview ---
     handle('preview:start', (e, projectPath, opts) => startPreview(projectPath, e.sender, opts));
@@ -46,14 +47,15 @@ export function registerIpcHandlers() {
     handle('preview:statusAll', () => getAllPreviewStatuses());
 
     // --- Build ---
-    handle('build:export', (e, projectPath, format) => exportBuild(projectPath, format, e.sender));
+    handle('build:export', (e, projectPath, format, savePath) => exportBuild(projectPath, format, savePath, e.sender));
 
     // --- Cloud ---
     handle('cloud:login', (e) => cloudLogin(e.sender));
     handle('cloud:logout', () => cloudLogout());
     handle('cloud:getUser', () => getCloudUser());
     handle('cloud:deploy', (e, projectPath, options) => cloudDeploy(projectPath, e.sender, options));
-    handle('cloud:getDeployStatus', (_e, projectPath) => getDeployStatus(projectPath));
+    handle('cloud:getDeployStatus', (_e, projectPath, options) => getDeployStatus(projectPath, options));
+    handle('cloud:updatePreviewLink', (_e, projectPath, options) => updatePreviewLink(projectPath, options));
 
     // --- Settings ---
     handle('settings:get', () => getAllSettings());
@@ -66,11 +68,16 @@ export function registerIpcHandlers() {
         const url = getDownloadUrl(tool);
         if (url) shell.openExternal(url);
     });
+    handle('shell:openExternal', (_e, url) => {
+        if (url && (url.startsWith('https://') || url.startsWith('http://'))) shell.openExternal(url);
+    });
 
     handle('tools:openTerminal', (_e, projectPath) => {
+        const { spawn } = require('child_process');
         if (process.platform === 'darwin') {
-            const { spawn } = require('child_process');
             spawn('open', ['-a', 'Terminal', projectPath], { detached: true, stdio: 'ignore' }).unref();
+        } else if (process.platform === 'win32') {
+            spawn('cmd.exe', ['/c', 'start', 'cmd.exe', '/K', `cd /d "${projectPath}"`], { detached: true, stdio: 'ignore', shell: true }).unref();
         }
     });
     handle('tools:openInFinder', (_e, projectPath) => {
@@ -78,7 +85,7 @@ export function registerIpcHandlers() {
     });
     handle('tools:openCourseFolder', (_e, projectPath) => {
         const coursePath = join(projectPath, 'course');
-        shell.showItemInFolder(existsSync(coursePath) ? coursePath : projectPath);
+        shell.openPath(existsSync(coursePath) ? coursePath : projectPath);
     });
 
     // --- Chat ---
@@ -144,6 +151,15 @@ export function registerIpcHandlers() {
             title: 'Choose Project Location'
         });
         return result.canceled ? null : result.filePaths[0];
+    });
+    handle('dialog:saveFile', async (_e, defaultName) => {
+        const downloadsPath = app.getPath('downloads');
+        const result = await dialog.showSaveDialog({
+            title: 'Export Course Package',
+            defaultPath: join(downloadsPath, defaultName || 'course.zip'),
+            filters: [{ name: 'ZIP Archive', extensions: ['zip'] }]
+        });
+        return result.canceled ? null : result.filePath;
     });
 
     // --- Outline ---

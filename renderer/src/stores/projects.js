@@ -19,6 +19,13 @@ export const selectedProject = derived(
     ([$projects, $path]) => $projects.find(p => p.path === $path) || null
 );
 
+/** Update a single project in the store without re-scanning. */
+export function updateProject(path, fields) {
+    projects.update(list =>
+        list.map(p => (p.path === path ? { ...p, ...fields } : p))
+    );
+}
+
 /** Scan projects directory. */
 export async function refreshProjects() {
     loading.set(true);

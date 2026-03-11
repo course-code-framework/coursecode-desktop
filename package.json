@@ -3,15 +3,26 @@
   "version": "0.9.0",
   "description": "A native GUI for CourseCode — create, preview, and deploy interactive courses",
   "main": "./out/main/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/course-code-framework/coursecode-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/course-code-framework/coursecode-desktop/issues"
+  },
+  "homepage": "https://coursecodedesktop.com",
+  "license": "MIT",
+  "author": "Seth Vincent",
   "scripts": {
+    "icons": "node scripts/generate-icons.mjs",
     "dev": "electron-vite dev",
     "dev:local": "COURSECODE_LOCAL=1 electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
-    "package": "electron-vite build && electron-builder --config electron-builder.yml",
-    "package:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
-    "package:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "package": "npm run icons && electron-vite build && electron-builder --config electron-builder.yml",
+    "package:mac": "npm run icons && electron-vite build && electron-builder --mac --config electron-builder.yml",
+    "package:win": "npm run icons && electron-vite build && electron-builder --win --config electron-builder.yml",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -34,11 +45,12 @@
     "@tiptap/core": "^3.19.0",
     "@tiptap/markdown": "^3.19.0",
     "@tiptap/starter-kit": "^3.19.0",
-    "coursecode": "^0.1.0",
+    "coursecode": "^0.1.22",
     "electron-updater": "^6.3.9",
     "isomorphic-git": "^1.36.3",
     "marked": "^17.0.1",
     "monaco-editor": "^0.55.1",
-    "openai": "^6.21.0"
+    "openai": "^6.21.0",
+    "win-ca": "^3.5.1"
   }
 }

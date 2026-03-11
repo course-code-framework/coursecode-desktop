@@ -17,6 +17,18 @@ const ERROR_MAP = [
     { match: (e) => e.message?.includes('safeStorage') || e.message?.includes('encryption'), code: 'ENCRYPTION_UNAVAILABLE', message: 'System encryption is not available. Cannot securely store API key.' },
     { match: (e) => e.message?.includes('fetch') && (e.cause?.code === 'ENOTFOUND' || e.cause?.code === 'ETIMEDOUT'), code: 'NETWORK_ERROR', message: "Couldn't reach the server. Check your internet connection." },
     { match: (e) => e.message?.includes('fetch failed') || e.message?.includes('timed out'), code: 'NETWORK_ERROR', message: "Couldn't reach the AI service. If using local mode, check that the cloud app is running." },
+    { match: (e) => e.message?.includes('Could not connect'), code: 'NETWORK_ERROR', message: "Couldn't connect to CourseCode Cloud. Check your internet connection." },
+    { match: (e) => e.message?.includes('Not authenticated'), code: 'AUTH_EXPIRED', message: 'Your session has expired. Sign in again from Settings.' },
+    { match: (e) => e.code === 'STALE_CLOUD_BINDING', code: 'STALE_CLOUD_BINDING', message: 'This project is still linked to a CourseCode Cloud course that no longer exists.' },
+    { match: (e) => e.name === 'AbortError' || (e.message?.includes('aborted') && e.message?.includes('user')), code: 'CANCELLED', message: 'The operation was cancelled.' },
+    { match: (e) => e.message?.includes('Operation was aborted') || e.message?.includes('trash'), code: 'TRASH_FAILED', message: "Couldn't move the item to trash. The file may be open in another app or protected by your system." },
+    {
+        // Corporate firewalls (Zscaler, Netskope, etc.) intercept HTTPS requests and
+        // return an HTML block page. The CLI tries to JSON.parse() the response and throws.
+        match: (e) => e.message?.includes('<!DOCTYPE') || e.message?.includes("Unexpected token '<'") || e.message?.includes('is not valid JSON') && e.message?.includes('<'),
+        code: 'FIREWALL_BLOCK',
+        message: "CourseCode Cloud is being blocked by your network's firewall or security software. Ask your IT team to allow access to CourseCode Cloud.",
+    },
 ];
 
 /**

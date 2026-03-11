@@ -1,16 +1,24 @@
 <script>
+  import { onMount, onDestroy } from 'svelte';
   import { settings, updateSetting } from '../stores/settings.js';
-  import { user, login, logout, cloudReady } from '../stores/auth.js';
+  import { user, login, logout, cloudReady, loginError } from '../stores/auth.js';
   import { credits, loadCredits } from '../stores/chat.js';
   import { showToast } from '../stores/toast.js';
   import ToolCard from '../components/ToolCard.svelte';
-  import { onMount, onDestroy } from 'svelte';
+
+  let signingIn = $state(false);
+  let deviceStage = $state(null); // null | 'requesting' | 'device' | 'approved' | 'complete' | 'error'
+  let deviceUserCode = $state(null);
+  let deviceVerificationUri = $state(null);
+  let deviceErrorMessage = $state(null);
+  let unsubLogin = null;
 
   let { onBack, onRunSetup } = $props();
 
   let setupStatus = $state(null);
   let appVersion = $state('');
   let aiProviders = $state([]);
+  let cloudModels = $state([]);
   let aiConfig = $state({});
   let apiKeyInput = $state('');
   let savingKey = $state(false);
@@ -18,14 +26,65 @@
   let keySuccess = $state('');
   let updateStatus = $state(null);
   let checkingUpdates = $state(false);
+  let refreshingModels = $state(false);
+  let cloudProviderFilter = $state('all');
+  let cloudModelLoadError = $state('');
+  let attemptedCloudRefresh = $state(false);
   let unsubUpdateStatus = null;
+
+  let aiMode = $derived(($settings.defaultAiMode || 'byok'));
+  let selectedByokProvider = $derived(aiProviders.find(p => p.id === ($settings.aiProvider || 'anthropic')));
+  let cachedCloudModels = $derived(Array.isArray($settings.cloudModelCache) ? $settings.cloudModelCache : []);
+  let effectiveCloudModels = $derived((cloudModels && cloudModels.length > 0) ? cloudModels : cachedCloudModels);
+
+  function cloudModelProvider(model) {
+    if (model.provider) return String(model.provider).toLowerCase();
+    if (model.vendor) return String(model.vendor).toLowerCase();
+    const id = String(model.id || '').toLowerCase();
+    if (id.startsWith('claude')) return 'anthropic';
+    if (id.startsWith('gpt') || /^o\d/.test(id)) return 'openai';
+    return 'other';
+  }
+
+  let cloudProviderOptions = $derived([
+    { value: 'all', label: 'All Providers' },
+    ...(Array.from(new Set(effectiveCloudModels.map(cloudModelProvider))).includes('anthropic')
+      ? [{ value: 'anthropic', label: 'Anthropic' }]
+      : []),
+    ...(Array.from(new Set(effectiveCloudModels.map(cloudModelProvider))).includes('openai')
+      ? [{ value: 'openai', label: 'OpenAI' }]
+      : [])
+  ]);
+
+  let filteredCloudModels = $derived(
+    cloudProviderFilter === 'all'
+      ? effectiveCloudModels
+      : effectiveCloudModels.filter(m => cloudModelProvider(m) === cloudProviderFilter)
+  );
+
+  $effect(() => {
+    if (aiMode !== 'cloud' || !$cloudReady) {
+      attemptedCloudRefresh = false;
+      return;
+    }
+    if (effectiveCloudModels.length > 0 || refreshingModels || attemptedCloudRefresh) return;
+    attemptedCloudRefresh = true;
+    refreshAvailableModels();
+  });
+
+  $effect(() => {
+    if (cloudProviderFilter === 'all') return;
+    if (effectiveCloudModels.length === 0) return;
+    if (filteredCloudModels.length > 0) return;
+    cloudProviderFilter = 'all';
+  });
 
   onMount(async () => {
     setupStatus = await window.api.setup.getStatus();
     appVersion = await window.api.app.getVersion();
     updateStatus = await window.api.app.getUpdateStatus();
-    aiProviders = await window.api.ai.getProviders();
-    aiConfig = await window.api.ai.getConfig();
+    await refreshAvailableModels();
+
     unsubUpdateStatus = window.api.app.onUpdateStatus((status) => {
       updateStatus = status;
       checkingUpdates = status?.state === 'checking';
@@ -37,7 +96,41 @@
 
   onDestroy(() => {
     unsubUpdateStatus?.();
+    unsubLogin?.();
   });
+
+  async function startLogin() {
+    signingIn = true;
+    deviceStage = 'requesting';
+    deviceErrorMessage = null;
+
+    unsubLogin = window.api.cloud.onLoginProgress((data) => {
+      if (data.stage === 'device') {
+        deviceStage = 'device';
+        deviceUserCode = data.userCode;
+        deviceVerificationUri = data.verificationUri;
+      } else if (data.stage === 'approved') {
+        deviceStage = 'approved';
+      } else if (data.stage === 'complete') {
+        deviceStage = null;
+        signingIn = false;
+        unsubLogin?.();
+      } else if (data.stage === 'error') {
+        deviceStage = 'error';
+        deviceErrorMessage = data.message || 'Sign in failed. Please try again.';
+        signingIn = false;
+        unsubLogin?.();
+      }
+    });
+
+    try {
+      await login();
+    } catch {
+      // error already handled via loginProgress events
+    } finally {
+      signingIn = false;
+    }
+  }
 
   async function browseFolder() {
     try {
@@ -53,6 +146,11 @@
 
   function setTheme(theme) {
     updateSetting('theme', theme);
+  }
+
+  function setDefaultAiMode(mode) {
+    updateSetting('defaultAiMode', mode);
+    updateSetting('aiModeInitialized', true);
   }
 
   async function setAiProvider(provider) {
@@ -71,6 +169,61 @@
     keySuccess = '';
   }
 
+  async function refreshAvailableModels() {
+    refreshingModels = true;
+    cloudModelLoadError = '';
+    try {
+      aiProviders = await window.api.ai.getProviders();
+      aiConfig = await window.api.ai.getConfig();
+      if ($cloudReady) {
+        try {
+          const fetched = (await window.api.ai.getCloudModels()) || [];
+          cloudModels = fetched;
+          if (fetched.length > 0) {
+            await updateSetting('cloudModelCache', fetched);
+          }
+        } catch (err) {
+          cloudModels = [];
+          cloudModelLoadError = err?.message || 'Could not refresh cloud models.';
+        }
+      } else {
+        cloudModels = [];
+      }
+
+      const providerId = $settings.aiProvider || 'anthropic';
+      const provider = aiProviders.find(p => p.id === providerId);
+      const configuredModel = $settings.aiModel;
+      const hasConfiguredModel = provider?.models?.some(m => m.id === configuredModel);
+      if (provider?.models?.length && !hasConfiguredModel) {
+        const fallbackModel = provider.models.find(m => m.default)?.id || provider.models[0].id;
+        await window.api.ai.setModel(fallbackModel);
+        updateSetting('aiModel', fallbackModel);
+      }
+
+      if ($cloudReady) {
+        await loadCredits();
+      }
+
+      const selectedProvider = aiProviders.find(p => p.id === ($settings.aiProvider || 'anthropic'));
+      if (selectedProvider?.hasKey && selectedProvider?.modelFetchFailed) {
+        showToast({
+          type: 'error',
+          message: selectedProvider.modelFetchError || `Could not fetch models from ${selectedProvider.name}. Check API key permissions and network.`
+        });
+      }
+
+      const configuredCloudModel = $settings.cloudAiModel;
+      const hasConfiguredCloudModel = effectiveCloudModels.some(m => m.id === configuredCloudModel);
+      if (effectiveCloudModels.length > 0 && !hasConfiguredCloudModel) {
+        await updateSetting('cloudAiModel', effectiveCloudModels[0].id);
+      }
+    } catch (err) {
+      showToast({ type: 'error', message: err?.message || 'Failed to refresh available models.' });
+    } finally {
+      refreshingModels = false;
+    }
+  }
+
   async function setAiModel(model) {
     await window.api.ai.setModel(model);
     updateSetting('aiModel', model);
@@ -86,8 +239,7 @@
       if (result.valid) {
         keySuccess = 'API key saved and verified!';
         apiKeyInput = '';
-        aiProviders = await window.api.ai.getProviders();
-        aiConfig = await window.api.ai.getConfig();
+        await refreshAvailableModels();
       } else {
         keyError = result.error || 'Invalid API key';
       }
@@ -99,8 +251,7 @@
 
   async function removeKey() {
     await window.api.ai.removeApiKey($settings.aiProvider);
-    aiProviders = await window.api.ai.getProviders();
-    aiConfig = await window.api.ai.getConfig();
+    await refreshAvailableModels();
     keySuccess = '';
   }
 
@@ -286,15 +437,15 @@
           <div class="mode-toggle">
             <button
               class="mode-btn"
-              class:active={($settings.defaultAiMode || 'byok') === 'byok'}
-              onclick={() => updateSetting('defaultAiMode', 'byok')}
-            >Your Key</button>
-            <button
-              class="mode-btn"
               class:active={$settings.defaultAiMode === 'cloud'}
-              onclick={() => updateSetting('defaultAiMode', 'cloud')}
+              onclick={() => setDefaultAiMode('cloud')}
               disabled={!$cloudReady}
             >Cloud</button>
+            <button
+              class="mode-btn"
+              class:active={($settings.defaultAiMode || 'byok') === 'byok'}
+              onclick={() => setDefaultAiMode('byok')}
+            >Your Key</button>
           </div>
         </div>
       </div>
@@ -302,73 +453,153 @@
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Provider</span>
-          <span class="setting-desc">Choose your AI provider.</span>
+          <span class="setting-desc">
+            {#if aiMode === 'cloud'}
+              Filter cloud models by provider.
+            {:else}
+              Choose your AI provider.
+            {/if}
+          </span>
         </div>
         <div class="setting-control">
-          <select
-            value={$settings.aiProvider || 'anthropic'}
-            onchange={(e) => setAiProvider(e.target.value)}
-          >
-            {#each aiProviders as p}
-              <option value={p.id}>{p.name}</option>
-            {/each}
-          </select>
+          {#if aiMode === 'cloud'}
+            <select value={cloudProviderFilter} onchange={(e) => cloudProviderFilter = e.target.value}>
+              {#each cloudProviderOptions as p}
+                <option value={p.value}>{p.label}</option>
+              {/each}
+            </select>
+          {:else}
+            <select value={$settings.aiProvider || 'anthropic'} onchange={(e) => setAiProvider(e.target.value)}>
+              {#if aiProviders.length === 0}
+                <option value="">No providers available</option>
+              {/if}
+              {#each aiProviders as p}
+                <option value={p.id}>{p.name}</option>
+              {/each}
+            </select>
+          {/if}
         </div>
       </div>
+
+      {#if aiMode !== 'cloud'}
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">API Key</span>
+            <span class="setting-desc">
+              {#if aiConfig.hasKey}
+                ✅ Key configured.
+                <button class="btn-ghost text-sm" style="color: var(--error)" onclick={removeKey}>Remove</button>
+              {:else}
+                Get yours at <button type="button" class="provider-doc-link" onclick={() => window.api.setup.openDownloadPage($settings.aiProvider)}>
+                  {aiProviders.find(p => p.id === $settings.aiProvider)?.name || 'provider'} docs
+                </button>
+              {/if}
+            </span>
+          </div>
+          {#if !aiConfig.hasKey}
+            <div class="setting-control">
+              <div class="key-input-group">
+                <input
+                  type="password"
+                  bind:value={apiKeyInput}
+                  placeholder={aiProviders.find(p => p.id === $settings.aiProvider)?.keyPlaceholder || 'Enter API key'}
+                  class="key-input"
+                  onkeydown={(e) => e.key === 'Enter' && saveApiKey()}
+                />
+                <button class="btn-primary btn-sm" onclick={saveApiKey} disabled={savingKey || !apiKeyInput.trim()}>
+                  {savingKey ? 'Verifying…' : 'Save'}
+                </button>
+              </div>
+              {#if keyError}
+                <p class="key-error">{keyError}</p>
+              {/if}
+              {#if keySuccess}
+                <p class="key-success">{keySuccess}</p>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Cloud Account</span>
+            <span class="setting-desc">
+              {#if $cloudReady}
+                Using your signed-in CourseCode Cloud account for AI.
+              {:else}
+                Sign in to CourseCode Cloud to use cloud AI models.
+              {/if}
+            </span>
+          </div>
+          <div class="setting-control">
+            {#if !$cloudReady}
+              <button class="btn-primary btn-sm" onclick={startLogin} disabled={signingIn}>Sign In</button>
+            {:else}
+              <span class="text-secondary text-sm">Connected</span>
+            {/if}
+          </div>
+        </div>
+      {/if}
 
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Model</span>
           <span class="setting-desc">Select the AI model to use.</span>
+          {#if aiMode === 'cloud' && !$cloudReady}
+            <span class="setting-desc">Sign in to CourseCode Cloud to load cloud models.</span>
+          {/if}
+          {#if aiMode !== 'cloud' && !selectedByokProvider?.hasKey}
+            <span class="setting-desc">Add an API key to load models.</span>
+          {/if}
+          {#if aiMode !== 'cloud' && selectedByokProvider?.hasKey && selectedByokProvider?.modelFetchFailed}
+            <span class="setting-desc" style="color: var(--error)">Unable to load provider models. Click Refresh after fixing key/network.</span>
+          {/if}
+          {#if aiMode === 'cloud' && $cloudReady && effectiveCloudModels.length === 0}
+            <span class="setting-desc" style="color: var(--error)">No cloud models available yet. Refresh after first successful cloud connection.</span>
+          {/if}
+          {#if aiMode === 'cloud' && $cloudReady && effectiveCloudModels.length > 0 && filteredCloudModels.length === 0}
+            <span class="setting-desc" style="color: var(--error)">No cloud models available for this provider filter.</span>
+          {/if}
+          {#if aiMode === 'cloud' && $cloudReady && cloudModelLoadError && cachedCloudModels.length > 0}
+            <span class="setting-desc" style="color: var(--warning)">Cloud refresh failed, showing last known model list.</span>
+          {/if}
         </div>
         <div class="setting-control">
-          <select
-            value={$settings.aiModel || ''}
-            onchange={(e) => setAiModel(e.target.value)}
-          >
-            {#each (aiProviders.find(p => p.id === $settings.aiProvider)?.models || []) as m}
-              <option value={m.id}>{m.label}</option>
-            {/each}
-          </select>
-        </div>
-      </div>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">API Key</span>
-          <span class="setting-desc">
-            {#if aiConfig.hasKey}
-              ✅ Key configured.
-              <button class="btn-ghost text-sm" style="color: var(--error)" onclick={removeKey}>Remove</button>
+          <div class="model-row">
+            {#if aiMode === 'cloud'}
+              <select
+                value={$settings.cloudAiModel || ''}
+                onchange={(e) => updateSetting('cloudAiModel', e.target.value)}
+                disabled={!$cloudReady || filteredCloudModels.length === 0}
+              >
+                {#if filteredCloudModels.length === 0}
+                  <option value="">No cloud models available</option>
+                {/if}
+                {#each filteredCloudModels as m}
+                  <option value={m.id}>{m.label || m.name || m.id}</option>
+                {/each}
+              </select>
             {:else}
-              Get yours at <button type="button" class="provider-doc-link" onclick={() => window.api.setup.openDownloadPage($settings.aiProvider)}>
-                {aiProviders.find(p => p.id === $settings.aiProvider)?.name || 'provider'} docs
-              </button>
+              <select
+                value={$settings.aiModel || ''}
+                onchange={(e) => setAiModel(e.target.value)}
+                disabled={!selectedByokProvider?.hasKey || !(selectedByokProvider?.models?.length)}
+              >
+                {#if !selectedByokProvider?.hasKey}
+                  <option value="">Add API key to load models</option>
+                {:else if !(selectedByokProvider?.models?.length)}
+                  <option value="">No BYOK models available</option>
+                {/if}
+                {#each (selectedByokProvider?.models || []) as m}
+                  <option value={m.id}>{m.label}</option>
+                {/each}
+              </select>
             {/if}
-          </span>
-        </div>
-        {#if !aiConfig.hasKey}
-          <div class="setting-control">
-            <div class="key-input-group">
-              <input
-                type="password"
-                bind:value={apiKeyInput}
-                placeholder={aiProviders.find(p => p.id === $settings.aiProvider)?.keyPlaceholder || 'Enter API key'}
-                class="key-input"
-                onkeydown={(e) => e.key === 'Enter' && saveApiKey()}
-              />
-              <button class="btn-primary btn-sm" onclick={saveApiKey} disabled={savingKey || !apiKeyInput.trim()}>
-                {savingKey ? 'Verifying…' : 'Save'}
-              </button>
-            </div>
-            {#if keyError}
-              <p class="key-error">{keyError}</p>
-            {/if}
-            {#if keySuccess}
-              <p class="key-success">{keySuccess}</p>
-            {/if}
+            <button class="btn-secondary btn-sm" onclick={refreshAvailableModels} disabled={refreshingModels}>
+              {refreshingModels ? 'Refreshing…' : 'Refresh'}
+            </button>
           </div>
-        {/if}
+        </div>
       </div>
 
       <div class="setting-row">
@@ -418,7 +649,37 @@
           </div>
         {/if}
       {:else}
-        <button class="btn-primary" onclick={login}>Sign In to CourseCode Cloud</button>
+        <button class="btn-primary" onclick={startLogin} disabled={signingIn}>Sign In to CourseCode Cloud</button>
+
+        {#if deviceStage === 'requesting'}
+          <p class="text-secondary text-sm mt-sm">Connecting…</p>
+        {:else if deviceStage === 'device'}
+          <div class="device-auth-card mt-md">
+            <p class="device-step"><span class="device-step-num">1</span> Open this page in your browser:</p>
+            <div class="device-url-row">
+              <code class="device-url">{deviceVerificationUri}</code>
+              <button class="btn-primary btn-sm" onclick={() => window.api.shell.openExternal(deviceVerificationUri)}>Open Page</button>
+            </div>
+            <p class="device-step mt-md"><span class="device-step-num">2</span> Enter this code when prompted:</p>
+            <div class="device-code-row">
+              <span class="device-code">{deviceUserCode}</span>
+              <button class="btn-secondary btn-sm" onclick={() => navigator.clipboard.writeText(deviceUserCode)}>Copy</button>
+            </div>
+            <p class="text-secondary text-sm mt-md">⏳ Waiting for you to approve in the browser…</p>
+          </div>
+        {:else if deviceStage === 'approved'}
+          <p class="text-secondary text-sm mt-sm">Approved! Signing in…</p>
+        {:else if deviceStage === 'error'}
+          <p class="login-error mt-sm">{deviceErrorMessage || 'Sign in failed. Please try again.'}</p>
+        {:else if $loginError}
+          <p class="login-error mt-sm">
+            {#if $loginError.code === 'FIREWALL_BLOCK'}
+              🔒 Your network is blocking CourseCode Cloud. Ask IT to allow access, or try from a different network.
+            {:else}
+              {$loginError.message || 'Sign in failed. Please try again.'}
+            {/if}
+          </p>
+        {/if}
       {/if}
     </section>
 
@@ -516,6 +777,18 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+  }
+
+  .model-row {
+    display: flex;
+    gap: var(--sp-sm);
+    width: 100%;
+    align-items: center;
+  }
+
+  .model-row select {
+    flex: 1;
+    min-width: 0;
   }
 
   .setting-label {
@@ -659,6 +932,16 @@
     margin: var(--sp-xs) 0 0;
   }
 
+  .login-error {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    background: var(--warning-subtle);
+    border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent);
+    border-radius: var(--radius-sm);
+    padding: var(--sp-sm) var(--sp-md);
+    line-height: 1.5;
+  }
+
   .custom-instructions {
     width: 100%;
     font-family: inherit;
@@ -750,5 +1033,73 @@
     font-size: inherit;
     font-weight: 500;
     cursor: pointer;
+  }
+
+  /* Device code auth card */
+  :global(.device-auth-card) {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--sp-lg);
+  }
+  :global(.device-step) {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm);
+    margin: 0;
+  }
+  :global(.device-step-num) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  :global(.device-url-row) {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm);
+    margin-top: var(--sp-sm);
+    flex-wrap: wrap;
+  }
+  :global(.device-url) {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--bg-primary);
+    padding: var(--sp-xs) var(--sp-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  :global(.device-code-row) {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-md);
+    margin-top: var(--sp-sm);
+  }
+  :global(.device-code) {
+    font-family: var(--font-mono);
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 2px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: var(--sp-sm) var(--sp-lg);
   }
 </style>

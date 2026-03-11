@@ -6,11 +6,11 @@ import { loadSettings, getSetting, saveSetting } from './settings.js';
 import { buildMenu } from './menu.js';
 import { createLogger } from './logger.js';
 import { initAutoUpdater, checkForUpdates } from './update-manager.js';
-
+import { injectSystemCerts } from './cloud-certs.js';
 import { killAllPreviews } from './preview-manager.js';
 
 const log = createLogger('app');
-const iconPath = join(__dirname, '../../build/icon.png');
+const iconPath = join(__dirname, `../../build/${process.platform === 'win32' ? 'icon.ico' : 'icon.png'}`);
 
 // Allow e2e tests to override userData dir for isolation
 if (process.env.ELECTRON_USER_DATA_DIR) {
@@ -79,7 +79,11 @@ function createWindow() {
     }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+    // Inject OS system CAs before any HTTPS calls (LLM providers, cloud, updater).
+    // Corporate proxies (Zscaler, Netskope) use custom CAs that Node doesn't trust.
+    await injectSystemCerts();
+
     log.info('App ready', { version: app.getVersion(), packaged: app.isPackaged });
     loadSettings();
     registerIpcHandlers();

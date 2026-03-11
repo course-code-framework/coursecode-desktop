@@ -16,8 +16,6 @@ describe('tool-registry.json', () => {
     it('has all expected tools', () => {
         const toolIds = Object.keys(registry.tools);
         expect(toolIds).toContain('cli');
-        expect(toolIds).toContain('claudeCode');
-        expect(toolIds).toContain('vscode');
         expect(toolIds).toContain('git');
         expect(toolIds).toContain('githubDesktop');
     });
@@ -37,22 +35,7 @@ describe('tool-registry.json', () => {
         }
     });
 
-    it('claudeCode has MCP config metadata', () => {
-        const cc = registry.tools.claudeCode;
-        expect(cc.mcp).toBeTruthy();
-        expect(cc.mcp.configDir).toBeTruthy();
-        expect(cc.mcp.configFile).toBeTruthy();
-        expect(cc.mcp.serverKey).toBeTruthy();
-        expect(cc.mcp.entry).toBeTruthy();
-        expect(cc.mcp.detectKeys).toBeTruthy();
-        expect(Array.isArray(cc.mcp.detectKeys)).toBe(true);
-    });
 
-    it('MCP entry has course code command', () => {
-        const entry = registry.tools.claudeCode.mcp.entry;
-        expect(entry.command).toBe('coursecode');
-        expect(entry.args).toContain('mcp');
-    });
 
     it('cli tool has install configuration', () => {
         const cli = registry.tools.cli;
@@ -76,8 +59,8 @@ describe('getToolMeta', () => {
 
     it('returns metadata for known tools', () => {
         expect(getToolMeta('cli')).toBeTruthy();
-        expect(getToolMeta('claudeCode')).toBeTruthy();
-        expect(getToolMeta('vscode')).toBeTruthy();
+        expect(getToolMeta('git')).toBeTruthy();
+        expect(getToolMeta('githubDesktop')).toBeTruthy();
     });
 
     it('returns null for unknown tools', () => {

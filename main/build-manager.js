@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { copyFile } from 'fs/promises';
 import { readdir, stat } from 'fs/promises';
 import { shell } from 'electron';
 import { getChildEnv, getCLISpawnArgs } from './node-env.js';
@@ -11,9 +12,13 @@ const log = createLogger('build');
 
 /**
  * Build and export a course project.
- * Returns { zipPath, size, duration }.
+ * @param {string} projectPath
+ * @param {string} format - LMS format (cmi5, scorm2004, etc.)
+ * @param {string|null} savePath - User-chosen save location; if provided, the zip is copied there
+ * @param {Electron.WebContents} webContents
+ * @returns {{ zipPath: string, savedPath: string|null, size: number, duration: number }}
  */
-export async function exportBuild(projectPath, format, webContents) {
+export async function exportBuild(projectPath, format, savePath, webContents) {
     const startTime = Date.now();
 
     // Auto-snapshot before export
@@ -53,9 +58,21 @@ export async function exportBuild(projectPath, format, webContents) {
 
             if (zipPath) {
                 const zipStat = await stat(zipPath);
-                resolve({ zipPath, size: zipStat.size, duration });
+                let savedPath = null;
+
+                // Copy to user-chosen location if specified
+                if (savePath) {
+                    try {
+                        await copyFile(zipPath, savePath);
+                        savedPath = savePath;
+                    } catch (err) {
+                        log.error('Failed to copy export to save path', err);
+                    }
+                }
+
+                resolve({ zipPath, savedPath, size: zipStat.size, duration });
             } else {
-                resolve({ zipPath: null, size: 0, duration });
+                resolve({ zipPath: null, savedPath: null, size: 0, duration });
             }
         });
 

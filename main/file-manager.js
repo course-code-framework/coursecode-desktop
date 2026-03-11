@@ -8,7 +8,7 @@
 
 import { readFile as fsReadFile, writeFile as fsWriteFile } from 'fs/promises';
 import { readdir, stat } from 'fs/promises';
-import { join, resolve, relative, extname, basename } from 'path';
+import { join, resolve, relative, extname, basename, sep } from 'path';
 import { createLogger } from './logger.js';
 
 const log = createLogger('file-manager');
@@ -40,7 +40,7 @@ const LANGUAGE_MAP = {
 function assertWithinProject(projectPath, resolvedPath) {
     const root = resolve(projectPath);
     const target = resolve(resolvedPath);
-    if (!target.startsWith(root + '/') && target !== root) {
+    if (!target.startsWith(root + sep) && target !== root) {
         throw new Error('Path escapes project root');
     }
 }

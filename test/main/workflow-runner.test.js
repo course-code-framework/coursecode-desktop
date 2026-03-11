@@ -11,6 +11,12 @@ vi.mock('../../main/llm-provider.js', () => ({
     createProvider: vi.fn(),
     loadApiKey: vi.fn(() => 'sk-test-key'),
     estimateCost: vi.fn(() => ({ inputCost: 0, outputCost: 0 })),
+    getProviders: vi.fn(async () => ([
+        {
+            id: 'anthropic',
+            models: [{ id: 'claude-3-5-sonnet-latest', label: 'Claude Sonnet', default: true }]
+        }
+    ])),
 }));
 
 // Mock settings

@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import { app } from 'electron';
 import { join, dirname } from 'path';
 import { existsSync } from 'fs';
@@ -83,22 +84,61 @@ export function npmSpawnArgs(npmArgs) {
 }
 
 /**
+ * Kill a child process and all of its descendants (the entire process tree).
+ *
+ * On Windows, uses `taskkill /T /F` which walks the tree natively.
+ * On Unix, kills the process group (requires the child to have been spawned
+ * with `detached: true` so it becomes the process group leader).
+ * Falls back to a direct `child.kill()` if tree kill fails.
+ *
+ * Safe to call on an already-dead process (silently no-ops).
+ */
+export function killProcessTree(child, signal = 'SIGTERM') {
+    if (!child || child.killed || child.exitCode !== null) return;
+
+    const pid = child.pid;
+    if (!pid) return;
+
+    try {
+        if (process.platform === 'win32') {
+            // taskkill /T kills the entire process tree; /F forces termination.
+            // Windows console processes don't handle SIGTERM, so /F is always used.
+            execSync(`taskkill /pid ${pid} /T /F`, {
+                windowsHide: true,
+                stdio: 'ignore',
+                timeout: 5000
+            });
+        } else {
+            // Kill the process group via negative PID.
+            // This requires the child to have been spawned with detached: true.
+            process.kill(-pid, signal);
+        }
+    } catch (err) {
+        // ESRCH = no such process (already dead). "not found" = taskkill on Windows.
+        if (err.code !== 'ESRCH' && !err.message?.includes('not found')) {
+            try { child.kill(signal); } catch { /* already dead */ }
+        }
+    }
+}
+
+/**
  * Get the command + args to spawn the `coursecode` CLI.
- * In dev mode, `coursecode` is globally installed and on PATH.
- * In production, resolve from the bundled node_modules dependency.
+ * Resolves the CLI bin from node_modules in both dev and production,
+ * avoiding Windows .cmd shim issues with spawn().
  * Returns { command, args } — append CLI subcommand args to `args`.
  */
 export function getCLISpawnArgs(cliArgs = []) {
-    if (!isPackaged) {
-        return { command: 'coursecode', args: cliArgs };
-    }
+    // Resolve CLI from node_modules directly (avoids Windows .cmd shim ENOENT).
+    // Dev: __dirname is out/main/, so ../../node_modules
+    // Production: __dirname is <app>/main/, so ../node_modules
+    const nmBase = isPackaged
+        ? join(__dirname, '..', 'node_modules')
+        : join(__dirname, '..', '..', 'node_modules');
+    const cliBin = join(nmBase, 'coursecode', 'bin', 'cli.js');
 
-    // Production: resolve CLI from bundled node_modules
-    // We can't use require.resolve for the bin file (blocked by exports map),
-    // but the file is on disk — just construct the path directly.
-    const cliBin = join(__dirname, '..', 'node_modules', 'coursecode', 'bin', 'cli.js');
     if (existsSync(cliBin)) {
-        return { command: getNodePath(), args: [cliBin, ...cliArgs] };
+        const nodeCmd = isPackaged ? getNodePath() : 'node';
+        return { command: nodeCmd, args: [cliBin, ...cliArgs] };
     }
 
     // Fallback: assume it's on PATH (e.g. globally installed via Setup Assistant)

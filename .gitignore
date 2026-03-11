@@ -3,5 +3,6 @@ out/
 dist/
 *.zip
 .DS_Store
+.env
 coverage/
 e2e-results/

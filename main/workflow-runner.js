@@ -8,9 +8,9 @@
 
 import { join } from 'path';
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'fs';
-import { createProvider, loadApiKey, estimateCost } from './llm-provider.js';
+import { createProvider, loadApiKey, estimateCost, getProviders } from './llm-provider.js';
 import { getAllSettings } from './settings.js';
-import { WORKFLOW_CONFIGS, DEFAULT_PROVIDER, DEFAULT_MODEL, MAX_TOKENS } from './ai-config.js';
+import { WORKFLOW_CONFIGS, DEFAULT_PROVIDER, MAX_TOKENS } from './ai-config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('workflow');
@@ -200,8 +200,17 @@ async function runBuildCourse(projectPath, config, emit, signal) {
 async function runLLMConversation({ systemPrompt, userMessage, signal, onStream }) {
     const settings = getAllSettings();
     const providerName = settings.aiProvider || DEFAULT_PROVIDER;
-    const modelId = settings.aiModel || DEFAULT_MODEL;
+    const providerCatalog = await getProviders();
+    const providerModels = providerCatalog.find(p => p.id === providerName)?.models || [];
+    const configuredModel = settings.aiModel;
+    const modelId = providerModels.some(m => m.id === configuredModel)
+        ? configuredModel
+        : (providerModels.find(m => m.default)?.id || providerModels[0]?.id);
     const apiKey = loadApiKey(providerName);
+
+    if (!modelId) {
+        throw new Error(`No models available for provider: ${providerName}`);
+    }
 
     if (!apiKey) {
         throw new Error(`No API key configured for ${providerName}. Set one in Settings.`);

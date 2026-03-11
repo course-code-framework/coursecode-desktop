@@ -7,13 +7,13 @@ import { getCLISpawnArgs, getChildEnv } from './node-env.js';
  * List reference markdown documents for a project.
  */
 export function listRefs(projectPath) {
-    const mdDir = join(projectPath, 'course', 'references', 'md');
-    if (!existsSync(mdDir)) return [];
+    const convertedDir = join(projectPath, 'course', 'references', 'converted');
+    if (!existsSync(convertedDir)) return [];
 
-    return readdirSync(mdDir)
+    return readdirSync(convertedDir)
         .filter(f => f.endsWith('.md'))
         .map(filename => {
-            const filePath = join(mdDir, filename);
+            const filePath = join(convertedDir, filename);
             const stat = statSync(filePath);
             return {
                 filename,
@@ -29,7 +29,7 @@ export function listRefs(projectPath) {
  * Read a specific reference document's content.
  */
 export function readRef(projectPath, filename) {
-    const filePath = join(projectPath, 'course', 'references', 'md', filename);
+    const filePath = join(projectPath, 'course', 'references', 'converted', filename);
     if (!existsSync(filePath)) {
         throw new Error(`Reference document not found: ${filename}`);
     }
@@ -39,21 +39,25 @@ export function readRef(projectPath, filename) {
 }
 
 /**
- * Convert a dropped file by copying to raw/ and running `coursecode ingest`.
+ * Convert a dropped file by copying to raw/ and running `coursecode convert`.
  * Returns a promise that resolves with { success, outputFile } or rejects with an error.
  */
 export function convertRef(projectPath, filePath, webContents) {
     return new Promise((resolve, reject) => {
-        const rawDir = join(projectPath, 'course', 'references', 'raw');
-        if (!existsSync(rawDir)) mkdirSync(rawDir, { recursive: true });
+        if (!filePath) {
+            return reject(new Error('No file path provided. Try dragging the file again.'));
+        }
 
-        // Copy file to raw/
+        const refsDir = join(projectPath, 'course', 'references');
+        if (!existsSync(refsDir)) mkdirSync(refsDir, { recursive: true });
+
+        // Copy file to references/
         const filename = filePath.split('/').pop().split('\\').pop();
-        const destPath = join(rawDir, filename);
+        const destPath = join(refsDir, filename);
         copyFileSync(filePath, destPath);
 
-        // Run ingest
-        const { command, args } = getCLISpawnArgs(['ingest', join(projectPath, 'course', 'references')]);
+        // Run convert on the references directory
+        const { command, args } = getCLISpawnArgs(['convert', refsDir]);
         const child = spawn(command, args, {
             cwd: projectPath,
             env: getChildEnv(),

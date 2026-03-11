@@ -80,6 +80,14 @@ describe('translateError', () => {
         expect(result.message).toContain('Setup Assistant');
     });
 
+    it('returns STALE_CLOUD_BINDING for deleted linked cloud courses', () => {
+        const err = new Error('Cloud course was deleted. Local binding is stale.');
+        err.code = 'STALE_CLOUD_BINDING';
+        const result = translateError(err);
+        expect(result.code).toBe('STALE_CLOUD_BINDING');
+        expect(result.message).toContain('no longer exists');
+    });
+
     it('returns ENCRYPTION_UNAVAILABLE for safeStorage errors', () => {
         const err = new Error('safeStorage is not available');
         const result = translateError(err);
@@ -98,6 +106,26 @@ describe('translateError', () => {
         err.cause = { code: 'ETIMEDOUT' };
         const result = translateError(err);
         expect(result.code).toBe('NETWORK_ERROR');
+    });
+
+    it('returns FIREWALL_BLOCK for HTML responses', () => {
+        const err = new Error("Unexpected token '<'");
+        const result = translateError(err);
+        expect(result.code).toBe('FIREWALL_BLOCK');
+    });
+
+    it('returns CANCELLED for AbortError', () => {
+        const err = new DOMException('The operation was aborted', 'AbortError');
+        const result = translateError(err);
+        expect(result.code).toBe('CANCELLED');
+        expect(result.message).toContain('cancelled');
+    });
+
+    it('returns TRASH_FAILED for "Operation was aborted" from shell.trashItem', () => {
+        const err = new Error('Operation was aborted');
+        const result = translateError(err);
+        expect(result.code).toBe('TRASH_FAILED');
+        expect(result.message).toContain('trash');
     });
 
     it('returns INTERNAL with message for unknown errors', () => {

@@ -40,8 +40,8 @@ export const COURSE_SPECIFIC_RULES = `COURSE-SPECIFIC OPTIMIZATION:
 export const MAX_TOKENS = 8192;
 
 export const DEFAULT_PROVIDER = 'anthropic';
-export const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
-export const DEFAULT_CLOUD_MODEL = 'claude-sonnet-4';
+export const DEFAULT_MODEL = null;
+export const DEFAULT_CLOUD_MODEL = null;
 
 // ---------------------------------------------------------------------------
 // Tool Definitions (sent to the LLM)

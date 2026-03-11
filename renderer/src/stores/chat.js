@@ -202,6 +202,8 @@ export async function sendMessage(projectPath, text, mentions = []) {
     chatPlan.set({ status: 'started', steps: [], note: '' });
     let mode;
     aiMode.subscribe(v => mode = v)();
+    await window.api.settings.set('defaultAiMode', mode);
+    await window.api.settings.set('aiModeInitialized', true);
     await window.api.chat.send(projectPath, text, mentions, mode);
 }
 

@@ -13,9 +13,11 @@
   let cliError = $state(null);
   let lastSavedStep = $state(null);
   let justDownloadedTool = $state(null);
-  let loginStage = $state(null); // null | 'waiting' | 'complete' | 'error'
+  let loginStage = $state(null); // null | 'requesting' | 'device' | 'approved' | 'complete' | 'error'
   let loginMessage = $state('');
   let loginUser = $state(null);
+  let loginUserCode = $state(null);
+  let loginVerificationUri = $state(null);
   let workflowPreset = $state('ai');
   let unsubInstall = null;
   let unsubLogin = null;
@@ -135,9 +137,24 @@
     loginMessage = 'Opening browser…';
 
     unsubLogin = window.api.cloud.onLoginProgress((data) => {
-      loginStage = data.stage === 'complete' ? 'complete' : data.stage === 'error' ? 'error' : 'waiting';
-      loginMessage = data.message || '';
-      if (data.user) loginUser = data.user;
+      if (data.stage === 'device') {
+        loginStage = 'device';
+        loginUserCode = data.userCode;
+        loginVerificationUri = data.verificationUri;
+      } else if (data.stage === 'approved') {
+        loginStage = 'approved';
+        loginMessage = data.message || 'Approved! Signing in…';
+      } else if (data.stage === 'complete') {
+        loginStage = 'complete';
+        loginMessage = data.message || 'Signed in!';
+        if (data.user) loginUser = data.user;
+      } else if (data.stage === 'error') {
+        loginStage = 'error';
+        loginMessage = data.message || 'Sign in failed. Try again.';
+      } else {
+        loginStage = 'requesting';
+        loginMessage = data.message || 'Connecting…';
+      }
     });
 
     try {
@@ -146,12 +163,22 @@
       loginStage = 'complete';
       loginMessage = 'Signed in!';
       setupStatus = await window.api.setup.getStatus();
-    } catch {
+    } catch (err) {
       loginStage = 'error';
-      loginMessage = 'Sign in failed. Try again.';
+      loginMessage = err?.code === 'FIREWALL_BLOCK'
+        ? "Your network's firewall is blocking CourseCode Cloud. Ask your IT team to allow access, or try from a different network."
+        : 'Sign in failed. Try again.';
     } finally {
       unsubLogin?.();
     }
+  }
+
+  function copyLoginCode() {
+    if (loginUserCode) navigator.clipboard.writeText(loginUserCode);
+  }
+
+  function openActivationPage() {
+    if (loginVerificationUri) window.api.shell.openExternal(loginVerificationUri);
   }
 
   function openDownload(tool) {
@@ -331,14 +358,38 @@
               {/if}
             </div>
           </div>
-        {:else if loginStage === 'waiting'}
+
+        {:else if loginStage === 'requesting'}
+          <div class="status-card neutral mt-lg">
+            <span class="status-emoji spinner">⏳</span>
+            <div>
+              <p class="status-title">Connecting…</p>
+            </div>
+          </div>
+
+        {:else if loginStage === 'device'}
+          <div class="device-auth-card mt-lg">
+            <p class="device-step"><span class="device-step-num">1</span> Open this page in your browser:</p>
+            <div class="device-url-row">
+              <code class="device-url">{loginVerificationUri}</code>
+              <button class="btn-primary btn-sm" onclick={openActivationPage}>Open Page</button>
+            </div>
+            <p class="device-step mt-md"><span class="device-step-num">2</span> Enter this code when prompted:</p>
+            <div class="device-code-row">
+              <span class="device-code">{loginUserCode}</span>
+              <button class="btn-secondary btn-sm" onclick={copyLoginCode}>Copy</button>
+            </div>
+            <p class="text-secondary text-sm mt-md">⏳ Waiting for you to approve in the browser…</p>
+          </div>
+
+        {:else if loginStage === 'approved'}
           <div class="status-card neutral mt-lg">
             <span class="status-emoji spinner">⏳</span>
             <div>
               <p class="status-title">{loginMessage}</p>
-              <p class="text-secondary text-sm">Complete sign-in in your browser, then return here.</p>
             </div>
           </div>
+
         {:else if loginStage === 'error'}
           <div class="status-card warning mt-lg">
             <span class="status-emoji">⚠️</span>
@@ -349,6 +400,7 @@
           <button class="btn-primary btn-lg mt-lg" onclick={startLogin}>
             Try Again
           </button>
+
         {:else}
           <div class="status-card neutral mt-lg">
             <span class="status-emoji">☁️</span>
@@ -590,8 +642,8 @@
     transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
   }
 
-  .preset-card:hover {
-    border-color: var(--border-strong);
+  .preset-card:hover:not(.active) {
+    border-color: var(--text-tertiary);
     background: var(--bg-secondary);
   }
 
@@ -616,18 +668,6 @@
     display: flex;
     align-items: center;
     gap: var(--sp-md);
-  }
-
-  .connect-detail {
-    line-height: 1.5;
-  }
-
-  .connect-detail code {
-    font-family: var(--font-mono);
-    font-size: 0.85em;
-    background: var(--bg-secondary);
-    padding: 1px 5px;
-    border-radius: var(--radius-sm);
   }
 
   .error-text {
@@ -670,5 +710,79 @@
     .preset-grid {
       grid-template-columns: 1fr;
     }
+  }
+
+  /* Device code auth card */
+  .device-auth-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--sp-lg);
+  }
+
+  .device-step {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm);
+    margin: 0;
+  }
+
+  .device-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .device-url-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm);
+    margin-top: var(--sp-sm);
+    flex-wrap: wrap;
+  }
+
+  .device-url {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--bg-primary);
+    padding: var(--sp-xs) var(--sp-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .device-code-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-md);
+    margin-top: var(--sp-sm);
+  }
+
+  .device-code {
+    font-family: var(--font-mono);
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 2px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: var(--sp-sm) var(--sp-lg);
   }
 </style>

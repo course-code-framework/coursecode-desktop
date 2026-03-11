@@ -1,24 +1,42 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { projects, loading, refreshProjects } from '../stores/projects.js';
+  import { projects, loading, refreshProjects, updateProject } from '../stores/projects.js';
   import { user, loadCloudUser } from '../stores/auth.js';
   import { settings } from '../stores/settings.js';
   import { tabs } from '../stores/tabs.js';
   import EmptyState from '../components/EmptyState.svelte';
+  import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import Icon from '../components/Icon.svelte';
+  import DeployProgressDialog from '../components/DeployProgressDialog.svelte';
   import { showToast } from '../stores/toast.js';
+  import { popover } from '../actions/popover.js';
+  import { getDisplayErrorMessage } from '../lib/errors.js';
 
   let { onCreateNew, onOpenProject, onCloseProject, onOpenSettings } = $props();
 
   let previewStatuses = $state({});
+  let cloudStatuses = $state({});
   let searchQuery = $state('');
   let formatFilter = $state('all');
   let sortBy = $state('modified'); // 'modified' | 'name' | 'format' | 'created'
   let pinnedPaths = $state(new Set());
   let actionInProgress = $state({});
   let deployPopover = $state(null);
+  let deployPopoverEl = $state(null);
+  let deployAnchorEl = $state(null);
+  let deployPopoverStyle = $state('');
   let deployReason = $state('');
+  let deployPromote = $state(false);
+  let deployPreview = $state(false);
+  let exportPopover = $state(null);
+  let exportFormat = $state('');
+  let deleteDialog = $state(null); // { project, deleteFromCloud: bool }
+  let staleBindingPrompt = $state(null); // { project, message }
   let statusInterval = null;
+  let cloudStatusInterval = null;
+  let refreshingCloudStatuses = $state(false);
+  let deployProgress = $state({});
+  let unsubDeployProgress = null;
 
   const formatLabels = {
     'cmi5': 'cmi5',
@@ -91,21 +109,98 @@
     } catch { /* ignore */ }
   }
 
+  async function refreshCloudStatuses() {
+    if (refreshingCloudStatuses || !$user) {
+      if (!$user) cloudStatuses = {};
+      return;
+    }
+
+    const linkedProjects = $projects.filter((project) => project.cloudId);
+    if (!linkedProjects.length) {
+      cloudStatuses = {};
+      return;
+    }
+
+    refreshingCloudStatuses = true;
+    try {
+      const entries = await Promise.all(
+        linkedProjects.map(async (project) => {
+          try {
+            const status = await window.api.cloud.getDeployStatus(project.path);
+            return [project.path, status];
+          } catch {
+            return [project.path, null];
+          }
+        })
+      );
+
+      const next = {};
+      for (const [path, status] of entries) {
+        if (status) next[path] = status;
+        if (status?.errorCode === 'stale_cloud_binding' && !staleBindingPrompt) {
+          const project = linkedProjects.find((candidate) => candidate.path === path);
+          if (project) {
+            staleBindingPrompt = {
+              project,
+              message: `"${project.title || project.name}" is still linked to a CourseCode Cloud course that no longer exists.`
+            };
+          }
+        }
+        // Detect GitHub-linked courses from the status response
+        const isGithub = status?.source?.type === 'github' || status?.source_type === 'github';
+        const project = linkedProjects.find((candidate) => candidate.path === path);
+        if (project && project.githubLinked !== isGithub) {
+          updateProject(path, { githubLinked: isGithub || undefined });
+        }
+      }
+      cloudStatuses = next;
+    } finally {
+      refreshingCloudStatuses = false;
+    }
+  }
+
   onMount(() => {
     refreshProjects();
     loadCloudUser();
     refreshStatuses();
+    refreshCloudStatuses();
+    unsubDeployProgress = window.api.cloud.onDeployProgress(handleDeployProgress);
     statusInterval = setInterval(refreshStatuses, 3000);
+    cloudStatusInterval = setInterval(refreshCloudStatuses, 60000);
 
     // Load pinned projects from localStorage
     try {
       const saved = localStorage.getItem('coursecode-pinned-projects');
       if (saved) pinnedPaths = new Set(JSON.parse(saved));
     } catch { /* ignore */ }
+
+    document.addEventListener('mousedown', handleDeployOutsideClick);
+    window.addEventListener('resize', updateDeployPopoverPosition);
+    window.addEventListener('scroll', updateDeployPopoverPosition, true);
   });
 
   onDestroy(() => {
     if (statusInterval) clearInterval(statusInterval);
+    if (cloudStatusInterval) clearInterval(cloudStatusInterval);
+    unsubDeployProgress?.();
+    document.removeEventListener('mousedown', handleDeployOutsideClick);
+    window.removeEventListener('resize', updateDeployPopoverPosition);
+    window.removeEventListener('scroll', updateDeployPopoverPosition, true);
+  });
+
+  $effect(() => {
+    if (deployPopover && deployPopoverEl) {
+      requestAnimationFrame(updateDeployPopoverPosition);
+      requestAnimationFrame(updateDeployPopoverPosition);
+    }
+  });
+
+  $effect(() => {
+    if (!$user) {
+      cloudStatuses = {};
+      return;
+    }
+    if ($projects.some((project) => project.cloudId)) refreshCloudStatuses();
   });
 
   function getStatus(path) {
@@ -144,62 +239,427 @@
     }
   }
 
+  function openExportPopover(e, project) {
+    e.stopPropagation();
+    if (actionInProgress[project.path]) return;
+    if (exportPopover === project.path) {
+      exportPopover = null;
+    } else {
+      exportPopover = project.path;
+      exportFormat = project.format || 'cmi5';
+    }
+  }
+
   async function exportBuild(e, project) {
     e.stopPropagation();
+    exportPopover = null;
+    const format = exportFormat || project.format || 'cmi5';
+    const courseName = (project.title || 'course').replace(/[<>:"/\\|?*]/g, '-').replace(/\s+/g, '_').toLowerCase();
+    const defaultName = `${courseName}_${format}.zip`;
+
+    const savePath = await window.api.dialog.saveFile(defaultName);
+    if (!savePath) return;
+
     actionInProgress = { ...actionInProgress, [project.path]: 'building' };
     try {
-      const result = await window.api.build.export(project.path, project.format);
-      if (result.zipPath) {
-        showToast({
-          type: 'success',
-          message: `Build complete — ${(result.size / 1024).toFixed(0)} KB`,
-          action: { label: 'Reveal in Finder', handler: () => window.api.tools.openInFinder(result.zipPath) }
-        });
-      }
+      const result = await window.api.build.export(project.path, format, savePath);
+      const filename = savePath.split('/').pop() || savePath.split('\\').pop();
+      showToast({
+        type: 'success',
+        message: `Exported — ${filename} (${(result.size / 1024).toFixed(0)} KB)`,
+        action: { label: 'Open Folder', handler: () => window.api.tools.openInFinder(result.savedPath || result.zipPath) }
+      });
     } catch (err) {
-      showToast({ type: 'error', message: `Build failed: ${err.message}` });
+      showToast({ type: 'error', message: `Export failed: ${err.message}` });
     }
     delete actionInProgress[project.path];
     actionInProgress = { ...actionInProgress };
+  }
+
+  function resetDeployOptions(project = null) {
+    deployReason = '';
+    deployPromote = false;
+    deployPreview = project ? getCloudPreviewState(project.path) === 'active' : false;
+  }
+
+  function getCloudStatus(path) {
+    return cloudStatuses[path] || null;
+  }
+
+  function getCloudPreviewState(path) {
+    return getCloudStatus(path)?.previewLink?.state || null;
+  }
+
+  function hasActiveCloudPreview(path) {
+    return getCloudPreviewState(path) === 'active';
+  }
+
+  function canUpdatePreviewPointer(path) {
+    return getCloudPreviewState(path) === 'active';
+  }
+
+  function isPreviewLinkBusy(path) {
+    return actionInProgress[path] === 'preview-link';
+  }
+
+  function getDeployProgress(path) {
+    return deployProgress[path] || null;
+  }
+
+  function setDeployProgress(path, nextValue) {
+    deployProgress = { ...deployProgress, [path]: nextValue };
+  }
+
+  function clearDeployProgress(path) {
+    if (!deployProgress[path]) return;
+    const next = { ...deployProgress };
+    delete next[path];
+    deployProgress = next;
+  }
+
+  function getDeployTargetLabel(project, repairBinding = false, overrides = {}) {
+    const preview = Object.prototype.hasOwnProperty.call(overrides, 'preview') ? overrides.preview : deployPreview;
+    const promote = Object.prototype.hasOwnProperty.call(overrides, 'promote') ? overrides.promote : deployPromote;
+    if (repairBinding && preview) return 'Repairing link and updating preview';
+    if (preview) return 'Updating cloud preview';
+    if (repairBinding) return 'Repairing cloud link';
+    if (promote) return 'Deploying to production';
+    if (project.githubLinked) return 'Updating cloud preview';
+    return 'Deploying to CourseCode Cloud';
+  }
+
+  function hasExistingCloudDeployment(project) {
+    return !!project?.cloudId;
+  }
+
+  function canShowProductionUpdate(project) {
+    return hasExistingCloudDeployment(project) && !project?.githubLinked;
+  }
+
+  function getPreviewToggleLabel(project) {
+    return hasExistingCloudDeployment(project) ? 'Preview Link On' : 'Also Turn On Preview';
+  }
+
+  function getPreviewToggleCopy(project) {
+    const currentState = getCloudPreviewState(project.path);
+    if (!hasExistingCloudDeployment(project)) {
+      return deployPreview
+        ? 'Create a preview link and include it when this first deploy finishes.'
+        : 'Deploy without creating a cloud preview link.';
+    }
+
+    if (deployPreview) {
+      return currentState === 'active'
+        ? 'Keep preview on and move it to this latest version.'
+        : 'Turn preview on and point it to this version.';
+    }
+
+    return currentState === 'active'
+      ? 'Turn preview off after this deploy completes.'
+      : 'Leave preview off.';
+  }
+
+  function getPreviewPanelCopy(project) {
+    const previewState = getCloudPreviewState(project.path);
+    if (previewState === 'active') {
+      return hasExistingCloudDeployment(project)
+        ? 'The preview URL is live and can stay synced to the latest deployed version.'
+        : 'The preview URL is live. You can publish this first deploy there too.';
+    }
+    if (previewState === 'expired') {
+      return hasExistingCloudDeployment(project)
+        ? 'The preview URL expired. Turn it back on if you want preview to resume tracking new deploys.'
+        : 'The preview URL expired. Turn it back on before publishing this first deploy there.';
+    }
+    if (previewState === 'disabled') {
+      return hasExistingCloudDeployment(project)
+        ? 'The preview URL is off. Turn it on if you want preview to track this deploy.'
+        : 'The preview URL is off. Turn it on to publish a preview URL with this deploy.';
+    }
+    return hasExistingCloudDeployment(project)
+      ? 'No preview URL exists yet. Turn it on to create one.'
+      : 'No preview URL exists yet. Turn it on to create one for this deploy.';
+  }
+
+  function getPreviewActionButtonLabel(project) {
+    if (!hasExistingCloudDeployment(project)) return null;
+    return getCloudPreviewState(project.path) === 'active' ? 'Open Link' : null;
+  }
+
+  function beginDeployProgress(project, repairBinding = false, overrides = {}) {
+    clearDeployProgress(project.path);
+    setDeployProgress(project.path, {
+      active: true,
+      stage: 'building',
+      message: 'Preparing deployment...',
+      targetLabel: getDeployTargetLabel(project, repairBinding, overrides),
+      dashboardUrl: '',
+      previewUrl: ''
+    });
+  }
+
+  function handleDeployProgress(data) {
+    if (!data?.projectPath) return;
+    const path = data.projectPath;
+    const current = getDeployProgress(path) || {};
+    setDeployProgress(path, {
+      ...current,
+      active: current.active ?? true,
+      stage: data.stage || current.stage || 'building',
+      message: data.message || current.message || 'Preparing deployment...'
+    });
+  }
+
+  function getCloudPreviewLabel(path) {
+    const state = getCloudPreviewState(path);
+    if (!state) return null;
+    if (state === 'active') return 'Preview Live';
+    if (state === 'disabled') return 'Preview Off';
+    if (state === 'expired') return 'Preview Expired';
+    if (state === 'missing') return 'No Preview';
+    return 'Preview';
+  }
+
+  function openCloudPreview(e, project) {
+    e.stopPropagation();
+    const url = getCloudStatus(project.path)?.previewLink?.url;
+    if (url) window.open(url);
+  }
+
+  async function setPreviewLinkState(e, project, enabled, { autoSelectPreview = false } = {}) {
+    e?.stopPropagation?.();
+    actionInProgress = { ...actionInProgress, [project.path]: 'preview-link' };
+    try {
+      const previewLink = getCloudStatus(project.path)?.previewLink;
+      const options = enabled ? { enable: true } : { disable: true };
+      if (enabled && (!previewLink?.exists || previewLink?.state === 'expired')) {
+        options.expiresInDays = 7;
+      }
+
+      await window.api.cloud.updatePreviewLink(project.path, options);
+      await refreshCloudStatuses();
+
+      if (enabled && autoSelectPreview) {
+        deployPreview = true;
+      } else if (!enabled) {
+        deployPreview = false;
+      }
+
+      showToast({
+        type: 'success',
+        message: enabled ? 'Preview link enabled.' : 'Preview link disabled.'
+      });
+    } catch (err) {
+      showToast({ type: 'error', message: `Preview link update failed: ${err.message}` });
+    } finally {
+      delete actionInProgress[project.path];
+      actionInProgress = { ...actionInProgress };
+    }
+  }
+
+  function getDeployOptions(repairBinding = false, overrides = {}) {
+    const options = {};
+    const message = Object.prototype.hasOwnProperty.call(overrides, 'message') ? overrides.message : deployReason.trim();
+    const promote = Object.prototype.hasOwnProperty.call(overrides, 'promote') ? overrides.promote : deployPromote;
+    const preview = Object.prototype.hasOwnProperty.call(overrides, 'preview') ? overrides.preview : deployPreview;
+    if (message) options.message = message;
+    if (promote) options.promote = true;
+    if (preview) options.preview = true;
+    if (repairBinding) options.repairBinding = true;
+    return Object.keys(options).length ? options : undefined;
   }
 
   function openDeployPopover(e, project) {
     e.stopPropagation();
+    if (!$user) {
+      showToast({ type: 'warning', message: 'Sign in to CourseCode Cloud to deploy. Go to Settings → Cloud Account.' });
+      return;
+    }
     if (deployPopover === project.path) {
       deployPopover = null;
+      deployAnchorEl = null;
     } else {
+      deployAnchorEl = e.currentTarget;
       deployPopover = project.path;
-      deployReason = '';
+      resetDeployOptions(project);
     }
   }
 
-  async function confirmDeploy(e, project) {
-    e.stopPropagation();
+  function getDeployPopoverProject() {
+    return $projects.find((project) => project.path === deployPopover) || null;
+  }
+
+  function updateDeployPopoverPosition() {
+    if (!deployAnchorEl || !deployPopoverEl || !deployPopover) return;
+
+    const rect = deployAnchorEl.getBoundingClientRect();
+    const popW = deployPopoverEl.offsetWidth;
+    const popH = deployPopoverEl.offsetHeight;
+    const gap = 8;
+    const margin = 8;
+
+    let left = rect.right - popW;
+    left = Math.max(margin, Math.min(left, window.innerWidth - popW - margin));
+
+    const belowTop = rect.bottom + gap;
+    const aboveTop = rect.top - popH - gap;
+    let top = belowTop;
+    if (belowTop + popH > window.innerHeight - margin && aboveTop >= margin) {
+      top = aboveTop;
+    }
+    top = Math.max(margin, Math.min(top, window.innerHeight - popH - margin));
+
+    deployPopoverStyle = `top:${top}px;left:${left}px;`;
+  }
+
+  function handleDeployOutsideClick(e) {
+    if (!deployPopover) return;
+    if (deployAnchorEl?.contains(e.target)) return;
+    if (deployPopoverEl?.contains(e.target)) return;
     deployPopover = null;
+    deployAnchorEl = null;
+  }
+
+  async function confirmDeploy(e, project, repairBinding = false, overrides = {}) {
+    e?.stopPropagation?.();
+    deployPopover = null;
+    deployAnchorEl = null;
+    beginDeployProgress(project, repairBinding, overrides);
     actionInProgress = { ...actionInProgress, [project.path]: 'deploying' };
+    const desiredPreviewEnabled = Object.prototype.hasOwnProperty.call(overrides, 'preview') ? !!overrides.preview : deployPreview;
+    const initialPreviewState = getCloudPreviewState(project.path);
+    let enabledPreviewForAttempt = false;
     try {
-      const options = deployReason.trim() ? { message: deployReason.trim() } : undefined;
-      const result = await window.api.cloud.deploy(project.path, options);
+      if (desiredPreviewEnabled && initialPreviewState !== 'active' && hasExistingCloudDeployment(project)) {
+        setDeployProgress(project.path, {
+          ...(getDeployProgress(project.path) || {}),
+          message: 'Turning on preview link...'
+        });
+        const previewLink = getCloudStatus(project.path)?.previewLink;
+        const enableOptions = { enable: true };
+        if (!previewLink?.exists || previewLink?.state === 'expired') enableOptions.expiresInDays = 7;
+        await window.api.cloud.updatePreviewLink(project.path, enableOptions);
+        enabledPreviewForAttempt = true;
+        await refreshCloudStatuses();
+      }
+
+      const result = await window.api.cloud.deploy(project.path, getDeployOptions(repairBinding, overrides));
+      // Refresh so cloud icon appears immediately after first deploy
+      await refreshProjects();
+      await refreshCloudStatuses();
+      if (!desiredPreviewEnabled && initialPreviewState === 'active' && hasExistingCloudDeployment(project)) {
+        setDeployProgress(project.path, {
+          ...(getDeployProgress(project.path) || {}),
+          message: 'Turning off preview link...'
+        });
+        await window.api.cloud.updatePreviewLink(project.path, { disable: true });
+        await refreshCloudStatuses();
+      }
+      const previewUrl = desiredPreviewEnabled
+        ? (result?.previewUrl || getCloudStatus(project.path)?.previewLink?.url || null)
+        : null;
+      const actions = [];
+      if (result?.dashboardUrl) actions.push({ label: 'Open in Cloud', handler: () => window.open(result.dashboardUrl) });
+      if (previewUrl) actions.push({ label: 'Open Preview', handler: () => window.open(previewUrl) });
       showToast({
         type: 'success',
-        message: 'Deployed successfully!',
-        action: result?.deployUrl ? { label: 'Open in Browser', handler: () => window.open(result.deployUrl) } : undefined
+        message: repairBinding
+          ? (overrides.preview ? 'Cleared the missing cloud link and updated the preview deployment.' : 'Cleared the missing cloud link and redeployed.')
+          : 'Deployed to CourseCode Cloud!',
+        actions,
+        duration: 8000
+      });
+      setDeployProgress(project.path, {
+        ...(getDeployProgress(project.path) || {}),
+        active: false,
+        stage: 'complete',
+        message: previewUrl ? 'Deployment finished. You can open the preview or cloud dashboard below.' : 'Deployment finished. You can review it in CourseCode Cloud.',
+        dashboardUrl: result?.dashboardUrl || '',
+        previewUrl: previewUrl || ''
+      });
+      resetDeployOptions();
+    } catch (err) {
+      if (enabledPreviewForAttempt) {
+        try {
+          await window.api.cloud.updatePreviewLink(project.path, { disable: true });
+          await refreshCloudStatuses();
+        } catch {
+          // Best effort rollback of preview state when deploy never completed.
+        }
+      }
+      setDeployProgress(project.path, {
+        ...(getDeployProgress(project.path) || {}),
+        active: false,
+        stage: 'error',
+        message: err?.code === 'STALE_CLOUD_BINDING'
+          ? 'This project still points to a deleted CourseCode Cloud course.'
+          : `Deploy failed: ${err.message}`,
+        dashboardUrl: '',
+        previewUrl: ''
+      });
+      if (err?.code === 'STALE_CLOUD_BINDING') {
+        staleBindingPrompt = {
+          project,
+          message: err.message
+        };
+        return;
+      }
+      showToast({ type: 'error', message: `Deploy failed: ${getDisplayErrorMessage(err)}` });
+      resetDeployOptions();
+    } finally {
+      delete actionInProgress[project.path];
+      actionInProgress = { ...actionInProgress };
+    }
+  }
+
+  function dismissStaleBindingPrompt() {
+    staleBindingPrompt = null;
+    resetDeployOptions();
+  }
+
+  async function confirmRepairDeploy() {
+    if (!staleBindingPrompt) return;
+    const { project } = staleBindingPrompt;
+    staleBindingPrompt = null;
+    await confirmDeploy(
+      null,
+      project,
+      true,
+      project.githubLinked ? { preview: true, promote: false } : { preview: getCloudPreviewState(project.path) === 'active' }
+    );
+  }
+
+  async function clearStaleBindingOnly() {
+    if (!staleBindingPrompt) return;
+    const { project } = staleBindingPrompt;
+    staleBindingPrompt = null;
+    actionInProgress = { ...actionInProgress, [project.path]: 'deploying' };
+    try {
+      await window.api.projects.clearCloudBinding(project.path);
+      await refreshProjects();
+      await refreshCloudStatuses();
+      showToast({
+        type: 'success',
+        message: 'Cloud link cleared. This course is no longer deployed.'
       });
     } catch (err) {
-      showToast({ type: 'error', message: `Deploy failed: ${err.message}` });
+      showToast({ type: 'error', message: `Clear link failed: ${err.message}` });
+    } finally {
+      resetDeployOptions();
+      delete actionInProgress[project.path];
+      actionInProgress = { ...actionInProgress };
     }
-    deployReason = '';
-    delete actionInProgress[project.path];
-    actionInProgress = { ...actionInProgress };
   }
 
   function handleDeployPopoverKeydown(e, project) {
     if (e.key === 'Escape') {
       e.stopPropagation();
       deployPopover = null;
+      deployAnchorEl = null;
     } else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      confirmDeploy(e, project);
+      // Only confirm if this isn't a GitHub-linked course (those block non-preview deploys)
+      if (!project.githubLinked) confirmDeploy(e, project);
     }
   }
 
@@ -218,48 +678,35 @@
     window.api.tools.openTerminal(path);
   }
 
-  async function deleteCourse(e, project) {
+  function openDeleteDialog(e, project) {
     e.stopPropagation();
+    if (actionInProgress[project.path]) return;
+    deleteDialog = { project, deleteFromCloud: false };
+  }
+
+  function closeDeleteDialog() {
+    deleteDialog = null;
+  }
+
+  async function confirmDeleteDialog() {
+    if (!deleteDialog) return;
+    const { project, deleteFromCloud } = deleteDialog;
     const path = project.path;
-    if (actionInProgress[path]) return;
+    closeDeleteDialog();
 
-    // Use toast-with-undo instead of window.confirm
     actionInProgress = { ...actionInProgress, [path]: 'deleting' };
-    let cancelled = false;
-    const toastId = showToast({
-      type: 'warning',
-      message: `Moving "${project.title || project.name}" to Trash…`,
-      action: {
-        label: 'Undo',
-        handler: () => {
-          cancelled = true;
-          delete actionInProgress[path];
-          actionInProgress = { ...actionInProgress };
-        }
-      },
-      duration: 5000
-    });
-
-    // Wait 5 seconds, then delete if not cancelled
-    setTimeout(async () => {
-      if (cancelled) return;
-      try {
-        if (isTabOpen(path)) await onCloseProject?.(path);
-        try {
-          const status = await window.api.preview.status(path);
-          if (status === 'running') await window.api.preview.stop(path);
-        } catch { /* ignore */ }
-        await window.api.projects.delete(path);
-        await refreshProjects();
-        await refreshStatuses();
-        showToast({ type: 'success', message: `"${project.title || project.name}" moved to Trash.`, duration: 3000 });
-      } catch (err) {
-        showToast({ type: 'error', message: `Delete failed: ${err.message}` });
-      } finally {
-        delete actionInProgress[path];
-        actionInProgress = { ...actionInProgress };
-      }
-    }, 5000);
+    try {
+      if (isTabOpen(path)) await onCloseProject?.(path);
+      await window.api.projects.delete(path, { deleteFromCloud });
+      await refreshProjects();
+      await refreshStatuses();
+      showToast({ type: 'success', message: `"${project.title || project.name}" moved to Trash.`, duration: 3000 });
+    } catch (err) {
+      showToast({ type: 'error', message: `Delete failed: ${err.message}` });
+    } finally {
+      delete actionInProgress[path];
+      actionInProgress = { ...actionInProgress };
+    }
   }
 
   function togglePin(e, project) {
@@ -355,25 +802,43 @@
           {@const tabOpen = isTabOpen(project.path)}
           {@const running = status === 'running'}
           {@const inProgress = actionInProgress[project.path]}
+          {@const cloudStatus = getCloudStatus(project.path)}
+          {@const cloudPreviewLabel = getCloudPreviewLabel(project.path)}
+          {@const cloudPreviewState = getCloudPreviewState(project.path)}
 
-          <div class="course-card" class:active={tabOpen}>
+          <div class="course-card" class:active={tabOpen} class:has-popover={deployPopover === project.path || exportPopover === project.path}>
+            <button
+              class="pin-btn pin-corner"
+              class:pinned={pinnedPaths.has(project.path)}
+              onclick={(e) => togglePin(e, project)}
+              title={pinnedPaths.has(project.path) ? 'Unpin' : 'Pin to top'}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill={pinnedPaths.has(project.path) ? 'currentColor' : 'none'}>
+                <path d="M8 1.5l1.76 3.57 3.94.57-2.85 2.78.67 3.93L8 10.52l-3.52 1.83.67-3.93L2.3 5.64l3.94-.57L8 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              </svg>
+            </button>
             <!-- Row 1: Title left, meta right -->
             <div class="card-header">
-              <div class="card-header-left">
-                <button
-                  class="pin-btn"
-                  class:pinned={pinnedPaths.has(project.path)}
-                  onclick={(e) => togglePin(e, project)}
-                  title={pinnedPaths.has(project.path) ? 'Unpin' : 'Pin to top'}
-                >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill={pinnedPaths.has(project.path) ? 'currentColor' : 'none'}>
-                    <path d="M8 1.5l1.76 3.57 3.94.57-2.85 2.78.67 3.93L8 10.52l-3.52 1.83.67-3.93L2.3 5.64l3.94-.57L8 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
-                  </svg>
-                </button>
+              <div class="card-title-row">
                 <button class="card-title-btn" onclick={() => onOpenProject(project.path, project.title)}>
                   <h3 class="card-title">{project.title}</h3>
                 </button>
+              </div>
+              <div class="card-badge-row">
                 <span class="format-badge">{formatLabels[project.format] || project.format}</span>
+                {#if project.githubLinked}
+                  <span class="github-badge" title="Deployed via GitHub">
+                    <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+                    </svg>
+                    GitHub
+                  </span>
+                {/if}
+                {#if project.cloudId && cloudPreviewLabel}
+                  <span class="cloud-preview-badge" class:active={cloudPreviewState === 'active'} class:disabled={cloudPreviewState === 'disabled'} class:expired={cloudPreviewState === 'expired'} class:missing={cloudPreviewState === 'missing'} title={cloudStatus?.previewLink?.url || 'Cloud preview status'}>
+                    {cloudPreviewLabel}
+                  </span>
+                {/if}
                 {#if running}
                   <span class="status-pill">
                     <span class="status-pulse"></span>
@@ -393,14 +858,21 @@
             </div>
 
             <div class="card-detail-row">
-                <span class="detail-item">
+              <span class="detail-item">
                 <span class="detail-label">Status</span>
                 <span class="detail-value" class:running={running}>{running ? 'Preview Running' : 'Ready to Preview'}</span>
               </span>
-              <span class="detail-item">
-                <span class="detail-label">Output</span>
-                <span class="detail-value">{formatLabels[project.format] || project.format}</span>
-              </span>
+              {#if project.cloudId}
+                <span class="detail-item">
+                  <span class="detail-label">Cloud Preview</span>
+                  <span class="detail-value" class:running={cloudPreviewState === 'active'}>{cloudPreviewLabel || 'Checking…'}</span>
+                </span>
+              {:else}
+                <span class="detail-item">
+                  <span class="detail-label">Output</span>
+                  <span class="detail-value">{formatLabels[project.format] || project.format}</span>
+                </span>
+              {/if}
               <span class="detail-item">
                 <span class="detail-label">Updated</span>
                 <span class="detail-value">{formatDate(project.lastModified)}</span>
@@ -430,33 +902,57 @@
                   {/if}
                 </button>
 
-                <button
-                  class="card-btn primary export"
-                  onclick={(e) => exportBuild(e, project)}
-                  disabled={!!inProgress}
-                  title="Export"
-                >
-                  {#if inProgress === 'building'}
-                    <div class="btn-spinner"></div>
-                  {:else}
-                    <Icon size={14}>
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                      <polyline points="7 10 12 15 17 10"/>
-                      <line x1="12" y1="15" x2="12" y2="3"/>
-                    </Icon>
+                <div class="export-btn-wrapper">
+                  <button
+                    class="card-btn primary export"
+                    onclick={(e) => openExportPopover(e, project)}
+                    disabled={!!inProgress}
+                    title="Export"
+                  >
+                    {#if inProgress === 'building'}
+                      <div class="btn-spinner"></div>
+                    {:else}
+                      <Icon size={14}>
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                      </Icon>
+                    {/if}
+                    Export
+                  </button>
+
+                  {#if exportPopover === project.path}
+                    <div class="export-popover" role="dialog" aria-label="Export options" use:popover>
+                      <div class="deploy-popover-field">
+                        <label class="deploy-popover-label">Format</label>
+                        <select class="export-format-select" bind:value={exportFormat} onclick={(e) => e.stopPropagation()}>
+                          {#each Object.entries(formatLabels) as [value, label]}
+                            <option {value}>{label}</option>
+                          {/each}
+                        </select>
+                      </div>
+                      <div class="deploy-popover-actions">
+                        <button class="deploy-popover-cancel" onclick={(e) => { e.stopPropagation(); exportPopover = null; }}>Cancel</button>
+                        <button class="deploy-popover-confirm" onclick={(e) => exportBuild(e, project)}>Export</button>
+                      </div>
+                    </div>
                   {/if}
-                  Export
-                </button>
+                </div>
 
                 <div class="deploy-btn-wrapper">
                   <button
                     class="card-btn primary deploy"
+                    class:github-locked={project.githubLinked}
                     onclick={(e) => { e.stopPropagation(); openDeployPopover(e, project); }}
                     disabled={!!inProgress}
-                    title="Deploy"
+                    title={project.githubLinked ? 'Deployed via GitHub \u2014 push to your repo to deploy' : 'Deploy'}
                   >
                     {#if inProgress === 'deploying'}
                       <div class="btn-spinner"></div>
+                    {:else if project.githubLinked}
+                      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+                      </svg>
                     {:else}
                       <Icon size={14}>
                         <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
@@ -467,27 +963,18 @@
                     Deploy
                   </button>
 
-                  {#if deployPopover === project.path}
-                    <div class="deploy-popover" role="dialog" aria-label="Deploy reason">
-                      <label class="deploy-popover-label" for="deploy-reason-{project.path}">Deploy reason <span class="optional-tag">optional</span></label>
-                      <input
-                        id="deploy-reason-{project.path}"
-                        type="text"
-                        class="deploy-popover-input"
-                        placeholder="e.g. Fixed quiz on slide 3"
-                        bind:value={deployReason}
-                        onkeydown={(e) => handleDeployPopoverKeydown(e, project)}
-                      />
-                      <div class="deploy-popover-actions">
-                        <button class="deploy-popover-cancel" onclick={(e) => { e.stopPropagation(); deployPopover = null; }}>Cancel</button>
-                        <button class="deploy-popover-confirm" onclick={(e) => confirmDeploy(e, project)}>Deploy</button>
-                      </div>
-                    </div>
-                  {/if}
                 </div>
               </div>
 
               <div class="actions-right">
+                {#if hasActiveCloudPreview(project.path)}
+                  <button class="card-btn subtle" onclick={(e) => openCloudPreview(e, project)} title="Open Cloud preview">
+                    <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+                      <path d="M1.5 8s2.5-4 6.5-4 6.5 4 6.5 4-2.5 4-6.5 4-6.5-4-6.5-4z" stroke="currentColor" stroke-width="1.3"/>
+                      <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.3"/>
+                    </svg>
+                  </button>
+                {/if}
                 <button class="card-btn subtle" onclick={(e) => openInFinder(e, project.path)} title="Reveal in Finder">
                   <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
                     <path d="M2 4a2 2 0 012-2h3l2 2h3a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V4z" stroke="currentColor" stroke-width="1.3"/>
@@ -499,9 +986,25 @@
                     <path d="M4 9l2.5-2L4 5M8 10h3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
                   </svg>
                 </button>
+                {#if project.cloudId}
+                  <a
+                    class="card-btn subtle"
+                    href="https://coursecodecloud.com/dashboard/courses/{project.cloudId}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onclick={(e) => e.stopPropagation()}
+                    title="Open in CourseCode Cloud"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+                      <path d="M6 3H3a1 1 0 00-1 1v9a1 1 0 001 1h9a1 1 0 001-1v-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                      <path d="M9 2h5v5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M14 2L8 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                    </svg>
+                  </a>
+                {/if}
                 <button
                   class="card-btn subtle danger"
-                  onclick={(e) => deleteCourse(e, project)}
+                  onclick={(e) => openDeleteDialog(e, project)}
                   disabled={!!inProgress}
                   title="Delete course"
                 >
@@ -517,11 +1020,178 @@
                 </button>
               </div>
             </div>
+
           </div>
         {/each}
       </div>
     {/if}
   </main>
+
+  <!-- Delete confirmation dialog -->
+  {#if deleteDialog}
+    {@const dp = deleteDialog.project}
+    <div class="dialog-backdrop" onclick={closeDeleteDialog} role="presentation">
+      <div class="dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Delete course">
+        <h2 class="dialog-title">Delete "{dp.title || dp.name}"?</h2>
+        <p class="dialog-body">The project folder will be moved to Trash. This cannot be undone.</p>
+        {#if dp.cloudId}
+          <div class="dialog-cloud-row">
+            <label class="dialog-cloud-label">
+              <input type="checkbox" bind:checked={deleteDialog.deleteFromCloud} />
+              <span>Also remove from CourseCode Cloud</span>
+            </label>
+            {#if dp.githubLinked}
+              <p class="dialog-cloud-note warning">⚠ This course is GitHub-linked. Removing it from Cloud disconnects the integration \u2014 your repository and its files are unaffected.</p>
+            {:else}
+              <p class="dialog-cloud-note">Removes the course record, deployments, and analytics from Cloud.</p>
+            {/if}
+          </div>
+        {/if}
+        <div class="dialog-actions">
+          <button class="dialog-cancel" onclick={closeDeleteDialog}>Cancel</button>
+          <button class="dialog-confirm danger" onclick={confirmDeleteDialog}>Move to Trash</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if staleBindingPrompt}
+    <ConfirmDialog
+      title="Linked Cloud Course Missing"
+      message={staleBindingPrompt.message || `"${staleBindingPrompt.project?.title || staleBindingPrompt.project?.name || 'This project'}" is still linked to a CourseCode Cloud course that no longer exists.`}
+      detail={staleBindingPrompt.project?.githubLinked
+        ? 'You can clear the old local cloud link and update the preview deployment now, or clear the link only and leave this project in a not deployed state. Production deploys stay managed by GitHub.'
+        : 'You can clear the old local cloud link and redeploy now, or clear the link only and leave this project in a not deployed state.'}
+      alternateLabel="Clear Link Only"
+      confirmLabel={staleBindingPrompt.project?.githubLinked ? 'Clear Link and Deploy Preview' : 'Clear Link and Redeploy'}
+      cancelLabel="Not Now"
+      onconfirm={confirmRepairDeploy}
+      onalternate={clearStaleBindingOnly}
+      oncancel={dismissStaleBindingPrompt}
+    />
+  {/if}
+
+  {#if getDeployPopoverProject()}
+    {@const project = getDeployPopoverProject()}
+    {@const cloudPreviewState = getCloudPreviewState(project.path)}
+    {@const cloudPreviewLabel = getCloudPreviewLabel(project.path)}
+    <div
+      bind:this={deployPopoverEl}
+      class="deploy-popover anchored"
+      role="dialog"
+      aria-modal="false"
+      aria-label={project.githubLinked ? 'GitHub deploy info' : 'Deploy options'}
+      style={deployPopoverStyle}
+    >
+      {#if project.githubLinked}
+        <div class="github-info-header">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          <strong>GitHub-linked course</strong>
+        </div>
+        <p class="github-info-body">Production deploys are controlled by your GitHub repo. Push to deploy.</p>
+        <div class="preview-link-panel">
+          <div class="preview-link-header">
+            <span class="preview-link-title">Preview Link</span>
+            <span class="preview-link-state" class:active={cloudPreviewState === 'active'} class:disabled={cloudPreviewState === 'disabled'} class:expired={cloudPreviewState === 'expired'} class:missing={cloudPreviewState === 'missing'}>{cloudPreviewLabel || 'Checking…'}</span>
+          </div>
+          <p class="preview-link-copy">
+            {#if cloudPreviewState === 'active'}
+              Stakeholders can open the cloud preview now.
+            {:else if cloudPreviewState === 'expired'}
+              The preview link expired. Turn it back on before deploying a new preview pointer.
+            {:else if cloudPreviewState === 'disabled'}
+              The preview link is off. Turn it on to publish a preview URL.
+            {:else}
+              No preview link exists yet. Turn it on to create one.
+            {/if}
+          </p>
+          <div class="preview-link-actions">
+            <button
+              class="preview-link-btn"
+              disabled={isPreviewLinkBusy(project.path)}
+              onclick={(e) => setPreviewLinkState(e, project, cloudPreviewState !== 'active', { autoSelectPreview: true })}
+            >
+              {#if isPreviewLinkBusy(project.path)}
+                <div class="btn-spinner"></div>
+              {:else if cloudPreviewState === 'active'}
+                Turn Off Preview
+              {:else}
+                Turn On Preview
+              {/if}
+            </button>
+            {#if hasActiveCloudPreview(project.path)}
+              <button class="preview-link-btn subtle" onclick={(e) => openCloudPreview(e, project)}>Open Link</button>
+            {/if}
+          </div>
+        </div>
+        <p class="github-info-body">You can still deploy a <strong>preview link</strong> directly:</p>
+        <div class="deploy-popover-actions">
+          <button class="deploy-popover-cancel" onclick={() => { deployPopover = null; deployAnchorEl = null; }}>Dismiss</button>
+          <button class="deploy-popover-confirm" disabled={!canUpdatePreviewPointer(project.path) || isPreviewLinkBusy(project.path)} onclick={(e) => { deployPreview = true; confirmDeploy(e, project); }}>Deploy Preview</button>
+        </div>
+      {:else}
+        <div class="deploy-popover-field">
+          <label class="deploy-popover-label" for="deploy-reason-root">Reason <span class="optional-tag">optional</span></label>
+          <input
+            id="deploy-reason-root"
+            type="text"
+            class="deploy-popover-input"
+            placeholder="e.g. Fixed quiz on slide 3"
+            bind:value={deployReason}
+            onkeydown={(e) => handleDeployPopoverKeydown(e, project)}
+          />
+        </div>
+        {#if canShowProductionUpdate(project)}
+          <div class="deploy-toggle-row">
+            <label class="deploy-toggle-label">
+              <input type="checkbox" bind:checked={deployPromote} />
+              <span>Update Production</span>
+            </label>
+            <span class="deploy-toggle-tip">Go live now. Overrides your Cloud deploy mode setting.</span>
+          </div>
+        {/if}
+        <div class="deploy-toggle-row">
+          <label class="deploy-toggle-label">
+            <input type="checkbox" bind:checked={deployPreview} />
+            <span>{getPreviewToggleLabel(project)}</span>
+          </label>
+          <span class="deploy-toggle-tip">{getPreviewToggleCopy(project)}</span>
+        </div>
+        {#if hasExistingCloudDeployment(project)}
+        <div class="preview-link-panel compact">
+          <div class="preview-link-header">
+            <span class="preview-link-title">Preview Link</span>
+            <span class="preview-link-state" class:active={cloudPreviewState === 'active'} class:disabled={cloudPreviewState === 'disabled'} class:expired={cloudPreviewState === 'expired'} class:missing={cloudPreviewState === 'missing'}>{cloudPreviewLabel || 'Checking…'}</span>
+          </div>
+          <p class="preview-link-copy">{getPreviewPanelCopy(project)}</p>
+          {#if getPreviewActionButtonLabel(project)}
+            <div class="preview-link-actions">
+              <button class="preview-link-btn subtle" onclick={(e) => openCloudPreview(e, project)}>Open Link</button>
+            </div>
+          {/if}
+        </div>
+        {/if}
+        <div class="deploy-popover-actions">
+          <button class="deploy-popover-cancel" onclick={() => { deployPopover = null; deployAnchorEl = null; }}>Cancel</button>
+          <button class="deploy-popover-confirm" onclick={(e) => confirmDeploy(e, project)}>Deploy</button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  {#each Object.entries(deployProgress) as [path, progress] (path)}
+    <DeployProgressDialog
+      active={progress.active ?? actionInProgress[path] === 'deploying'}
+      stage={progress.stage || 'building'}
+      message={progress.message || 'Preparing deployment...'}
+      targetLabel={progress.targetLabel || 'Deploying to CourseCode Cloud'}
+      dashboardUrl={progress.dashboardUrl || ''}
+      previewUrl={progress.previewUrl || ''}
+      onclose={() => clearDeployProgress(path)}
+    />
+  {/each}
 </div>
 
 <style>
@@ -644,23 +1314,31 @@
   .header-right {
     display: flex;
     align-items: center;
-    gap: var(--sp-xs);
+    gap: var(--sp-sm);
     flex-shrink: 0;
   }
 
-  .avatar-btn { padding: 4px; }
+  .avatar-btn {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
 
   .avatar {
-    width: 26px;
-    height: 26px;
+    width: 30px;
+    height: 30px;
     border-radius: 50%;
     background: var(--accent);
     color: var(--text-on-accent);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--text-xs);
-    font-weight: 600;
+    font-size: var(--text-sm);
+    font-weight: 700;
   }
 
   .content {
@@ -681,6 +1359,8 @@
 
   /* --- Course Card --- */
   .course-card {
+    position: relative;
+    z-index: 1;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
@@ -691,6 +1371,10 @@
     transition: all var(--duration-fast) var(--ease);
     box-shadow: var(--shadow-md);
     animation: cardEnter 420ms var(--ease) both;
+  }
+
+  .course-card.has-popover {
+    z-index: 10;
   }
 
   .course-card:nth-child(1) { animation-delay: 20ms; }
@@ -705,6 +1389,13 @@
     box-shadow: var(--shadow-lg);
   }
 
+  .pin-corner {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 2;
+  }
+
   .course-card.active {
     border-color: var(--accent);
     box-shadow: var(--shadow-lg);
@@ -713,25 +1404,35 @@
   /* --- Card Header (Row 1) --- */
   .card-header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--sp-md);
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
   }
 
-  .card-header-left {
+  .card-title-row {
     display: flex;
     align-items: center;
     gap: var(--sp-sm);
+    min-width: 0;
+    padding-right: 34px;
+  }
+
+  .card-badge-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm);
+    flex-wrap: wrap;
     min-width: 0;
   }
 
   .header-right-meta {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--sp-xs);
     font-size: var(--text-xs);
     color: var(--text-tertiary);
-    flex-shrink: 0;
+    min-width: 0;
   }
 
   .card-title-btn {
@@ -741,6 +1442,8 @@
     cursor: pointer;
     text-align: left;
     border-radius: 0;
+    min-width: 0;
+    flex: 1;
   }
 
   .card-title-btn:hover .card-title {
@@ -753,6 +1456,8 @@
     color: var(--text-primary);
     margin: 0;
     transition: color var(--duration-fast) var(--ease);
+    line-height: 1.15;
+    overflow-wrap: anywhere;
   }
 
   .format-badge {
@@ -1089,18 +1794,15 @@
       transform: none;
     }
   }
-  /* --- Deploy Popover --- */
-  .deploy-btn-wrapper {
+  /* --- Export Popover --- */
+  .export-btn-wrapper {
     position: relative;
   }
 
-  .deploy-popover {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 100;
-    width: 280px;
+  .export-popover {
+    position: fixed;
+    z-index: 1000;
+    width: 260px;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -1110,6 +1812,54 @@
     flex-direction: column;
     gap: var(--sp-sm);
     animation: popoverIn 150ms var(--ease);
+  }
+
+  .export-format-select {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    outline: none;
+    cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease);
+  }
+
+  .export-format-select:focus {
+    border-color: var(--accent);
+  }
+
+  /* --- Deploy Popover --- */
+  .deploy-btn-wrapper {
+    position: relative;
+  }
+
+  .deploy-popover {
+    width: min(360px, calc(100vw - 32px));
+    max-height: calc(100vh - 48px);
+    overflow: auto;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: var(--sp-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-sm);
+    animation: popoverIn 150ms var(--ease);
+  }
+
+  .deploy-popover.anchored {
+    position: fixed;
+    z-index: 1100;
+  }
+
+  .deploy-popover-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .deploy-popover-label {
@@ -1151,6 +1901,7 @@
     display: flex;
     justify-content: flex-end;
     gap: 6px;
+    margin-top: 2px;
   }
 
   .deploy-popover-cancel,
@@ -1183,7 +1934,362 @@
   }
 
   @keyframes popoverIn {
-    from { opacity: 0; transform: translateX(-50%) translateY(-4px); }
-    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* --- Deploy toggle rows --- */
+  .deploy-toggle-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+  }
+
+  .deploy-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-xs);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .deploy-toggle-label input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .deploy-toggle-tip {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    padding-left: 22px;
+    line-height: 1.4;
+  }
+
+  .preview-link-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+  }
+
+  .preview-link-panel.compact {
+    margin-top: 2px;
+  }
+
+  .preview-link-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .preview-link-title {
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .preview-link-state {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+    color: var(--text-secondary);
+  }
+
+  .preview-link-state.active {
+    background: color-mix(in srgb, var(--success) 16%, transparent);
+    color: var(--success);
+  }
+
+  .preview-link-state.disabled,
+  .preview-link-state.missing {
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
+  }
+
+  .preview-link-state.expired {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    color: var(--danger);
+  }
+
+  .preview-link-copy {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    line-height: 1.45;
+  }
+
+  .preview-link-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .preview-link-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--duration-fast) var(--ease);
+  }
+
+  .preview-link-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+
+  .preview-link-btn.subtle {
+    border-color: var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+  }
+
+  .preview-link-btn.subtle:hover:not(:disabled) {
+    background: var(--bg-elevated);
+  }
+
+  .preview-link-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  /* --- GitHub badge --- */
+  .github-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: color-mix(in srgb, #6e40c9 18%, transparent);
+    color: #8b6cd8;
+    white-space: nowrap;
+    flex-shrink: 0;
+    letter-spacing: 0.03em;
+  }
+
+  .cloud-preview-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    letter-spacing: 0.03em;
+    background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+    color: var(--text-secondary);
+  }
+
+  .cloud-preview-badge.active {
+    background: color-mix(in srgb, var(--success) 16%, transparent);
+    color: var(--success);
+  }
+
+  .cloud-preview-badge.disabled,
+  .cloud-preview-badge.missing {
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
+  }
+
+  .cloud-preview-badge.expired {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    color: var(--danger);
+  }
+
+  /* --- Deploy button GitHub-locked state --- */
+  .card-btn.deploy.github-locked {
+    background: color-mix(in srgb, #6e40c9 15%, transparent);
+    color: #8b6cd8;
+    border-color: color-mix(in srgb, #6e40c9 30%, transparent);
+  }
+
+  .card-btn.deploy.github-locked:hover {
+    background: color-mix(in srgb, #6e40c9 25%, transparent);
+  }
+
+  /* --- GitHub info popover (blocks production, offers preview) --- */
+  .github-info-popover {
+    gap: var(--sp-sm);
+  }
+
+  .github-info-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: #8b6cd8;
+  }
+
+  .github-info-body {
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  /* --- Open in Cloud link button (styled like card-btn) --- */
+  a.card-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    color: inherit;
+  }
+
+  /* --- Delete dialog --- */
+  .dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 120ms var(--ease);
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .dialog {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    padding: var(--sp-xl);
+    width: min(420px, 92vw);
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-md);
+    animation: dialogSlideIn 160ms var(--ease);
+  }
+
+  @keyframes dialogSlideIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  .dialog-title {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+  }
+
+  .dialog-body {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .dialog-cloud-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-xs);
+    padding: var(--sp-md);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .dialog-cloud-label {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-xs);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .dialog-cloud-label input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .dialog-cloud-note {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    margin: 0;
+    padding-left: 20px;
+    line-height: 1.4;
+  }
+
+  .dialog-cloud-note.warning {
+    color: var(--warning, #f59e0b);
+  }
+
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--sp-sm);
+    margin-top: var(--sp-xs);
+  }
+
+  .dialog-cancel,
+  .dialog-confirm {
+    padding: 6px 16px;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all var(--duration-fast) var(--ease);
+  }
+
+  .dialog-cancel {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+
+  .dialog-cancel:hover {
+    background: var(--bg-tertiary, var(--border));
+  }
+
+  .dialog-confirm.danger {
+    background: var(--error, #ef4444);
+    color: #fff;
+  }
+
+  .dialog-confirm.danger:hover {
+    background: color-mix(in srgb, var(--error, #ef4444) 85%, black);
   }
 </style>

@@ -33,12 +33,6 @@
 
   const nameValid = $derived(name.trim().length > 0 && !/[<>:"/\\|?*]/.test(name));
 
-  // Shorten path for display: replace $HOME with ~
-  const displayLocation = $derived(() => {
-    const home = location.split('/').slice(0, 3).join('/'); // rough /Users/name
-    return location.replace(home, '~');
-  });
-
   async function pickLocation() {
     const folder = await window.api.dialog.pickFolder(location);
     if (folder) location = folder;
@@ -123,7 +117,7 @@
           <div class="location-row mt-lg">
             <span class="field-label">Location</span>
             <div class="location-picker">
-              <span class="location-path">{displayLocation()}/{name || '...'}</span>
+              <span class="location-path">{location}/{name || '...'}</span>
               <button class="btn-ghost btn-sm" onclick={pickLocation}>Browse…</button>
             </div>
           </div>
@@ -146,6 +140,11 @@
                 onclick={() => format = f.id}
                 data-testid={`format-${f.id}`}
               >
+                {#if format === f.id}
+                  <span class="selected-check" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                  </span>
+                {/if}
                 <div class="option-header">
                   <span class="option-label">{f.label}</span>
                   {#if f.recommended}
@@ -169,6 +168,11 @@
                 onclick={() => layout = l.id}
                 data-testid={`layout-${l.id}`}
               >
+                {#if layout === l.id}
+                  <span class="selected-check" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                  </span>
+                {/if}
                 <div class="option-header">
                   <span class="option-icon" aria-hidden="true">
                     {#if l.id === 'article'}
@@ -220,6 +224,11 @@
             onclick={() => layout = 'canvas'}
             data-testid="layout-canvas"
           >
+            {#if layout === 'canvas'}
+              <span class="selected-check" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </span>
+            {/if}
             <span class="canvas-label">Canvas</span>
             <span class="canvas-desc">Custom layout with JavaScript-powered CourseCode functions and bring-your-own CSS.</span>
           </button>
@@ -380,6 +389,7 @@
   }
 
   .option-card {
+    position: relative;
     text-align: left;
     padding: var(--sp-md);
     background: var(--bg-primary);
@@ -392,14 +402,22 @@
     gap: var(--sp-sm);
   }
 
-  .option-card:hover {
-    border-color: var(--accent);
+  .option-card:hover:not(.selected) {
+    border-color: var(--text-tertiary);
   }
 
   .option-card.selected {
-    border-color: var(--border-strong);
-    background: var(--bg-secondary);
-    box-shadow: inset 0 0 0 1px rgba(241, 135, 1, 0.2);
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+
+  .option-card.selected .option-label {
+    color: var(--accent);
+  }
+
+  .option-card.selected .option-icon {
+    color: var(--accent);
   }
 
   .option-header {
@@ -447,12 +465,13 @@
   }
 
   .canvas-option {
+    position: relative;
     margin-top: var(--sp-md);
     width: 100%;
     text-align: left;
     padding: var(--sp-md);
     background: transparent;
-    border: 1px solid var(--border);
+    border: 2px solid var(--border);
     border-radius: var(--radius-md);
     cursor: pointer;
     transition: all var(--duration-fast) var(--ease);
@@ -461,14 +480,32 @@
     gap: var(--sp-xs);
   }
 
-  .canvas-option:hover {
-    border-color: var(--accent);
+  .canvas-option:hover:not(.selected) {
+    border-color: var(--text-tertiary);
   }
 
   .canvas-option.selected {
-    border-color: var(--border-strong);
-    background: var(--bg-secondary);
-    box-shadow: inset 0 0 0 1px rgba(241, 135, 1, 0.2);
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+
+  .canvas-option.selected .canvas-label {
+    color: var(--accent);
+  }
+
+  .selected-check {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--palette-white);
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .canvas-label {

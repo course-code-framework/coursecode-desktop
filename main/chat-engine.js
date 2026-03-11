@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { createProvider, loadApiKey, estimateCost } from './llm-provider.js';
+import { createProvider, loadApiKey, estimateCost, getProviders, getCloudModels } from './llm-provider.js';
 import { loadToken } from './cloud-client.js';
 import { buildSystemPrompt, getToolDefinitions } from './system-prompts.js';
 import { getSetting } from './settings.js';
@@ -442,7 +442,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     // Resolve provider based on mode
     const isCloud = mode === 'cloud';
     const providerId = isCloud ? 'cloud' : (getSetting('aiProvider') || DEFAULT_PROVIDER);
-    const modelId = isCloud ? (getSetting('cloudAiModel') || DEFAULT_CLOUD_MODEL) : (getSetting('aiModel') || DEFAULT_MODEL);
+    let modelId = isCloud ? (getSetting('cloudAiModel') || DEFAULT_CLOUD_MODEL) : (getSetting('aiModel') || DEFAULT_MODEL);
 
     log.info(`sendMessage → ${providerId}/${modelId}`, { mode, hasMentions: mentions?.length > 0 });
 
@@ -456,12 +456,61 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             });
             return;
         }
+
+        try {
+            const availableCloudModels = await getCloudModels(credential);
+            const availableIds = new Set((availableCloudModels || []).map(m => m.id));
+            if (!modelId && availableCloudModels.length > 0) {
+                modelId = availableCloudModels[0].id;
+                log.info('No cloud model configured, defaulting to first available cloud model', { fallback: modelId });
+            } else if (availableIds.size > 0 && !availableIds.has(modelId)) {
+                const fallbackCloudModel = availableCloudModels[0].id;
+                log.info('Cloud model not available, falling back to first available model', { requested: modelId, fallback: fallbackCloudModel });
+                modelId = fallbackCloudModel;
+            }
+
+            if (!modelId) {
+                webContents?.send('chat:error', {
+                    projectPath,
+                    message: 'No cloud AI models are currently available for your account.'
+                });
+                return;
+            }
+        } catch (err) {
+            log.debug('Failed to validate cloud model against available models, continuing with configured/default model', err);
+            if (!modelId) {
+                webContents?.send('chat:error', {
+                    projectPath,
+                    message: 'Unable to load cloud AI models right now. Try again in a moment.'
+                });
+                return;
+            }
+        }
     } else {
         credential = loadApiKey(providerId);
         if (!credential) {
             webContents?.send('chat:error', {
                 projectPath,
                 message: 'No API key configured. Go to Settings → AI to add your API key.'
+            });
+            return;
+        }
+
+        const providerCatalog = await getProviders();
+        const providerModels = providerCatalog.find(p => p.id === providerId)?.models || [];
+        const modelIds = new Set((providerModels || []).map(m => m.id));
+        if (modelIds.size > 0 && !modelIds.has(modelId)) {
+            const defaultProviderModel = providerModels.find(m => m.default)?.id || providerModels[0]?.id;
+            if (defaultProviderModel) {
+                log.info('BYOK model not available for provider, falling back to provider default', { providerId, requested: modelId, fallback: defaultProviderModel });
+                modelId = defaultProviderModel;
+            }
+        }
+
+        if (!modelId) {
+            webContents?.send('chat:error', {
+                projectPath,
+                message: 'No AI models are available for this provider yet. Add a key and refresh models in Settings.'
             });
             return;
         }
@@ -793,7 +842,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         // Done
         const cost = isCloud ? null : estimateCost(
             getSetting('aiProvider') || DEFAULT_PROVIDER,
-            getSetting('aiModel') || DEFAULT_MODEL,
+            modelId,
             sessionInputTokens,
             sessionOutputTokens
         );

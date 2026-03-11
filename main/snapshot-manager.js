@@ -29,11 +29,11 @@ const MILESTONE_LABELS = ['Project created', 'Before export', 'Before deploy'];
  */
 export async function initRepo(projectPath) {
     const dotGit = join(projectPath, '.git');
-    if (fs.existsSync(dotGit)) return;
+    if (!fs.existsSync(dotGit)) {
+        await git.init({ fs, dir: projectPath, defaultBranch: 'main' });
+    }
 
-    await git.init({ fs, dir: projectPath, defaultBranch: 'main' });
-
-    // Ensure .gitignore exists
+    // Ensure .gitignore exists (even when .git was created externally, e.g. by the CLI)
     const ignorePath = join(projectPath, '.gitignore');
     if (!fs.existsSync(ignorePath)) {
         fs.writeFileSync(ignorePath, DEFAULT_GITIGNORE);

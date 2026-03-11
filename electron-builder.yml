@@ -11,6 +11,7 @@ files:
   - "!node_modules/**/*"
 
 mac:
+  icon: build/icon.icns
   artifactName: "CourseCode-Desktop-v${version}-mac.${ext}"
   target:
     - target: dmg
@@ -24,6 +25,7 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
 
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
@@ -35,6 +37,9 @@ nsis:
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
 
 publish:
   provider: github

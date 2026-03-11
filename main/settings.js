@@ -23,10 +23,12 @@ const DEFAULTS = {
     lastSetupStep: 0,
     cliVersion: null,
     aiProvider: 'anthropic',
-    aiModel: 'claude-sonnet-4-20250514',
+    aiModel: null,
     aiCustomInstructions: '',
     defaultAiMode: 'byok',
-    cloudAiModel: null
+    aiModeInitialized: false,
+    cloudAiModel: null,
+    cloudModelCache: []
 };
 
 let settings = { ...DEFAULTS };

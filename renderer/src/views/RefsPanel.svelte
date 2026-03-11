@@ -1,15 +1,12 @@
 <script>
   import { onMount } from 'svelte';
 
-  let { projectPath, compact = false, onCountUpdate } = $props();
+  let { projectPath, compact = false, onCountUpdate, onViewRef } = $props();
 
   let refs = $state([]);
   let loading = $state(true);
   let converting = $state(false);
   let convertProgress = $state('');
-  let dragOver = $state(false);
-  let selectedRef = $state(null);
-  let refContent = $state('');
 
   onMount(async () => {
     await loadRefs();
@@ -36,6 +33,7 @@
   async function handleDrop(e) {
     e.preventDefault();
     dragOver = false;
+    dragCounter = 0;
 
     const files = Array.from(e.dataTransfer.files);
     const supported = files.filter(f =>
@@ -50,7 +48,8 @@
     try {
       for (const file of supported) {
         convertProgress = `Converting ${file.name}…`;
-        await window.api.refs.convert(projectPath, file.path);
+        const filePath = window.api.getFilePath(file);
+        await window.api.refs.convert(projectPath, filePath);
       }
       await loadRefs();
     } catch (err) {
@@ -61,28 +60,24 @@
     convertProgress = '';
   }
 
-  function handleDragOver(e) {
+  let dragOver = $state(false);
+  let dragCounter = 0;
+
+  function handleDragEnter(e) {
     e.preventDefault();
+    dragCounter++;
     dragOver = true;
   }
 
-  function handleDragLeave() {
-    dragOver = false;
+  function handleDragOver(e) {
+    e.preventDefault();
   }
 
-  async function viewRef(ref) {
-    if (selectedRef?.filename === ref.filename) {
-      selectedRef = null;
-      refContent = '';
-      return;
-    }
-
-    selectedRef = ref;
-    try {
-      const result = await window.api.refs.read(projectPath, ref.filename);
-      refContent = result.content;
-    } catch {
-      refContent = 'Error loading document.';
+  function handleDragLeave() {
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      dragOver = false;
     }
   }
 </script>
@@ -91,6 +86,7 @@
   class="refs-panel"
   class:compact
   ondrop={handleDrop}
+  ondragenter={handleDragEnter}
   ondragover={handleDragOver}
   ondragleave={handleDragLeave}
   role="region"
@@ -119,8 +115,7 @@
       {#each refs as ref}
         <button
           class="ref-item"
-          class:selected={selectedRef?.filename === ref.filename}
-          onclick={() => viewRef(ref)}
+          onclick={() => onViewRef?.(ref)}
         >
           <span class="ref-icon">📄</span>
           <span class="ref-name">{ref.filename}</span>
@@ -129,17 +124,9 @@
       {/each}
     </div>
 
-    {#if selectedRef && !compact}
-      <div class="ref-preview">
-        <div class="ref-preview-header">
-          <span class="ref-preview-title">{selectedRef.filename}</span>
-          <button class="close-preview" onclick={() => { selectedRef = null; refContent = ''; }}>×</button>
-        </div>
-        <div class="ref-preview-content">
-          <pre>{refContent}</pre>
-        </div>
-      </div>
-    {/if}
+    <div class="refs-drop-hint" class:drag-active={dragOver}>
+      <span>+ Drop files to add</span>
+    </div>
 
     {#if dragOver}
       <div class="drop-overlay">
@@ -216,6 +203,26 @@
     padding: var(--sp-xs);
   }
 
+  .refs-drop-hint {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--sp-md);
+    margin: 0 var(--sp-xs) var(--sp-xs);
+    border: 2px dashed var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    transition: all var(--duration-fast) var(--ease);
+    cursor: default;
+  }
+
+  .refs-drop-hint.drag-active {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+    color: var(--accent);
+  }
+
   .ref-item {
     display: flex;
     align-items: center;
@@ -257,59 +264,6 @@
   .ref-meta {
     flex-shrink: 0;
     color: var(--text-tertiary);
-  }
-
-  /* Preview */
-  .ref-preview {
-    border-top: 1px solid var(--border);
-    flex-shrink: 0;
-    max-height: 50%;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .ref-preview-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-xs) var(--sp-md);
-    background: var(--bg-secondary);
-    flex-shrink: 0;
-  }
-
-  .ref-preview-title {
-    font-size: var(--text-xs);
-    font-weight: 600;
-    color: var(--text-secondary);
-  }
-
-  .close-preview {
-    background: none;
-    border: none;
-    color: var(--text-tertiary);
-    cursor: pointer;
-    font-size: var(--text-sm);
-    padding: 0;
-    line-height: 1;
-  }
-
-  .close-preview:hover {
-    color: var(--text-primary);
-  }
-
-  .ref-preview-content {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--sp-sm) var(--sp-md);
-  }
-
-  .ref-preview-content pre {
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-size: var(--text-xs);
-    line-height: 1.5;
-    color: var(--text-secondary);
   }
 
   /* Drop overlay */
