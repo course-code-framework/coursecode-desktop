@@ -1246,6 +1246,7 @@
     padding: var(--sp-sm) var(--sp-md);
     background: transparent;
     border: none;
+    box-shadow: none;
     outline: none;
     color: var(--text-primary);
     font-family: inherit;
@@ -1254,6 +1255,12 @@
     resize: none;
     min-height: 36px;
     max-height: 150px;
+  }
+
+  .input-wrapper textarea:focus {
+    border: none;
+    box-shadow: none;
+    outline: none;
   }
 
   textarea::placeholder {
