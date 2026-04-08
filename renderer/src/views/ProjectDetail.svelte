@@ -1,9 +1,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { settings } from '../stores/settings.js';
+  import { settings, updateSetting } from '../stores/settings.js';
   import ChatPanel from './ChatPanel.svelte';
   import RefsPanel from './RefsPanel.svelte';
-  import HistoryPanel from '../components/HistoryPanel.svelte';
   import OutlinePanel from './OutlinePanel.svelte';
   import EditorPanel from '../components/EditorPanel.svelte';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
@@ -35,13 +34,13 @@
   let exportBtnEl = $state(null);
   let refsExpanded = $state(false);
   let refCount = $state(0);
-  let historyOpen = $state(false);
   let outlineOpen = $state(false);
   let refViewerOpen = $state(false);
   let refViewerFilename = $state('');
   let refViewerContent = $state('');
   let rightTab = $state('preview'); // 'preview' | 'editor'
   let chatPanelVisible = $state(true);
+  let chatReloadKey = $state(0);
   let previewFrameKey = $state(0);
   let cloudStatus = $state(null);
   let staleBindingPrompt = $state(null);
@@ -59,7 +58,7 @@
     project = await window.api.projects.open(projectPath);
     previewStatus = await window.api.preview.status(projectPath);
     previewPort = await window.api.preview.port(projectPath);
-    chatPanelVisible = $settings.showAiChatByDefault !== false;
+    chatPanelVisible = $settings.aiChatEnabled === true;
 
     // Load ref count
     try {
@@ -104,11 +103,15 @@
     cloudStatusInterval = setInterval(refreshCloudStatus, 60000);
   });
 
-  function handleOpenFile(e) {
+  async function handleOpenFile(e) {
     const filePath = e.detail?.path;
     if (filePath) {
       rightTab = 'editor';
-      openFileInEditor(projectPath, filePath);
+      try {
+        await openFileInEditor(projectPath, filePath);
+      } catch (err) {
+        showToast({ type: 'error', message: `Unable to open file: ${err?.message || filePath}` });
+      }
     }
   }
 
@@ -137,6 +140,12 @@
   async function reloadProject() {
     project = await window.api.projects.open(projectPath);
     await refreshCloudStatus();
+  }
+
+  async function handleSnapshotRestored() {
+    await reloadProject();
+    chatReloadKey += 1;
+    showToast({ type: 'success', message: 'Project and chat context restored.' });
   }
 
   async function checkLinkedCloudStatus(bindingKey) {
@@ -583,8 +592,15 @@
     refCount = count;
   }
 
-  function toggleChatPanel() {
-    chatPanelVisible = !chatPanelVisible;
+  async function toggleChatPanel() {
+    const nextVisible = !chatPanelVisible;
+    chatPanelVisible = nextVisible;
+    try {
+      await updateSetting('aiChatEnabled', nextVisible);
+    } catch {
+      chatPanelVisible = !nextVisible;
+      showToast({ type: 'error', message: 'Failed to save AI chat visibility preference.' });
+    }
   }
 </script>
 
@@ -668,12 +684,6 @@
           <line x1="16" y1="13" x2="8" y2="13"/>
           <line x1="16" y1="17" x2="8" y2="17"/>
           <polyline points="10 9 9 9 8 9"/>
-        </Icon>
-      </button>
-
-      <button class="tool-btn" class:active={historyOpen} onclick={() => historyOpen = !historyOpen} title={historyOpen ? 'Close History' : 'History'} data-testid="history-btn">
-        <Icon>
-          <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
         </Icon>
       </button>
     </div>
@@ -854,12 +864,15 @@
         </div>
 
         <div class="chat-area">
-          <ChatPanel
-            {projectPath}
-            refCount={refCount}
-            onOpenRefs={() => { refsExpanded = true; }}
-            onOpenOutline={() => { outlineOpen = true; }}
-          />
+          {#key chatReloadKey}
+            <ChatPanel
+              {projectPath}
+              refCount={refCount}
+              onOpenRefs={() => { refsExpanded = true; }}
+              onOpenOutline={() => { outlineOpen = true; }}
+              onSnapshotRestored={handleSnapshotRestored}
+            />
+          {/key}
         </div>
       </div>
     {/if}
@@ -910,11 +923,6 @@
         </div>
       {/if}
 
-      {#if historyOpen}
-        <div class="history-overlay">
-          <HistoryPanel {projectPath} onClose={() => historyOpen = false} />
-        </div>
-      {/if}
     </div>
   </div>
 </div>
@@ -1113,6 +1121,8 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     cursor: pointer;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
     transition: background var(--duration-fast) var(--ease);
   }
 

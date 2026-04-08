@@ -11,7 +11,18 @@ const ERROR_MAP = [
     { match: (e) => e.code === 'ECONNREFUSED' || e.cause?.code === 'ECONNREFUSED', code: 'NETWORK_ERROR', message: "Couldn't reach the server. Check your internet connection." },
     { match: (e) => e.message?.includes('npm ERR!'), code: 'NPM_ERROR', message: 'Something went wrong installing dependencies. Click "Retry" to try again.' },
     { match: (e) => e.status === 401, code: 'AUTH_EXPIRED', message: 'Your session has expired. Sign in again.' },
-    { match: (e) => e.status === 402, code: 'NO_CREDITS', message: "You're out of credits. Top up at coursecodecloud.com" },
+    {
+        match: (e) => e.status === 402 && (
+            e.code === 'NO_CREDITS'
+            || e.errorCode === 'no_credits'
+            || e.errorCode === 'credits_exhausted'
+            || e.errorCode === 'insufficient_credits'
+            || e.errorCode === 'out_of_credits'
+            || /out of credits|insufficient credits|not enough credits|credits exhausted|no credits/i.test(e.message || '')
+        ),
+        code: 'NO_CREDITS',
+        message: "You're out of credits. Top up at coursecodecloud.com"
+    },
     { match: (e) => e.status === 429, code: 'RATE_LIMITED', message: 'The service is busy. Try again in a moment.' },
     { match: (e) => e.code === 'CLI_NOT_READY', code: 'CLI_NOT_READY', message: 'CourseCode tools are not installed or not working yet. Open Setup Assistant to install or repair them.' },
     { match: (e) => e.message?.includes('safeStorage') || e.message?.includes('encryption'), code: 'ENCRYPTION_UNAVAILABLE', message: 'System encryption is not available. Cannot securely store API key.' },

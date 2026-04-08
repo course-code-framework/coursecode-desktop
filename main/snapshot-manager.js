@@ -1,18 +1,21 @@
 import git from 'isomorphic-git';
 import fs from 'fs';
-import { join, relative } from 'path';
+import { app } from 'electron';
+import { createHash } from 'crypto';
+import { join, resolve, dirname } from 'path';
 import { createLogger } from './logger.js';
 
 const log = createLogger('snapshot');
 
 const AUTHOR = { name: 'CourseCode Desktop', email: 'noreply@coursecode.ai' };
 const PREFIX = '[CourseCode] ';
-
-const DEFAULT_GITIGNORE = `node_modules/
-dist/
-.coursecode-chat/
-*.zip
-`;
+const SNAPSHOT_IGNORED_PREFIXES = [
+    '.git/',
+    'node_modules/',
+    'dist/',
+    'out/',
+    '.cache/'
+];
 
 // --- Pruning thresholds ---
 const ONE_DAY = 86400000;
@@ -24,19 +27,47 @@ const PRUNE_TIERS = [
 ];
 const MILESTONE_LABELS = ['Project created', 'Before export', 'Before deploy'];
 
+function getSnapshotGitDir(projectPath) {
+    const projectId = createHash('sha256').update(resolve(projectPath)).digest('hex');
+    const gitdir = join(app.getPath('userData'), 'snapshots', projectId, '.git');
+    if (!fs.existsSync(gitdir)) {
+        fs.mkdirSync(gitdir, { recursive: true });
+    }
+    return gitdir;
+}
+
+function getGitOptions(projectPath) {
+    return {
+        fs,
+        dir: projectPath,
+        gitdir: getSnapshotGitDir(projectPath)
+    };
+}
+
+function shouldIgnoreSnapshotPath(filepath) {
+    if (!filepath || typeof filepath !== 'string') return true;
+    if (filepath === '.git') return true;
+    if (SNAPSHOT_IGNORED_PREFIXES.some(prefix => filepath.startsWith(prefix))) return true;
+    if (filepath.endsWith('.zip')) return true;
+    return false;
+}
+
+function resolveWithinProject(projectPath, filepath) {
+    const root = resolve(projectPath);
+    const target = resolve(root, filepath);
+    if (target !== root && !target.startsWith(`${root}/`) && !target.startsWith(`${root}\\`)) {
+        throw new Error('Path escapes project root');
+    }
+    return target;
+}
+
 /**
  * Initialize a git repo in the project directory if one doesn't exist.
  */
 export async function initRepo(projectPath) {
-    const dotGit = join(projectPath, '.git');
-    if (!fs.existsSync(dotGit)) {
-        await git.init({ fs, dir: projectPath, defaultBranch: 'main' });
-    }
-
-    // Ensure .gitignore exists (even when .git was created externally, e.g. by the CLI)
-    const ignorePath = join(projectPath, '.gitignore');
-    if (!fs.existsSync(ignorePath)) {
-        fs.writeFileSync(ignorePath, DEFAULT_GITIGNORE);
+    const opts = getGitOptions(projectPath);
+    if (!fs.existsSync(join(opts.gitdir, 'HEAD'))) {
+        await git.init({ ...opts, defaultBranch: 'main' });
     }
 }
 
@@ -49,20 +80,22 @@ export async function initRepo(projectPath) {
  */
 export async function createSnapshot(projectPath, label, metadata) {
     await initRepo(projectPath);
+    const opts = getGitOptions(projectPath);
 
     // Stage all changes.
     // Always re-add every working-directory file instead of relying on
     // statusMatrix's change detection — statusMatrix uses filesystem stat
     // (mtime + size) which misses same-second writes with identical sizes.
     // git.add re-reads content and computes the SHA, so it catches all changes.
-    const matrix = await git.statusMatrix({ fs, dir: projectPath });
+    const matrix = await git.statusMatrix(opts);
     for (const [filepath, head, workdir] of matrix) {
+        if (shouldIgnoreSnapshotPath(filepath)) continue;
         if (workdir === 0) {
             // File deleted from working directory
-            await git.remove({ fs, dir: projectPath, filepath });
+            await git.remove({ ...opts, filepath });
         } else {
             // File exists — always re-add to bypass stat cache
-            await git.add({ fs, dir: projectPath, filepath });
+            await git.add({ ...opts, filepath });
         }
     }
 
@@ -73,8 +106,7 @@ export async function createSnapshot(projectPath, label, metadata) {
     }
 
     const sha = await git.commit({
-        fs,
-        dir: projectPath,
+        ...opts,
         message,
         author: AUTHOR,
     });
@@ -95,10 +127,11 @@ export async function createSnapshot(projectPath, label, metadata) {
  */
 export async function listSnapshots(projectPath, limit = 100) {
     if (!hasRepo(projectPath)) return [];
+    const opts = getGitOptions(projectPath);
 
     let commits;
     try {
-        commits = await git.log({ fs, dir: projectPath, depth: limit + 50 });
+        commits = await git.log({ ...opts, depth: limit + 50 });
     } catch (err) {
         log.debug('Failed to read git log (repo may be empty)', err);
         return []; // Empty repo or no commits
@@ -142,9 +175,10 @@ export async function listSnapshots(projectPath, limit = 100) {
  */
 export async function restoreSnapshot(projectPath, snapshotId) {
     if (!hasRepo(projectPath)) throw new Error('No history available');
+    const opts = getGitOptions(projectPath);
 
     // Read the tree at the target commit
-    const commit = await git.readCommit({ fs, dir: projectPath, oid: snapshotId });
+    const commit = await git.readCommit({ ...opts, oid: snapshotId });
     const targetTree = commit.commit.tree;
 
     // Get the label from the target commit
@@ -154,23 +188,22 @@ export async function restoreSnapshot(projectPath, snapshotId) {
 
     // Checkout all files from target commit
     await git.checkout({
-        fs,
-        dir: projectPath,
+        ...opts,
         ref: snapshotId,
         force: true,
     });
 
     // Move HEAD back to the branch tip so we can commit on top
     // Get the current branch
-    const branch = await git.currentBranch({ fs, dir: projectPath }) || 'main';
+    const branch = await git.currentBranch(opts) || 'main';
 
     // We need to re-point HEAD to the branch, then commit the restored state
     // First, reset to the branch ref
-    const branchOid = await git.resolveRef({ fs, dir: projectPath, ref: branch }).catch(() => null);
+    const branchOid = await git.resolveRef({ ...opts, ref: branch }).catch(() => null);
 
     if (branchOid) {
         // Write the branch ref to HEAD
-        fs.writeFileSync(join(projectPath, '.git', 'HEAD'), `ref: refs/heads/${branch}\n`);
+        fs.writeFileSync(join(opts.gitdir, 'HEAD'), `ref: refs/heads/${branch}\n`);
     }
 
     // Create a restore snapshot
@@ -186,12 +219,14 @@ export async function restoreSnapshot(projectPath, snapshotId) {
  */
 export async function getChanges(projectPath) {
     if (!hasRepo(projectPath)) return { added: [], modified: [], deleted: [] };
+    const opts = getGitOptions(projectPath);
 
     const result = { added: [], modified: [], deleted: [] };
 
     try {
-        const matrix = await git.statusMatrix({ fs, dir: projectPath });
+        const matrix = await git.statusMatrix(opts);
         for (const [filepath, head, workdir] of matrix) {
+            if (shouldIgnoreSnapshotPath(filepath)) continue;
             if (head === 0 && workdir === 2) result.added.push(filepath);
             else if (head === 1 && workdir === 2) result.modified.push(filepath);
             else if (head === 1 && workdir === 0) result.deleted.push(filepath);
@@ -209,11 +244,12 @@ export async function getChanges(projectPath) {
  */
 export async function diffSnapshot(projectPath, snapshotId) {
     if (!hasRepo(projectPath)) return { added: [], modified: [], deleted: [] };
+    const opts = getGitOptions(projectPath);
 
     const result = { added: [], modified: [], deleted: [] };
 
     try {
-        const commits = await git.log({ fs, dir: projectPath, depth: 200 });
+        const commits = await git.log({ ...opts, depth: 200 });
         const idx = commits.findIndex((c) => c.oid === snapshotId);
         if (idx === -1) return result;
 
@@ -263,10 +299,79 @@ export async function diffSnapshot(projectPath, snapshotId) {
 }
 
 /**
+ * Diff a specific file within a snapshot against its parent commit.
+ * Returns unified-style hunks suitable for renderer display.
+ */
+export async function diffSnapshotFile(projectPath, snapshotId, filepath) {
+    if (!hasRepo(projectPath)) {
+        return { status: 'missing', filepath, before: null, after: null, hunks: [] };
+    }
+
+    const opts = getGitOptions(projectPath);
+    const commits = await git.log({ ...opts, depth: 200 });
+    const idx = commits.findIndex((c) => c.oid === snapshotId);
+    if (idx === -1) {
+        return { status: 'missing', filepath, before: null, after: null, hunks: [] };
+    }
+
+    const targetCommit = commits[idx];
+    const parentCommit = commits[idx + 1] || null;
+
+    const after = await readFileAtCommit(projectPath, targetCommit.oid, filepath);
+    const before = parentCommit ? await readFileAtCommit(projectPath, parentCommit.oid, filepath) : null;
+
+    let status = 'modified';
+    if (before == null && after != null) status = 'added';
+    else if (before != null && after == null) status = 'deleted';
+    else if (before === after) status = 'unchanged';
+
+    const hunks = buildUnifiedHunks(before || '', after || '');
+    return { status, filepath, before, after, hunks };
+}
+
+/**
+ * Apply a single file from either the snapshot commit or its parent commit.
+ * source: 'snapshot' | 'parent'
+ */
+export async function applySnapshotFileVersion(projectPath, snapshotId, filepath, source = 'snapshot') {
+    if (!hasRepo(projectPath)) throw new Error('No history available');
+    const opts = getGitOptions(projectPath);
+    const commits = await git.log({ ...opts, depth: 200 });
+    const idx = commits.findIndex((c) => c.oid === snapshotId);
+    if (idx === -1) throw new Error('Snapshot not found');
+
+    const targetCommit = commits[idx];
+    const parentCommit = commits[idx + 1] || null;
+    const sourceCommit = source === 'parent' ? parentCommit : targetCommit;
+
+    if (!sourceCommit && source === 'parent') {
+        // Parent does not exist for the first commit, so "parent version" means file absent.
+        const absolutePath = resolveWithinProject(projectPath, filepath);
+        if (fs.existsSync(absolutePath)) fs.unlinkSync(absolutePath);
+        return { filepath, source, status: 'deleted' };
+    }
+
+    const content = sourceCommit
+        ? await readFileAtCommit(projectPath, sourceCommit.oid, filepath)
+        : null;
+
+    const absolutePath = resolveWithinProject(projectPath, filepath);
+    if (content == null) {
+        if (fs.existsSync(absolutePath)) fs.unlinkSync(absolutePath);
+        return { filepath, source, status: 'deleted' };
+    }
+
+    const dir = dirname(absolutePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(absolutePath, content, 'utf-8');
+    return { filepath, source, status: 'written' };
+}
+
+/**
  * Check if the project has a git repo.
  */
 export function hasRepo(projectPath) {
-    return fs.existsSync(join(projectPath, '.git'));
+    return fs.existsSync(join(getSnapshotGitDir(projectPath), 'HEAD'));
 }
 
 /**
@@ -287,10 +392,12 @@ export async function pruneSnapshots(projectPath) {
  * Get changes by comparing working tree to HEAD (used after checkout).
  */
 async function getChangesFromTree(projectPath) {
+    const opts = getGitOptions(projectPath);
     const result = { added: [], modified: [], deleted: [] };
     try {
-        const matrix = await git.statusMatrix({ fs, dir: projectPath });
+        const matrix = await git.statusMatrix(opts);
         for (const [filepath, head, workdir, stage] of matrix) {
+            if (shouldIgnoreSnapshotPath(filepath)) continue;
             if (stage !== head || workdir !== head) {
                 if (head === 0) result.added.push(filepath);
                 else if (workdir === 0) result.deleted.push(filepath);
@@ -305,11 +412,12 @@ async function getChangesFromTree(projectPath) {
  * List all file paths in a commit's tree.
  */
 async function listTree(projectPath, oid) {
+    const opts = getGitOptions(projectPath);
     const files = [];
-    const commit = await git.readCommit({ fs, dir: projectPath, oid });
+    const commit = await git.readCommit({ ...opts, oid });
 
     async function walk(treeOid, prefix = '') {
-        const { tree } = await git.readTree({ fs, dir: projectPath, oid: treeOid });
+        const { tree } = await git.readTree({ ...opts, oid: treeOid });
         for (const entry of tree) {
             const fullPath = prefix ? `${prefix}/${entry.path}` : entry.path;
             if (entry.type === 'tree') {
@@ -328,11 +436,12 @@ async function listTree(projectPath, oid) {
  * Get a map of filepath → blob OID for a commit.
  */
 async function getBlobMap(projectPath, oid) {
+    const opts = getGitOptions(projectPath);
     const map = new Map();
-    const commit = await git.readCommit({ fs, dir: projectPath, oid });
+    const commit = await git.readCommit({ ...opts, oid });
 
     async function walk(treeOid, prefix = '') {
-        const { tree } = await git.readTree({ fs, dir: projectPath, oid: treeOid });
+        const { tree } = await git.readTree({ ...opts, oid: treeOid });
         for (const entry of tree) {
             const fullPath = prefix ? `${prefix}/${entry.path}` : entry.path;
             if (entry.type === 'tree') {
@@ -345,4 +454,128 @@ async function getBlobMap(projectPath, oid) {
 
     await walk(commit.commit.tree);
     return map;
+}
+
+async function readFileAtCommit(projectPath, oid, filepath) {
+    const opts = getGitOptions(projectPath);
+    try {
+        const { blob } = await git.readBlob({ ...opts, oid, filepath });
+        return Buffer.from(blob).toString('utf-8');
+    } catch {
+        return null;
+    }
+}
+
+function buildUnifiedHunks(beforeText, afterText) {
+    const beforeLines = splitLines(beforeText);
+    const afterLines = splitLines(afterText);
+
+    const MAX_LINES = 600;
+    if (beforeLines.length + afterLines.length > MAX_LINES) {
+        return [{
+            oldStart: 1,
+            newStart: 1,
+            lines: [{
+                type: 'context',
+                text: `Diff omitted because file is large (${beforeLines.length} -> ${afterLines.length} lines).`,
+                oldLine: null,
+                newLine: null
+            }]
+        }];
+    }
+
+    const ops = diffLines(beforeLines, afterLines);
+    const contextRadius = 3;
+    const changedIndexes = [];
+    for (let i = 0; i < ops.length; i++) {
+        if (ops[i].type !== 'context') changedIndexes.push(i);
+    }
+    if (changedIndexes.length === 0) return [];
+
+    const windows = [];
+    for (const idx of changedIndexes) {
+        const start = Math.max(0, idx - contextRadius);
+        const end = Math.min(ops.length - 1, idx + contextRadius);
+        const prev = windows[windows.length - 1];
+        if (prev && start <= prev.end + 1) {
+            prev.end = Math.max(prev.end, end);
+        } else {
+            windows.push({ start, end });
+        }
+    }
+
+    const hunks = [];
+    for (const window of windows) {
+        const lines = [];
+        let oldStart = null;
+        let newStart = null;
+        for (let i = window.start; i <= window.end; i++) {
+            const op = ops[i];
+            if (oldStart == null && op.oldLine != null) oldStart = op.oldLine;
+            if (newStart == null && op.newLine != null) newStart = op.newLine;
+            lines.push(op);
+        }
+        hunks.push({
+            oldStart: oldStart || 1,
+            newStart: newStart || 1,
+            lines
+        });
+    }
+
+    return hunks;
+}
+
+function splitLines(text) {
+    if (!text) return [];
+    return text.replace(/\r\n/g, '\n').split('\n');
+}
+
+function diffLines(beforeLines, afterLines) {
+    const n = beforeLines.length;
+    const m = afterLines.length;
+    const dp = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
+
+    for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+            if (beforeLines[i] === afterLines[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+            else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+    }
+
+    const ops = [];
+    let i = 0;
+    let j = 0;
+    let oldLine = 1;
+    let newLine = 1;
+
+    while (i < n && j < m) {
+        if (beforeLines[i] === afterLines[j]) {
+            ops.push({ type: 'context', text: beforeLines[i], oldLine, newLine });
+            i++;
+            j++;
+            oldLine++;
+            newLine++;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+            ops.push({ type: 'remove', text: beforeLines[i], oldLine, newLine: null });
+            i++;
+            oldLine++;
+        } else {
+            ops.push({ type: 'add', text: afterLines[j], oldLine: null, newLine });
+            j++;
+            newLine++;
+        }
+    }
+
+    while (i < n) {
+        ops.push({ type: 'remove', text: beforeLines[i], oldLine, newLine: null });
+        i++;
+        oldLine++;
+    }
+    while (j < m) {
+        ops.push({ type: 'add', text: afterLines[j], oldLine: null, newLine });
+        j++;
+        newLine++;
+    }
+
+    return ops;
 }

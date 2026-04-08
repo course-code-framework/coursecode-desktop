@@ -149,6 +149,15 @@ class McpConnection {
         return result;
     }
 
+    /**
+     * List available MCP tools for the active project/session.
+     */
+    async listTools() {
+        await this.initialize();
+        const result = await this.request('tools/list', {});
+        return Array.isArray(result?.tools) ? result.tools : [];
+    }
+
     kill() {
         killProcessTree(this.process, 'SIGTERM');
         this._killTimer = setTimeout(() => {
@@ -213,6 +222,20 @@ export async function getMcpClient(projectPath) {
     log.info('Connected', { projectPath });
 
     return conn;
+}
+
+/**
+ * Return the tool definitions advertised by the MCP server for this project.
+ * Returns an empty array if discovery fails.
+ */
+export async function getMcpTools(projectPath) {
+    try {
+        const conn = await getMcpClient(projectPath);
+        return await conn.listTools();
+    } catch (err) {
+        log.debug('Failed to discover MCP tools', { projectPath, error: err?.message || String(err) });
+        return [];
+    }
 }
 
 /**

@@ -189,12 +189,12 @@
   async function chooseWorkflow(preset) {
     workflowPreset = preset;
     if (preset === 'gui') {
-      await updateSetting('showAiChatByDefault', false);
+      await updateSetting('aiChatEnabled', false);
       await updateSetting('keepPreviewRunningWithoutTab', true);
       return;
     }
 
-    await updateSetting('showAiChatByDefault', true);
+    await updateSetting('aiChatEnabled', true);
     await updateSetting('keepPreviewRunningWithoutTab', false);
   }
 

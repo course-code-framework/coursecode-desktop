@@ -349,8 +349,8 @@
           <label class="toggle-check">
             <input
               type="checkbox"
-              checked={$settings.showAiChatByDefault !== false}
-              onchange={(e) => updateSetting('showAiChatByDefault', e.target.checked)}
+              checked={$settings.aiChatEnabled === true}
+              onchange={(e) => updateSetting('aiChatEnabled', e.target.checked)}
             />
             <span>Enabled</span>
           </label>
@@ -635,7 +635,7 @@
           </div>
           <button class="btn-secondary" onclick={logout}>Sign Out</button>
         </div>
-        {#if $credits != null}
+        {#if $credits?.remaining != null}
           <div class="credits-row">
             <div class="credits-display">
               <span class="credits-value">{Math.round($credits.remaining)}</span>

@@ -14,13 +14,58 @@
 
   function renderMarkdown(text) {
     if (!text) return '';
-    return marked.parse(text);
+    return sanitizeRenderedHtml(marked.parse(text));
+  }
+
+  function sanitizeRenderedHtml(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+
+    template.content.querySelectorAll('script,style,iframe,object,embed,link,meta').forEach(node => node.remove());
+
+    for (const el of template.content.querySelectorAll('*')) {
+      for (const attr of [...el.attributes]) {
+        const name = attr.name.toLowerCase();
+        const value = (attr.value || '').trim();
+        if (name.startsWith('on')) {
+          el.removeAttribute(attr.name);
+          continue;
+        }
+        if ((name === 'href' || name === 'src') && /^javascript:/i.test(value)) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    }
+
+    return template.innerHTML;
+  }
+
+  function handleMarkdownClick(event) {
+    const anchor = event.target?.closest('a');
+    if (!anchor) return;
+
+    const href = anchor.getAttribute('href') || '';
+    const isExternal = /^https?:\/\//i.test(href);
+    if (isExternal) return;
+
+    if (!href || href.startsWith('#')) return;
+
+    event.preventDefault();
+    const normalized = href
+      .replace(/^\.\//, '')
+      .replace(/^\//, '')
+      .replace(/\\/g, '/');
+    const openFileEvent = new CustomEvent('openfile', {
+      detail: { path: normalized },
+      bubbles: true
+    });
+    document.dispatchEvent(openFileEvent);
   }
 
   function formatUsage(usage) {
     if (!usage) return '';
-    if (usage.creditsCharged > 0) {
-      return `${Math.round(usage.creditsCharged)} credits`;
+    if (usage.creditsCharged != null) {
+      return `${Math.round(usage.creditsCharged)} credits used`;
     }
     const count = (usage.inputTokens || 0) + (usage.outputTokens || 0);
     if (!count) return '';
@@ -103,7 +148,7 @@
         <div class="error-icon">⚠️</div>
       {/if}
 
-      <div class="markdown-body">
+      <div class="markdown-body" onclick={handleMarkdownClick}>
         {@html renderMarkdown(message.content)}
       </div>
 

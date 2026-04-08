@@ -14,7 +14,8 @@ const DEFAULTS = {
     projectsDir: join(homedir(), 'CourseCode Projects'),
     defaultFormat: 'cmi5',
     defaultLayout: 'article',
-    showAiChatByDefault: true,
+    aiChatEnabled: false,
+    showAiChatByDefault: false,
     keepPreviewRunningWithoutTab: false,
     previewPorts: {},
     theme: 'system',
@@ -46,6 +47,15 @@ export function loadSettings() {
         settings = { ...DEFAULTS };
     }
 
+    // Backward/forward compatibility for AI chat toggle key.
+    if (typeof settings.aiChatEnabled !== 'boolean' && typeof settings.showAiChatByDefault === 'boolean') {
+        settings.aiChatEnabled = settings.showAiChatByDefault;
+    }
+    if (typeof settings.showAiChatByDefault !== 'boolean') {
+        settings.showAiChatByDefault = settings.aiChatEnabled;
+    }
+    settings.showAiChatByDefault = settings.aiChatEnabled;
+
     // Ensure projects directory exists
     if (!existsSync(settings.projectsDir)) {
         mkdirSync(settings.projectsDir, { recursive: true });
@@ -70,13 +80,22 @@ export function getSetting(key) {
 
 /** Set a single setting value and persist. */
 export function saveSetting(key, value) {
-    settings[key] = value;
+    if (key === 'aiChatEnabled' || key === 'showAiChatByDefault') {
+        settings.aiChatEnabled = !!value;
+        settings.showAiChatByDefault = !!value;
+    } else {
+        settings[key] = value;
+    }
     persistSettings();
 }
 
 /** Get all settings. */
 export function getAllSettings() {
-    return { ...settings };
+    return {
+        ...settings,
+        aiChatEnabled: !!settings.aiChatEnabled,
+        showAiChatByDefault: !!settings.aiChatEnabled
+    };
 }
 
 /** Check if this is the first launch (setup not completed). */

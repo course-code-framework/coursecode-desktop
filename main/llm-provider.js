@@ -270,13 +270,101 @@ async function createOpenAIProvider(apiKey) {
     const { default: OpenAI } = await import('openai');
     const client = new OpenAI({ apiKey });
 
+    function toToolCallIndex(rawIndex, fallback = 0) {
+        if (Number.isInteger(rawIndex)) return rawIndex;
+        const parsed = Number(rawIndex);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function toOpenAIMessages(messages, system) {
+        const converted = [{ role: 'system', content: system }];
+
+        for (const msg of messages || []) {
+            if (!msg || typeof msg !== 'object') continue;
+
+            if (msg.role === 'user') {
+                if (typeof msg.content === 'string') {
+                    converted.push({ role: 'user', content: msg.content });
+                    continue;
+                }
+
+                if (Array.isArray(msg.content)) {
+                    const textParts = [];
+
+                    for (const block of msg.content) {
+                        if (!block || typeof block !== 'object') continue;
+
+                        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+                            textParts.push(block.text);
+                        }
+
+                        if (block.type === 'tool_result' && block.tool_use_id) {
+                            const resultContent = typeof block.content === 'string'
+                                ? block.content
+                                : JSON.stringify(block.content || {});
+                            converted.push({
+                                role: 'tool',
+                                tool_call_id: block.tool_use_id,
+                                content: resultContent
+                            });
+                        }
+                    }
+
+                    if (textParts.length > 0) {
+                        converted.push({ role: 'user', content: textParts.join('\n\n') });
+                    }
+                }
+                continue;
+            }
+
+            if (msg.role === 'assistant') {
+                if (typeof msg.content === 'string') {
+                    converted.push({ role: 'assistant', content: msg.content });
+                    continue;
+                }
+
+                if (Array.isArray(msg.content)) {
+                    const textParts = [];
+                    const toolCalls = [];
+
+                    for (const block of msg.content) {
+                        if (!block || typeof block !== 'object') continue;
+
+                        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+                            textParts.push(block.text);
+                        }
+
+                        if (block.type === 'tool_use' && block.id && block.name) {
+                            toolCalls.push({
+                                id: block.id,
+                                type: 'function',
+                                function: {
+                                    name: block.name,
+                                    arguments: JSON.stringify(block.input || {})
+                                }
+                            });
+                        }
+                    }
+
+                    if (toolCalls.length > 0) {
+                        converted.push({
+                            role: 'assistant',
+                            content: textParts.length > 0 ? textParts.join('\n\n') : '',
+                            tool_calls: toolCalls
+                        });
+                    } else if (textParts.length > 0) {
+                        converted.push({ role: 'assistant', content: textParts.join('\n\n') });
+                    }
+                }
+            }
+        }
+
+        return converted;
+    }
+
     return {
         async *chat({ messages, tools, system, model, signal }) {
-            // OpenAI uses system message in messages array
-            const fullMessages = [
-                { role: 'system', content: system },
-                ...messages
-            ];
+            const fullMessages = toOpenAIMessages(messages, system);
 
             const openaiTools = tools?.map(t => ({
                 type: 'function',
@@ -292,11 +380,13 @@ async function createOpenAIProvider(apiKey) {
                 messages: fullMessages,
                 tools: openaiTools?.length ? openaiTools : undefined,
                 stream: true,
+                stream_options: { include_usage: true },
             }, { signal });
 
-            let currentToolCall = null;
             let inputTokens = 0;
             let outputTokens = 0;
+            let lastFinishReason = null;
+            const toolCallsByIndex = new Map();
 
             for await (const chunk of stream) {
                 const delta = chunk.choices?.[0]?.delta;
@@ -307,34 +397,43 @@ async function createOpenAIProvider(apiKey) {
                 }
 
                 if (delta?.tool_calls) {
+                    let fallbackIdx = 0;
                     for (const tc of delta.tool_calls) {
-                        if (tc.id) {
-                            currentToolCall = { id: tc.id, name: tc.function?.name };
-                            yield { type: 'tool_use_start', id: tc.id, name: tc.function?.name };
-                        }
-                        if (tc.function?.arguments) {
-                            yield { type: 'tool_use_delta', json: tc.function.arguments };
-                        }
+                        const idx = toToolCallIndex(tc.index, fallbackIdx);
+                        fallbackIdx = idx + 1;
+                        const existing = toolCallsByIndex.get(idx) || { id: null, name: null, args: '' };
+                        if (tc.id) existing.id = tc.id;
+                        if (tc.function?.name) existing.name = tc.function.name;
+                        if (tc.function?.arguments) existing.args += tc.function.arguments;
+                        toolCallsByIndex.set(idx, existing);
                     }
                 }
 
-                if (finishReason === 'tool_calls') {
-                    yield { type: 'content_block_stop', index: 0 };
+                if (finishReason) {
+                    lastFinishReason = finishReason;
                 }
 
                 if (chunk.usage) {
                     inputTokens = chunk.usage.prompt_tokens || 0;
                     outputTokens = chunk.usage.completion_tokens || 0;
                 }
+            }
 
-                if (finishReason) {
-                    yield {
-                        type: 'done',
-                        stopReason: finishReason,
-                        usage: { inputTokens, outputTokens }
-                    };
+            if (lastFinishReason === 'tool_calls' && toolCallsByIndex.size > 0) {
+                const orderedCalls = Array.from(toolCallsByIndex.entries()).sort((a, b) => a[0] - b[0]);
+                for (const [index, tc] of orderedCalls) {
+                    if (!tc.name) continue;
+                    yield { type: 'tool_use_start', id: tc.id || `openai_tool_${index}`, name: tc.name };
+                    yield { type: 'tool_use_delta', json: tc.args || '{}' };
+                    yield { type: 'content_block_stop', index };
                 }
             }
+
+            yield {
+                type: 'done',
+                stopReason: lastFinishReason === 'tool_calls' ? 'tool_use' : (lastFinishReason || 'stop'),
+                usage: { inputTokens, outputTokens }
+            };
         },
 
         async validateKey() {
@@ -353,6 +452,37 @@ async function createOpenAIProvider(apiKey) {
 
 function getCloudBaseUrl() {
     return isLocalMode() ? 'http://localhost:3000' : 'https://coursecodecloud.com';
+}
+
+function extractCloudErrorDetails(payload, status) {
+    if (!payload || typeof payload !== 'object') {
+        return {
+            message: `Cloud proxy error: HTTP ${status}`,
+            errorCode: null
+        };
+    }
+
+    const message = payload.error || payload.message || payload.detail || `Cloud proxy error: HTTP ${status}`;
+    const errorCode = payload.errorCode || payload.error_code || payload.code || null;
+
+    return { message, errorCode };
+}
+
+function looksLikeNoCreditsError(errorCode, message) {
+    const normalizedCode = String(errorCode || '').toLowerCase();
+    const normalizedMessage = String(message || '').toLowerCase();
+
+    return (
+        normalizedCode === 'no_credits'
+        || normalizedCode === 'credits_exhausted'
+        || normalizedCode === 'insufficient_credits'
+        || normalizedCode === 'out_of_credits'
+        || normalizedMessage.includes('out of credits')
+        || normalizedMessage.includes('insufficient credits')
+        || normalizedMessage.includes('not enough credits')
+        || normalizedMessage.includes('credits exhausted')
+        || normalizedMessage.includes('no credits')
+    );
 }
 
 async function createCloudProxyProvider(token) {
@@ -395,9 +525,15 @@ async function createCloudProxyProvider(token) {
 
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+                const { message, errorCode } = extractCloudErrorDetails(err, res.status);
                 if (res.status === 401) throw Object.assign(new Error('Not signed in to CourseCode Cloud'), { status: 401 });
-                if (res.status === 402) throw Object.assign(new Error(err.error || 'Insufficient credits'), { status: 402 });
-                throw new Error(err.error || `Cloud proxy error: HTTP ${res.status}`);
+                if (res.status === 402) {
+                    if (looksLikeNoCreditsError(errorCode, message)) {
+                        throw Object.assign(new Error(message || 'Insufficient credits'), { status: 402, code: 'NO_CREDITS', errorCode });
+                    }
+                    throw Object.assign(new Error(message || 'Cloud AI request requires billing action.'), { status: 402, code: errorCode || 'BILLING_REQUIRED', errorCode });
+                }
+                throw Object.assign(new Error(message || `Cloud proxy error: HTTP ${res.status}`), { status: res.status, code: errorCode || undefined, errorCode });
             }
 
             const reader = res.body.getReader();

@@ -1,24 +1,33 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
-import { join } from 'path';
-import { createProvider, loadApiKey, estimateCost, getProviders, getCloudModels } from './llm-provider.js';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, unlinkSync } from 'fs';
+import { createHash } from 'crypto';
+import { app } from 'electron';
+import { join, resolve, dirname } from 'path';
+import { createProvider, loadApiKey, estimateCost, getCloudModels, getProviderModels } from './llm-provider.js';
 import { loadToken } from './cloud-client.js';
 import { buildSystemPrompt, getToolDefinitions } from './system-prompts.js';
 import { getSetting } from './settings.js';
 import { startPreview, getPreviewStatus } from './preview-manager.js';
-import { getMcpClient } from './mcp-client.js';
+import { getMcpClient, getMcpTools } from './mcp-client.js';
 import { listRefs, readRef } from './ref-manager.js';
 import { createSnapshot, getChanges } from './snapshot-manager.js';
 import { createLogger } from './logger.js';
 import { translateChatError } from './errors.js';
 import {
     TOOL_LABELS, PREVIEW_TOOLS, DEFAULT_PROVIDER, DEFAULT_MODEL, DEFAULT_CLOUD_MODEL,
-    TOOL_RESULT_MAX_CHARS, TOOL_RESULT_TRUNCATION_NOTE
+    TOOL_RESULT_MAX_CHARS, TOOL_RESULT_TRUNCATION_NOTE,
+    MAX_CONTEXT_CHARS, OLDER_MESSAGE_MAX_CHARS, FALLBACK_MODELS
 } from './ai-config.js';
 
 const log = createLogger('chat');
 
+const MENTION_TOTAL_MAX_CHARS = 12000;
+const MENTION_REF_MAX_CHARS = 6000;
+const MENTION_SLIDE_MAX_CHARS = 4500;
+const MENTION_INTERACTION_MAX_CHARS = 4500;
+
 // --- Active conversations by projectPath ---
 const conversations = new Map();
+const conversationSessions = new Map();
 
 // --- Active abort controllers ---
 const abortControllers = new Map();
@@ -29,6 +38,43 @@ function truncateContent(content) {
     if (typeof content !== 'string') content = JSON.stringify(content);
     if (content.length <= TOOL_RESULT_MAX_CHARS) return content;
     return content.slice(0, TOOL_RESULT_MAX_CHARS) + TOOL_RESULT_TRUNCATION_NOTE;
+}
+
+function truncateText(text, maxChars = OLDER_MESSAGE_MAX_CHARS) {
+    if (typeof text !== 'string') return text;
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)}\n...[truncated for context efficiency]`;
+}
+
+function estimateContentChars(content) {
+    if (typeof content === 'string') return content.length;
+    if (Array.isArray(content)) {
+        return content.reduce((sum, block) => {
+            if (!block) return sum;
+            if (typeof block.text === 'string') return sum + block.text.length;
+            if (typeof block.content === 'string') return sum + block.content.length;
+            return sum + JSON.stringify(block).length;
+        }, 0);
+    }
+    return JSON.stringify(content || '').length;
+}
+
+function compactMessageContent(content, isRecent) {
+    if (isRecent) return content;
+    if (typeof content === 'string') return truncateText(content);
+    if (Array.isArray(content)) {
+        return content.map(block => {
+            if (!block || typeof block !== 'object') return block;
+            if (block.type === 'text' && typeof block.text === 'string') {
+                return { ...block, text: truncateText(block.text) };
+            }
+            if (typeof block.content === 'string') {
+                return { ...block, content: truncateText(block.content) };
+            }
+            return block;
+        });
+    }
+    return content;
 }
 
 function stripImageBlocks(contentBlocks) {
@@ -44,6 +90,7 @@ function stripImageBlocks(contentBlocks) {
 function prepareApiMessages(messages) {
     const apiMessages = [];
     const lastIndex = messages.length - 1;
+    let contextChars = 0;
 
     for (let i = 0; i <= lastIndex; i++) {
         const m = messages[i];
@@ -53,7 +100,11 @@ function prepareApiMessages(messages) {
             // Skip empty user messages (Anthropic rejects them)
             const isEmpty = !m.content || (Array.isArray(m.content) && m.content.length === 0);
             if (isEmpty) continue;
-            apiMessages.push({ role: 'user', content: m.content });
+            const compacted = compactMessageContent(m.content, isRecent);
+            const messageChars = estimateContentChars(compacted);
+            if (!isRecent && contextChars + messageChars > MAX_CONTEXT_CHARS) continue;
+            contextChars += messageChars;
+            apiMessages.push({ role: 'user', content: compacted });
         } else if (m.role === 'assistant') {
             if (m._raw) {
                 const raw = { ...m._raw };
@@ -68,10 +119,25 @@ function prepareApiMessages(messages) {
                     );
                     // Skip if nothing left after filtering
                     if (raw.content.length === 0) continue;
+                    if (!isRecent) {
+                        raw.content = raw.content.map(block => {
+                            if (block.type === 'text' && block.text) {
+                                return { ...block, text: truncateText(block.text) };
+                            }
+                            return block;
+                        });
+                    }
                 }
+                const messageChars = estimateContentChars(raw.content);
+                if (!isRecent && contextChars + messageChars > MAX_CONTEXT_CHARS) continue;
+                contextChars += messageChars;
                 apiMessages.push(raw);
             } else if (m.content) {
-                apiMessages.push({ role: 'assistant', content: m.content });
+                const compacted = compactMessageContent(m.content, isRecent);
+                const messageChars = estimateContentChars(compacted);
+                if (!isRecent && contextChars + messageChars > MAX_CONTEXT_CHARS) continue;
+                contextChars += messageChars;
+                apiMessages.push({ role: 'assistant', content: compacted });
             }
         } else if (m.role === 'tool') {
             const contentStr = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
@@ -98,7 +164,8 @@ function prepareApiMessages(messages) {
 // --- Conversation persistence ---
 
 function getChatDir(projectPath) {
-    return join(projectPath, '.chat');
+    const projectId = createHash('sha256').update(resolve(projectPath)).digest('hex');
+    return join(app.getPath('userData'), 'chat-history', projectId);
 }
 
 function getConversationPath(projectPath) {
@@ -109,28 +176,113 @@ function getMemoryPath(projectPath) {
     return join(getChatDir(projectPath), 'context-memory.json');
 }
 
-function loadConversation(projectPath) {
-    const convPath = getConversationPath(projectPath);
-    if (!existsSync(convPath)) return [];
+function getLegacyChatDir(projectPath) {
+    return join(projectPath, '.chat');
+}
+
+function migrateLegacyChatStorage(projectPath) {
+    const legacyDir = getLegacyChatDir(projectPath);
+    if (!existsSync(legacyDir)) return;
+
+    const nextChatDir = getChatDir(projectPath);
+    if (!existsSync(nextChatDir)) mkdirSync(nextChatDir, { recursive: true });
+
+    const legacyConversation = join(legacyDir, 'conversation.json');
+    const legacyMemory = join(legacyDir, 'context-memory.json');
+    const nextConversation = getConversationPath(projectPath);
+    const nextMemory = getMemoryPath(projectPath);
+
     try {
-        const data = JSON.parse(readFileSync(convPath, 'utf-8'));
-        return data.messages || [];
+        if (existsSync(legacyConversation) && !existsSync(nextConversation)) {
+            writeFileSync(nextConversation, readFileSync(legacyConversation, 'utf-8'));
+        }
+        if (existsSync(legacyMemory) && !existsSync(nextMemory)) {
+            writeFileSync(nextMemory, readFileSync(legacyMemory, 'utf-8'));
+        }
+        rmSync(legacyDir, { recursive: true, force: true });
     } catch (err) {
-        log.warn('Failed to load conversation', err);
-        return [];
+        log.warn('Failed migrating legacy project-local chat storage', err);
     }
 }
 
-function saveConversation(projectPath, messages) {
+function normalizeSessionContext(session) {
+    if (!session || typeof session !== 'object') return null;
+    const mode = session.mode === 'cloud' ? 'cloud' : session.mode === 'byok' ? 'byok' : null;
+    if (!mode) return null;
+
+    const providerId = typeof session.providerId === 'string' && session.providerId.trim()
+        ? session.providerId.trim()
+        : null;
+    const modelId = typeof session.modelId === 'string' && session.modelId.trim()
+        ? session.modelId.trim()
+        : null;
+
+    return {
+        mode,
+        providerId,
+        modelId,
+        updatedAt: session.updatedAt || null
+    };
+}
+
+function loadConversationState(projectPath) {
+    migrateLegacyChatStorage(projectPath);
+    const convPath = getConversationPath(projectPath);
+    if (!existsSync(convPath)) return { messages: [], session: null };
+    try {
+        const data = JSON.parse(readFileSync(convPath, 'utf-8'));
+        return {
+            messages: Array.isArray(data.messages) ? data.messages : [],
+            session: normalizeSessionContext(data.session)
+        };
+    } catch (err) {
+        log.warn('Failed to load conversation', err);
+        return { messages: [], session: null };
+    }
+}
+
+function loadConversation(projectPath) {
+    return loadConversationState(projectPath).messages;
+}
+
+function saveConversation(projectPath, messages, session) {
     const chatDir = getChatDir(projectPath);
     if (!existsSync(chatDir)) mkdirSync(chatDir, { recursive: true });
     writeFileSync(
         getConversationPath(projectPath),
-        JSON.stringify({ messages, savedAt: new Date().toISOString() }, null, 2)
+        JSON.stringify({ messages, session: normalizeSessionContext(session), savedAt: new Date().toISOString() }, null, 2)
     );
 }
 
+function serializeConversation(messages = []) {
+    return messages.map(m => ({
+        role: m.role,
+        content: m.content,
+        _display: m._display,
+        _mentions: m._mentions,
+        _toolCalls: m._toolCalls,
+        _usage: m._usage,
+        _raw: m._raw,
+        tool_use_id: m.tool_use_id,
+        is_error: m.is_error
+    }));
+}
+
+function persistConversation(projectPath, messages, sessionOverride) {
+    const nextSession = normalizeSessionContext(
+        sessionOverride !== undefined
+            ? sessionOverride
+            : (conversationSessions.get(projectPath) || loadConversationState(projectPath).session)
+    );
+    conversations.set(projectPath, messages);
+    if (nextSession) conversationSessions.set(projectPath, nextSession);
+    else conversationSessions.delete(projectPath);
+
+    saveConversation(projectPath, serializeConversation(messages), nextSession);
+}
+
 function loadProjectMemory(projectPath) {
+    migrateLegacyChatStorage(projectPath);
     const memoryPath = getMemoryPath(projectPath);
     if (!existsSync(memoryPath)) return null;
     try {
@@ -263,23 +415,48 @@ function resolveMentions(projectPath, message, mentions = []) {
     if (!mentions.length) return message;
 
     const contextParts = [];
+    let totalChars = 0;
+    const appendMentionContext = (label, rawContent, maxPerMention) => {
+        if (!rawContent) return;
+        const remaining = MENTION_TOTAL_MAX_CHARS - totalChars;
+        if (remaining <= 0) return;
+
+        const clipped = String(rawContent).slice(0, Math.min(maxPerMention, remaining));
+        if (!clipped.trim()) return;
+
+        contextParts.push(`${label}\n${clipped}`);
+        totalChars += clipped.length;
+    };
+
     for (const mention of mentions) {
         try {
             if (mention.type === 'slide') {
                 const slidePath = join(projectPath, 'course', 'slides', `${mention.id}.js`);
                 if (existsSync(slidePath)) {
                     const content = readFileSync(slidePath, 'utf-8');
-                    contextParts.push(`[Referenced slide: "${mention.title}"]\n${content}`);
+                    appendMentionContext(
+                        `[Referenced slide: "${mention.title}"]`,
+                        content,
+                        MENTION_SLIDE_MAX_CHARS
+                    );
                 }
             } else if (mention.type === 'ref') {
                 const { content } = readRef(projectPath, mention.filename);
-                contextParts.push(`[Referenced document: "${mention.filename}"]\n${content}`);
+                appendMentionContext(
+                    `[Referenced document: "${mention.filename}"]`,
+                    content,
+                    MENTION_REF_MAX_CHARS
+                );
             } else if (mention.type === 'interaction') {
                 const assessmentFiles = readdirSync(join(projectPath, 'course', 'assessments')).filter(f => f.endsWith('.js'));
                 for (const file of assessmentFiles) {
                     const content = readFileSync(join(projectPath, 'course', 'assessments', file), 'utf-8');
                     if (content.includes(mention.id)) {
-                        contextParts.push(`[Referenced interaction: "${mention.id}"]\n${content}`);
+                        appendMentionContext(
+                            `[Referenced interaction: "${mention.id}"]`,
+                            content,
+                            MENTION_INTERACTION_MAX_CHARS
+                        );
                         break;
                     }
                 }
@@ -295,26 +472,99 @@ function resolveMentions(projectPath, message, mentions = []) {
     return message;
 }
 
+function mergeToolDefinitions(staticTools = [], discoveredTools = []) {
+    const merged = [];
+    const byName = new Map();
+
+    for (const tool of staticTools) {
+        if (!tool?.name) continue;
+        byName.set(tool.name, tool);
+        merged.push(tool);
+    }
+
+    for (const tool of discoveredTools) {
+        const name = tool?.name;
+        if (!name) continue;
+
+        const normalized = {
+            name,
+            description: tool.description || byName.get(name)?.description || `CourseCode tool: ${name}`,
+            input_schema: tool.inputSchema || tool.input_schema || byName.get(name)?.input_schema || { type: 'object', properties: {} }
+        };
+
+        if (byName.has(name)) {
+            const idx = merged.findIndex(t => t.name === name);
+            if (idx >= 0) merged[idx] = { ...merged[idx], ...normalized };
+            byName.set(name, merged[idx]);
+        } else {
+            byName.set(name, normalized);
+            merged.push(normalized);
+        }
+    }
+
+    return merged;
+}
+
+function sanitizeToolResultForModel(toolName, result) {
+    if (toolName === 'coursecode_screenshot' && result?.content && Array.isArray(result.content)) {
+        const textBlocks = result.content
+            .filter(block => block?.type === 'text' && typeof block.text === 'string')
+            .map(block => block.text.trim())
+            .filter(Boolean);
+        const imageCount = result.content.filter(block => block?.type === 'image').length;
+
+        const summary = [
+            textBlocks.join('\n').trim(),
+            imageCount > 0
+                ? `[${imageCount} screenshot image block(s) omitted from model context; screenshot already sent to the UI]`
+                : ''
+        ].filter(Boolean).join('\n\n');
+
+        return truncateContent(summary || '[Screenshot captured]');
+    }
+
+    const safeJson = JSON.stringify(result, (key, value) => {
+        if ((key === 'data' || key === 'base64') && typeof value === 'string' && value.length > 160) {
+            return `[omitted binary data: ${value.length} chars]`;
+        }
+        return value;
+    });
+
+    return truncateContent(safeJson);
+}
+
 // --- Tool execution ---
 
 async function executeTool(toolName, toolInput, projectPath, webContents) {
+    const resolveToolPath = (candidatePath) => {
+        if (typeof candidatePath !== 'string' || !candidatePath.trim()) {
+            throw new Error('Tool path must be a non-empty string');
+        }
+        const root = resolve(projectPath);
+        const target = resolve(root, candidatePath);
+        if (target !== root && !target.startsWith(`${root}\\`) && !target.startsWith(`${root}/`)) {
+            throw new Error(`Path escapes project root: ${candidatePath}`);
+        }
+        return target;
+    };
+
     // File operations
     if (toolName === 'read_file') {
-        const filePath = join(projectPath, toolInput.path);
+        const filePath = resolveToolPath(toolInput.path);
         if (!existsSync(filePath)) return { error: `File not found: ${toolInput.path}` };
         return { content: readFileSync(filePath, 'utf-8') };
     }
 
     if (toolName === 'write_file') {
-        const filePath = join(projectPath, toolInput.path);
-        const dir = join(filePath, '..');
+        const filePath = resolveToolPath(toolInput.path);
+        const dir = dirname(filePath);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         writeFileSync(filePath, toolInput.content);
         return { success: true, path: toolInput.path };
     }
 
     if (toolName === 'list_files') {
-        const dirPath = join(projectPath, toolInput.path || '.');
+        const dirPath = resolveToolPath(toolInput.path || '.');
         if (!existsSync(dirPath)) return { error: `Directory not found: ${toolInput.path}` };
         const entries = readdirSync(dirPath, { withFileTypes: true });
         return {
@@ -496,14 +746,20 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             return;
         }
 
-        const providerCatalog = await getProviders();
-        const providerModels = providerCatalog.find(p => p.id === providerId)?.models || [];
+        const providerModels = getProviderModels(providerId);
         const modelIds = new Set((providerModels || []).map(m => m.id));
         if (modelIds.size > 0 && !modelIds.has(modelId)) {
             const defaultProviderModel = providerModels.find(m => m.default)?.id || providerModels[0]?.id;
             if (defaultProviderModel) {
                 log.info('BYOK model not available for provider, falling back to provider default', { providerId, requested: modelId, fallback: defaultProviderModel });
                 modelId = defaultProviderModel;
+            }
+        }
+
+        if (!modelId) {
+            modelId = providerModels.find(m => m.default)?.id || providerModels[0]?.id || FALLBACK_MODELS[providerId] || DEFAULT_MODEL;
+            if (modelId) {
+                log.info('Using BYOK fallback model', { providerId, fallback: modelId });
             }
         }
 
@@ -517,12 +773,25 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     }
 
     // Load or init conversation
-    let messages = conversations.get(projectPath) || loadConversation(projectPath);
+    let messages = conversations.get(projectPath);
+    if (!messages) {
+        const state = loadConversationState(projectPath);
+        messages = state.messages;
+        conversations.set(projectPath, messages);
+        if (state.session) conversationSessions.set(projectPath, state.session);
+    }
+
+    const sessionContext = {
+        mode: isCloud ? 'cloud' : 'byok',
+        providerId,
+        modelId,
+        updatedAt: new Date().toISOString()
+    };
 
     // Resolve mentions and append user message
     const resolvedMessage = resolveMentions(projectPath, userMessage, mentions);
     messages.push({ role: 'user', content: resolvedMessage, _display: userMessage, _mentions: mentions });
-    conversations.set(projectPath, messages);
+    persistConversation(projectPath, messages, sessionContext);
 
     // Set up abort controller
     const controller = new AbortController();
@@ -545,6 +814,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     try {
         const provider = await createProvider(providerId, credential);
+        let runtimeTools = getToolDefinitions();
+        if (getPreviewStatus(projectPath) === 'running') {
+            const discoveredTools = await getMcpTools(projectPath);
+            runtimeTools = mergeToolDefinitions(runtimeTools, discoveredTools);
+        }
         log.debug('Provider created, starting agentic loop');
         let sessionInputTokens = 0;
         let sessionOutputTokens = 0;
@@ -554,6 +828,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
         // Agentic loop: keep calling LLM until it stops requesting tools
         let continueLoop = true;
+        let hadToolErrors = false;
         let planSteps = executionPlan.map(s => ({ ...s }));
         const markPlanStep = (stepId, status, note) => {
             planSteps = planSteps.map(s => s.id === stepId ? { ...s, status } : s);
@@ -579,7 +854,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             log.debug('Calling LLM', { messageCount: apiMessages.length, model: modelId });
             const stream = provider.chat({
                 messages: apiMessages,
-                tools: getToolDefinitions(),
+                tools: runtimeTools,
                 system: systemPrompt,
                 model: modelId,
                 signal: controller.signal
@@ -664,12 +939,14 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     if (assistantContent.length > 0) {
                         apiMessages.push({ role: 'assistant', content: assistantContent });
                     }
+                    persistConversation(projectPath, messages, sessionContext);
 
-                    // Execute tool calls in parallel
+                    // Execute tool calls sequentially to preserve deterministic ordering.
                     if (currentToolCalls.length > 0) {
                         markPlanStep('inspect', 'completed', 'Context gathered');
                         markPlanStep('author', 'in_progress', 'Applying requested course updates');
-                        const toolResults = await Promise.all(currentToolCalls.map(async (tc) => {
+                        const toolResults = [];
+                        for (const tc of currentToolCalls) {
                             log.debug(`Executing tool: ${tc.name}`);
                             try {
                                 const result = await executeTool(tc.name, tc.input, projectPath, webContents);
@@ -702,7 +979,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     detail: tc.input?.path || tc.input?.slideId || undefined
                                 });
 
-                                return {
+                                toolResults.push({
                                     meta: {
                                         id: tc.id,
                                         name: tc.name,
@@ -714,10 +991,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     },
                                     type: 'tool_result',
                                     tool_use_id: tc.id,
-                                    content: typeof result === 'string' ? result : JSON.stringify(result)
-                                };
+                                    content: sanitizeToolResultForModel(tc.name, result)
+                                });
                             } catch (err) {
                                 log.warn(`Tool execution failed: ${tc.name}`, err);
+                                hadToolErrors = true;
                                 const finishedAt = Date.now();
                                 const elapsedMs = Math.max(0, finishedAt - (tc.startedAt || finishedAt));
                                 webContents?.send('chat:toolUse', {
@@ -733,7 +1011,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     detail: tc.input?.path || tc.input?.slideId || undefined
                                 });
 
-                                return {
+                                toolResults.push({
                                     meta: {
                                         id: tc.id,
                                         name: tc.name,
@@ -747,9 +1025,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     tool_use_id: tc.id,
                                     content: JSON.stringify({ error: err.message }),
                                     is_error: true
-                                };
+                                });
                             }
-                        }));
+                        }
 
                         // Add tool results to conversation
                         const toolMetaById = new Map();
@@ -778,6 +1056,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             });
                         }
 
+                        persistConversation(projectPath, messages, sessionContext);
+
                         // Continue the loop — LLM needs to process tool results
                         continueLoop = true;
                         currentText = '';
@@ -794,18 +1074,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         }
 
         // Save conversation
-        conversations.set(projectPath, messages);
-        saveConversation(projectPath, messages.map(m => ({
-            role: m.role,
-            content: m.content,
-            _display: m._display,
-            _mentions: m._mentions,
-            _toolCalls: m._toolCalls,
-            _usage: m._usage,
-            _raw: m._raw,
-            tool_use_id: m.tool_use_id,
-            is_error: m.is_error
-        })));
+        persistConversation(projectPath, messages, sessionContext);
 
         log.info('Chat complete', {
             inputTokens: sessionInputTokens,
@@ -827,6 +1096,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
                 webContents?.send('chat:changeSummary', {
                     projectPath,
+                    label: snap.label,
+                    timestamp: snap.timestamp,
                     added: changes.added,
                     modified: changes.modified,
                     deleted: changes.deleted,
@@ -835,8 +1106,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             }
         } catch (err) { log.debug('Post-AI snapshot failed', err); }
 
-        markPlanStep('author', 'completed', 'Requested updates applied');
-        markPlanStep('verify', 'completed', 'Validation complete');
+        markPlanStep('author', hadToolErrors ? 'error' : 'completed', hadToolErrors ? 'Some tool actions failed' : 'Requested updates applied');
+        markPlanStep('verify', hadToolErrors ? 'error' : 'completed', hadToolErrors ? 'Review suggested due to tool errors' : 'Validation complete');
         markPlanStep('summarize', 'completed', 'Response finalized');
 
         // Done
@@ -854,7 +1125,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 outputTokens: sessionOutputTokens,
                 totalTokens: sessionInputTokens + sessionOutputTokens,
                 estimatedCost: cost,
-                creditsCharged: sessionCreditsCharged || undefined
+                creditsCharged: isCloud ? sessionCreditsCharged : undefined
             }
         });
 
@@ -866,8 +1137,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         });
         webContents?.send('chat:plan', {
             projectPath,
-            status: 'completed',
-            steps: planSteps.map(s => ({ ...s, status: 'completed' }))
+            status: hadToolErrors ? 'completed_with_errors' : 'completed',
+            steps: planSteps
         });
 
     } catch (err) {
@@ -877,6 +1148,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         }
 
         log.error('Chat flow failed', err);
+        persistConversation(projectPath, messages);
         const userMessage = translateChatError(err, isCloud);
         webContents?.send('chat:error', { projectPath, message: userMessage });
     } finally {
@@ -907,21 +1179,23 @@ export function stopGeneration(projectPath) {
 
 export function clearConversation(projectPath) {
     conversations.delete(projectPath);
+    conversationSessions.delete(projectPath);
+    migrateLegacyChatStorage(projectPath);
     const convPath = getConversationPath(projectPath);
     if (existsSync(convPath)) {
-        const { unlinkSync } = require('fs');
         unlinkSync(convPath);
     }
     const memoryPath = getMemoryPath(projectPath);
     if (existsSync(memoryPath)) {
-        const { unlinkSync } = require('fs');
         unlinkSync(memoryPath);
     }
 }
 
 export function loadHistory(projectPath) {
-    const messages = loadConversation(projectPath);
+    const { messages, session } = loadConversationState(projectPath);
     conversations.set(projectPath, messages);
+    if (session) conversationSessions.set(projectPath, session);
+    else conversationSessions.delete(projectPath);
     return messages.map(m => ({
         role: m.role,
         content: m._display || m.content,
@@ -929,4 +1203,28 @@ export function loadHistory(projectPath) {
         usage: m._usage,
         mentions: m._mentions
     })).filter(m => m.role === 'user' || m.role === 'assistant');
+}
+
+export function getSessionContext(projectPath) {
+    if (conversationSessions.has(projectPath)) {
+        return conversationSessions.get(projectPath);
+    }
+    const { session } = loadConversationState(projectPath);
+    if (session) conversationSessions.set(projectPath, session);
+    return session;
+}
+
+export function resetConversationCache(projectPath, options = {}) {
+    const { reloadFromDisk = false } = options;
+
+    if (!reloadFromDisk) {
+        conversations.delete(projectPath);
+        conversationSessions.delete(projectPath);
+        return;
+    }
+
+    const { messages, session } = loadConversationState(projectPath);
+    conversations.set(projectPath, messages);
+    if (session) conversationSessions.set(projectPath, session);
+    else conversationSessions.delete(projectPath);
 }

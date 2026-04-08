@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { createTempUserData, setUserDataDir } from '../mocks/electron.js';
 
 // Mock electron
 vi.mock('electron', () => import('../mocks/electron.js'));
@@ -11,47 +12,50 @@ const {
 } = await import('../../main/snapshot-manager.js');
 
 let projectDir;
+let userDataDir;
 
 beforeEach(() => {
     projectDir = mkdtempSync(join(tmpdir(), 'cc-snapshot-test-'));
+    userDataDir = createTempUserData();
+    setUserDataDir(userDataDir);
 });
 
 afterEach(() => {
     rmSync(projectDir, { recursive: true, force: true });
+    rmSync(userDataDir, { recursive: true, force: true });
 });
 
 describe('initRepo', () => {
 
-    it('creates a .git directory', async () => {
+    it('initializes history without creating project-local .git', async () => {
         await initRepo(projectDir);
-        expect(existsSync(join(projectDir, '.git'))).toBe(true);
+        expect(existsSync(join(projectDir, '.git'))).toBe(false);
+        expect(hasRepo(projectDir)).toBe(true);
     });
 
-    it('creates a default .gitignore', async () => {
+    it('does not create a project-local .gitignore', async () => {
         await initRepo(projectDir);
-        const gitignore = readFileSync(join(projectDir, '.gitignore'), 'utf-8');
-        expect(gitignore).toContain('node_modules/');
-        expect(gitignore).toContain('.coursecode-chat/');
+        expect(existsSync(join(projectDir, '.gitignore'))).toBe(false);
     });
 
-    it('does not overwrite existing .gitignore', async () => {
-        writeFileSync(join(projectDir, '.gitignore'), 'custom-ignore');
+    it('does not modify an existing project .gitignore', async () => {
+        writeFileSync(join(projectDir, '.gitignore'), 'custom-ignore\n');
         await initRepo(projectDir);
         const gitignore = readFileSync(join(projectDir, '.gitignore'), 'utf-8');
-        expect(gitignore).toBe('custom-ignore');
+        expect(gitignore).toBe('custom-ignore\n');
     });
 
     it('is idempotent (second call is a no-op)', async () => {
         await initRepo(projectDir);
         // Should not throw or recreate
         await initRepo(projectDir);
-        expect(existsSync(join(projectDir, '.git'))).toBe(true);
+        expect(hasRepo(projectDir)).toBe(true);
     });
 });
 
 describe('hasRepo', () => {
 
-    it('returns false for a directory without .git', () => {
+    it('returns false before snapshot repo init', () => {
         expect(hasRepo(projectDir)).toBe(false);
     });
 
@@ -89,6 +93,18 @@ describe('createSnapshot', () => {
         writeFileSync(join(projectDir, 'second.txt'), 'b');
         const snap2 = await createSnapshot(projectDir, 'Second');
         expect(snap2.id).toBeTruthy();
+    });
+
+    it('ignores project-local .git internals when creating snapshots', async () => {
+        mkdirSync(join(projectDir, '.git'), { recursive: true });
+        writeFileSync(join(projectDir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+        writeFileSync(join(projectDir, 'course.txt'), 'content');
+
+        const snap = await createSnapshot(projectDir, 'Ignore real git internals');
+        const diff = await diffSnapshot(projectDir, snap.id);
+
+        expect(diff.added).toContain('course.txt');
+        expect(diff.added.some((p) => p === '.git' || p.startsWith('.git/'))).toBe(false);
     });
 });
 

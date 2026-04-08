@@ -4,15 +4,16 @@
   import MentionDropdown from '../components/MentionDropdown.svelte';
   import ModelPicker from '../components/ModelPicker.svelte';
   import Icon from '../components/Icon.svelte';
+  import { showToast } from '../stores/toast.js';
   import {
     messages, streaming, streamingText, activeTools,
     sessionUsage, sessionCredits, mentionIndex, aiMode, credits, chatPlan,
     subscribeToChatEvents, unsubscribeFromChatEvents,
-    sendMessage, stopGeneration, clearChat, loadChatHistory,
+    sendMessage, stopGeneration, clearChat, loadChatHistory, loadCredits,
     refreshMentionIndex, formatTokens, formatCost
   } from '../stores/chat.js';
 
-  let { projectPath, refCount = 0, onOpenRefs, onOpenOutline } = $props();
+  let { projectPath, refCount = 0, onOpenRefs, onOpenOutline, onSnapshotRestored } = $props();
 
   let inputText = $state('');
   let inputEl = $state(null);
@@ -33,13 +34,28 @@
   let hasOutline = $state(false);
   let unsubWorkflow = null;
   let walkthroughDismissed = $state(false);
+  let restorePoints = $state([]);
+  let restorePointsCollapsed = $state(false);
+  let expandedChanges = $state(new Set());
+  let expandedDiffs = $state(new Set());
+  let loadingDiffs = $state(new Set());
+  let applyingFileOps = $state(new Set());
+  let diffCache = $state({});
+  let restoringSnapshotId = $state(null);
+  let historyReady = $state(false);
 
   // --- Lifecycle ---
 
   onMount(async () => {
     subscribeToChatEvents();
+    historyReady = false;
     await loadChatHistory(projectPath);
+    await loadRestorePoints();
     await refreshMentionIndex(projectPath);
+    if ($aiMode === 'cloud') {
+      await loadCredits();
+    }
+    historyReady = true;
     scrollToBottom();
 
     // Listen for menu bar "New Chat" command
@@ -60,6 +76,7 @@
         workflowId = null;
         checkOutline();
         refreshMentionIndex(projectPath);
+        loadRestorePoints();
       } else if (data.type === 'error') {
         workflowError = data.message;
         workflowActive = false;
@@ -343,6 +360,189 @@
     }
     startBuildCourse();
   }
+
+  async function loadRestorePoints() {
+    try {
+      const list = await window.api.snapshots.list(projectPath);
+      restorePoints = (list || []).slice(0, 12);
+    } catch {
+      restorePoints = [];
+    }
+  }
+
+  function formatRestoreTime(iso) {
+    if (!iso) return '';
+    const date = new Date(iso);
+    const now = Date.now();
+    const diff = now - date.getTime();
+    if (diff < 60000) return 'Just now';
+    if (diff < 3600000) return `${Math.floor(diff / 60000)} min ago`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    if (diff < 172800000) return 'Yesterday';
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function totalChanged(message) {
+    return (message.added?.length || 0) + (message.modified?.length || 0) + (message.deleted?.length || 0);
+  }
+
+  function isExpanded(id) {
+    return expandedChanges.has(id);
+  }
+
+  function toggleExpanded(id) {
+    const next = new Set(expandedChanges);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    expandedChanges = next;
+  }
+
+  function openPath(path) {
+    if (!path) return;
+    const event = new CustomEvent('openfile', { detail: { path }, bubbles: true });
+    document.dispatchEvent(event);
+  }
+
+  function getDiffKey(snapshotId, filepath) {
+    return `${snapshotId}::${filepath}`;
+  }
+
+  function getApplyKey(snapshotId, filepath, source) {
+    return `${snapshotId}::${filepath}::${source}`;
+  }
+
+  function isDiffExpanded(snapshotId, filepath) {
+    return expandedDiffs.has(getDiffKey(snapshotId, filepath));
+  }
+
+  function isDiffLoading(snapshotId, filepath) {
+    return loadingDiffs.has(getDiffKey(snapshotId, filepath));
+  }
+
+  function isApplying(snapshotId, filepath, source) {
+    return applyingFileOps.has(getApplyKey(snapshotId, filepath, source));
+  }
+
+  function getDiffData(snapshotId, filepath) {
+    return diffCache[getDiffKey(snapshotId, filepath)] || null;
+  }
+
+  function linePrefix(type) {
+    if (type === 'add') return '+';
+    if (type === 'remove') return '-';
+    return ' ';
+  }
+
+  async function toggleFileDiff(snapshotId, filepath) {
+    if (!snapshotId || !filepath) return;
+    const key = getDiffKey(snapshotId, filepath);
+    const nextExpanded = new Set(expandedDiffs);
+    if (nextExpanded.has(key)) {
+      nextExpanded.delete(key);
+      expandedDiffs = nextExpanded;
+      return;
+    }
+
+    nextExpanded.add(key);
+    expandedDiffs = nextExpanded;
+
+    if (diffCache[key]) return;
+
+    const nextLoading = new Set(loadingDiffs);
+    nextLoading.add(key);
+    loadingDiffs = nextLoading;
+    try {
+      const result = await window.api.snapshots.fileDiff(projectPath, snapshotId, filepath);
+      diffCache = { ...diffCache, [key]: result };
+    } catch (err) {
+      diffCache = {
+        ...diffCache,
+        [key]: {
+          status: 'missing',
+          filepath,
+          hunks: [{
+            oldStart: 1,
+            newStart: 1,
+            lines: [{ type: 'context', text: `Unable to load diff: ${err?.message || 'Unknown error'}`, oldLine: null, newLine: null }]
+          }]
+        }
+      };
+    } finally {
+      const doneLoading = new Set(loadingDiffs);
+      doneLoading.delete(key);
+      loadingDiffs = doneLoading;
+    }
+  }
+
+  async function applyFileVersion(snapshotId, filepath, source) {
+    if (!snapshotId || !filepath) return;
+    const applyKey = getApplyKey(snapshotId, filepath, source);
+    const nextApplying = new Set(applyingFileOps);
+    nextApplying.add(applyKey);
+    applyingFileOps = nextApplying;
+
+    try {
+      const payload = await window.api.snapshots.applyFileVersion(projectPath, snapshotId, filepath, source);
+      const op = payload?.result || null;
+      const snapshot = payload?.snapshot || null;
+      const changes = payload?.changes || { added: [], modified: [], deleted: [] };
+
+      if (snapshot || totalChanged({ ...changes })) {
+        messages.update(msgs => [
+          ...msgs,
+          {
+            role: 'system',
+            type: 'changeSummary',
+            label: snapshot?.label || (source === 'snapshot' ? `Applied snapshot version: ${filepath}` : `Applied previous version: ${filepath}`),
+            timestamp: snapshot?.timestamp || new Date().toISOString(),
+            added: changes.added || [],
+            modified: changes.modified || [],
+            deleted: changes.deleted || [],
+            snapshotId: snapshot?.id || null
+          }
+        ]);
+      }
+
+      if (op?.status === 'deleted') {
+        showToast({ type: 'success', message: 'Applied version removed this file from the project.' });
+      } else {
+        showToast({ type: 'success', message: source === 'snapshot' ? 'Applied snapshot version.' : 'Applied previous version.' });
+        openPath(filepath);
+      }
+
+      await loadRestorePoints();
+      await refreshMentionIndex(projectPath);
+    } catch (err) {
+      showToast({ type: 'error', message: `File update failed: ${err?.message || 'Unknown error'}` });
+    } finally {
+      const doneApplying = new Set(applyingFileOps);
+      doneApplying.delete(applyKey);
+      applyingFileOps = doneApplying;
+    }
+  }
+
+  async function restoreSnapshot(snapshotId) {
+    if (!snapshotId || restoringSnapshotId) return;
+    restoringSnapshotId = snapshotId;
+    try {
+      const result = await window.api.snapshots.restore(projectPath, snapshotId);
+      await loadRestorePoints();
+      await loadChatHistory(projectPath);
+      onSnapshotRestored?.(result);
+    } catch (err) {
+      showToast({ type: 'error', message: `Restore failed: ${err?.message || 'Unknown error'}` });
+    } finally {
+      restoringSnapshotId = null;
+    }
+  }
+
+  function formatStreamingHtml(text) {
+    const escaped = String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return escaped.replace(/\n/g, '<br>');
+  }
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
@@ -363,6 +563,35 @@
 
   <!-- Messages -->
   <div class="chat-body" bind:this={chatBodyEl}>
+    {#if !historyReady}
+      <div class="chat-loading-state" data-testid="chat-loading-state">
+        <span class="text-tertiary">Loading conversation…</span>
+      </div>
+    {:else}
+    {#if restorePoints.length > 0}
+      <div class="restore-points-card">
+        <button class="restore-points-header" onclick={() => restorePointsCollapsed = !restorePointsCollapsed}>
+          <span>Restore Points</span>
+          <span class="restore-points-count">{restorePoints.length}</span>
+        </button>
+        {#if !restorePointsCollapsed}
+          <div class="restore-points-list">
+            {#each restorePoints as snap}
+              <div class="restore-point-row">
+                <div class="restore-point-meta">
+                  <span class="restore-point-label">{snap.label}</span>
+                  <span class="restore-point-time">{formatRestoreTime(snap.timestamp)}</span>
+                </div>
+                <button class="btn-ghost btn-sm" disabled={restoringSnapshotId === snap.id} onclick={() => restoreSnapshot(snap.id)}>
+                  {restoringSnapshotId === snap.id ? 'Restoring…' : 'Restore'}
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if showWalkthrough}
       <div class="course-walkthrough">
         <div class="walkthrough-head">
@@ -403,7 +632,7 @@
         <div class="execution-plan-title">Course Plan</div>
         <div class="execution-steps">
           {#each $chatPlan.steps as step}
-            <div class="execution-step" class:done={step.status === 'completed'} class:active={step.status === 'in_progress'}>
+            <div class="execution-step" class:done={step.status === 'completed'} class:active={step.status === 'in_progress'} class:error={step.status === 'error'}>
               <span class="execution-dot"></span>
               <span>{step.label}</span>
             </div>
@@ -497,8 +726,9 @@
         </div>
       {/if}
     {:else}
-      {#each $messages as message}
+      {#each $messages as message, idx}
         {#if message.type === 'changeSummary'}
+          {@const changeId = message.snapshotId || `change-${idx}`}
           <div class="change-summary-card">
             <div class="change-summary-icon">
               <Icon size={14}>
@@ -508,13 +738,177 @@
             </div>
             <div class="change-summary-body">
               <span class="change-summary-title">
-                {(message.added?.length || 0) + (message.modified?.length || 0) + (message.deleted?.length || 0)} file{((message.added?.length || 0) + (message.modified?.length || 0) + (message.deleted?.length || 0)) !== 1 ? 's' : ''} changed
+                {totalChanged(message)} file{totalChanged(message) !== 1 ? 's' : ''} changed
               </span>
               <span class="change-summary-detail">
                 {#if message.added?.length > 0}+{message.added.length} added{/if}
                 {#if message.modified?.length > 0}{message.added?.length > 0 ? ' · ' : ''}~{message.modified.length} modified{/if}
                 {#if message.deleted?.length > 0}{(message.added?.length > 0 || message.modified?.length > 0) ? ' · ' : ''}−{message.deleted.length} deleted{/if}
               </span>
+              <div class="change-summary-actions">
+                <button class="btn-ghost btn-sm" onclick={() => toggleExpanded(changeId)}>
+                  {isExpanded(changeId) ? 'Hide Files' : 'Show Files'}
+                </button>
+                {#if message.snapshotId}
+                  <button class="btn-secondary btn-sm" disabled={restoringSnapshotId === message.snapshotId} onclick={() => restoreSnapshot(message.snapshotId)}>
+                    {restoringSnapshotId === message.snapshotId ? 'Restoring…' : 'Restore Point'}
+                  </button>
+                {/if}
+              </div>
+              {#if isExpanded(changeId)}
+                <div class="change-files">
+                  {#each message.added || [] as file}
+                    <div class="change-file-row">
+                      <button class="change-file added" onclick={() => openPath(file)}>+ {file}</button>
+                      {#if message.snapshotId}
+                        <button class="change-file-diff-btn" onclick={() => toggleFileDiff(message.snapshotId, file)}>
+                          {isDiffExpanded(message.snapshotId, file) ? 'Hide Diff' : 'View Diff'}
+                        </button>
+                      {/if}
+                    </div>
+                    {#if message.snapshotId && isDiffExpanded(message.snapshotId, file)}
+                      {@const diffData = getDiffData(message.snapshotId, file)}
+                      <div class="inline-diff">
+                        <div class="inline-diff-actions">
+                          <button
+                            class="btn-secondary btn-sm"
+                            disabled={isApplying(message.snapshotId, file, 'snapshot')}
+                            onclick={() => applyFileVersion(message.snapshotId, file, 'snapshot')}
+                          >
+                            {isApplying(message.snapshotId, file, 'snapshot') ? 'Applying…' : 'Use Snapshot Version'}
+                          </button>
+                          <button
+                            class="btn-ghost btn-sm"
+                            disabled={isApplying(message.snapshotId, file, 'parent')}
+                            onclick={() => applyFileVersion(message.snapshotId, file, 'parent')}
+                          >
+                            {isApplying(message.snapshotId, file, 'parent') ? 'Applying…' : 'Use Previous Version'}
+                          </button>
+                        </div>
+                        {#if isDiffLoading(message.snapshotId, file)}
+                          <div class="inline-diff-empty">Loading diff…</div>
+                        {:else if diffData?.hunks?.length > 0}
+                          {#each diffData.hunks as hunk}
+                            <div class="diff-hunk">
+                              <div class="diff-hunk-header">@@ -{hunk.oldStart} +{hunk.newStart} @@</div>
+                              {#each hunk.lines as line}
+                                <div class="diff-line" class:add={line.type === 'add'} class:remove={line.type === 'remove'}>
+                                  <span class="diff-line-num">{line.oldLine ?? ''}</span>
+                                  <span class="diff-line-num">{line.newLine ?? ''}</span>
+                                  <span class="diff-line-prefix">{linePrefix(line.type)}</span>
+                                  <span class="diff-line-text">{line.text}</span>
+                                </div>
+                              {/each}
+                            </div>
+                          {/each}
+                        {:else}
+                          <div class="inline-diff-empty">No line-level differences.</div>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/each}
+                  {#each message.modified || [] as file}
+                    <div class="change-file-row">
+                      <button class="change-file modified" onclick={() => openPath(file)}>~ {file}</button>
+                      {#if message.snapshotId}
+                        <button class="change-file-diff-btn" onclick={() => toggleFileDiff(message.snapshotId, file)}>
+                          {isDiffExpanded(message.snapshotId, file) ? 'Hide Diff' : 'View Diff'}
+                        </button>
+                      {/if}
+                    </div>
+                    {#if message.snapshotId && isDiffExpanded(message.snapshotId, file)}
+                      {@const diffData = getDiffData(message.snapshotId, file)}
+                      <div class="inline-diff">
+                        <div class="inline-diff-actions">
+                          <button
+                            class="btn-secondary btn-sm"
+                            disabled={isApplying(message.snapshotId, file, 'snapshot')}
+                            onclick={() => applyFileVersion(message.snapshotId, file, 'snapshot')}
+                          >
+                            {isApplying(message.snapshotId, file, 'snapshot') ? 'Applying…' : 'Use Snapshot Version'}
+                          </button>
+                          <button
+                            class="btn-ghost btn-sm"
+                            disabled={isApplying(message.snapshotId, file, 'parent')}
+                            onclick={() => applyFileVersion(message.snapshotId, file, 'parent')}
+                          >
+                            {isApplying(message.snapshotId, file, 'parent') ? 'Applying…' : 'Use Previous Version'}
+                          </button>
+                        </div>
+                        {#if isDiffLoading(message.snapshotId, file)}
+                          <div class="inline-diff-empty">Loading diff…</div>
+                        {:else if diffData?.hunks?.length > 0}
+                          {#each diffData.hunks as hunk}
+                            <div class="diff-hunk">
+                              <div class="diff-hunk-header">@@ -{hunk.oldStart} +{hunk.newStart} @@</div>
+                              {#each hunk.lines as line}
+                                <div class="diff-line" class:add={line.type === 'add'} class:remove={line.type === 'remove'}>
+                                  <span class="diff-line-num">{line.oldLine ?? ''}</span>
+                                  <span class="diff-line-num">{line.newLine ?? ''}</span>
+                                  <span class="diff-line-prefix">{linePrefix(line.type)}</span>
+                                  <span class="diff-line-text">{line.text}</span>
+                                </div>
+                              {/each}
+                            </div>
+                          {/each}
+                        {:else}
+                          <div class="inline-diff-empty">No line-level differences.</div>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/each}
+                  {#each message.deleted || [] as file}
+                    <div class="change-file-row">
+                      <span class="change-file deleted">− {file}</span>
+                      {#if message.snapshotId}
+                        <button class="change-file-diff-btn" onclick={() => toggleFileDiff(message.snapshotId, file)}>
+                          {isDiffExpanded(message.snapshotId, file) ? 'Hide Diff' : 'View Diff'}
+                        </button>
+                      {/if}
+                    </div>
+                    {#if message.snapshotId && isDiffExpanded(message.snapshotId, file)}
+                      {@const diffData = getDiffData(message.snapshotId, file)}
+                      <div class="inline-diff">
+                        <div class="inline-diff-actions">
+                          <button
+                            class="btn-secondary btn-sm"
+                            disabled={isApplying(message.snapshotId, file, 'snapshot')}
+                            onclick={() => applyFileVersion(message.snapshotId, file, 'snapshot')}
+                          >
+                            {isApplying(message.snapshotId, file, 'snapshot') ? 'Applying…' : 'Use Snapshot Version'}
+                          </button>
+                          <button
+                            class="btn-ghost btn-sm"
+                            disabled={isApplying(message.snapshotId, file, 'parent')}
+                            onclick={() => applyFileVersion(message.snapshotId, file, 'parent')}
+                          >
+                            {isApplying(message.snapshotId, file, 'parent') ? 'Applying…' : 'Use Previous Version'}
+                          </button>
+                        </div>
+                        {#if isDiffLoading(message.snapshotId, file)}
+                          <div class="inline-diff-empty">Loading diff…</div>
+                        {:else if diffData?.hunks?.length > 0}
+                          {#each diffData.hunks as hunk}
+                            <div class="diff-hunk">
+                              <div class="diff-hunk-header">@@ -{hunk.oldStart} +{hunk.newStart} @@</div>
+                              {#each hunk.lines as line}
+                                <div class="diff-line" class:add={line.type === 'add'} class:remove={line.type === 'remove'}>
+                                  <span class="diff-line-num">{line.oldLine ?? ''}</span>
+                                  <span class="diff-line-num">{line.newLine ?? ''}</span>
+                                  <span class="diff-line-prefix">{linePrefix(line.type)}</span>
+                                  <span class="diff-line-text">{line.text}</span>
+                                </div>
+                              {/each}
+                            </div>
+                          {/each}
+                        {:else}
+                          <div class="inline-diff-empty">No line-level differences.</div>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
             </div>
           </div>
         {:else}
@@ -545,14 +939,14 @@
                 {/each}
               </div>
               {#if $streamingText}
-                <div class="streaming-text">{@html $streamingText.replace(/\n/g, '<br>')}</div>
+                <div class="streaming-text">{@html formatStreamingHtml($streamingText)}</div>
               {/if}
             </div>
           </div>
         {:else if $streamingText}
           <div class="message message-assistant">
             <div class="message-content assistant-content">
-              <div class="streaming-text">{@html $streamingText.replace(/\n/g, '<br>')}</div>
+              <div class="streaming-text">{@html formatStreamingHtml($streamingText)}</div>
               <span class="cursor-blink">▎</span>
             </div>
           </div>
@@ -562,6 +956,7 @@
           </div>
         {/if}
       {/if}
+    {/if}
     {/if}
   </div>
 
@@ -573,7 +968,7 @@
         {#if $aiMode === 'cloud' && ($credits != null || $sessionCredits > 0)}
           <span class="credit-badge">
             <span class="credit-dot"></span>
-            {#if $credits != null}{Math.round($credits.remaining)} remaining{/if}{#if $sessionCredits > 0}{$credits != null ? ' · ' : ''}{Math.round($sessionCredits)} credits used{/if}
+            {#if $credits?.remaining != null}{Math.round($credits.remaining)} remaining{/if}{#if $sessionCredits > 0}{$credits?.remaining != null ? ' · ' : ''}{Math.round($sessionCredits)} credits used{/if}
           </span>
         {:else if $sessionUsage.inputTokens > 0}
           <span class="usage-badge">
@@ -859,6 +1254,11 @@
     color: var(--success);
   }
 
+  .execution-step:global(.error),
+  .execution-step.error {
+    color: var(--error);
+  }
+
   .execution-dot {
     width: 7px;
     height: 7px;
@@ -974,6 +1374,77 @@
     background: var(--bg-elevated);
     border-color: var(--border);
     color: var(--text-secondary);
+  }
+
+  .restore-points-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    margin-bottom: var(--sp-sm);
+    overflow: hidden;
+  }
+
+  .restore-points-header {
+    width: 100%;
+    border: none;
+    background: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-sm) var(--sp-md);
+    cursor: pointer;
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .restore-points-header:hover {
+    background: var(--bg-secondary);
+  }
+
+  .restore-points-count {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    font-weight: 500;
+  }
+
+  .restore-points-list {
+    border-top: 1px solid var(--border);
+    padding: var(--sp-xs) var(--sp-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .restore-point-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-sm);
+    padding: 4px 6px;
+    border-radius: var(--radius-sm);
+  }
+
+  .restore-point-row:hover {
+    background: var(--bg-secondary);
+  }
+
+  .restore-point-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .restore-point-label {
+    font-size: var(--text-xs);
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .restore-point-time {
+    font-size: 11px;
+    color: var(--text-tertiary);
   }
 
   .quick-btn.workflow {
@@ -1160,6 +1631,14 @@
 
   .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
   .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+  .chat-loading-state {
+    min-height: 88px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--sp-md);
+  }
 
   @keyframes typing {
     0%, 80%, 100% { transform: translateY(0); }
@@ -1351,6 +1830,137 @@
   .change-summary-detail {
     color: var(--text-tertiary);
     font-size: var(--text-xs);
+  }
+
+  .change-summary-actions {
+    display: flex;
+    gap: var(--sp-xs);
+    margin-top: 6px;
+  }
+
+  .change-files {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 6px;
+  }
+
+  .change-file {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    border: none;
+    background: none;
+    padding: 2px 0;
+    text-align: left;
+    color: var(--text-secondary);
+  }
+
+  button.change-file {
+    cursor: pointer;
+  }
+
+  button.change-file:hover {
+    text-decoration: underline;
+  }
+
+  .change-file.added { color: var(--success); }
+  .change-file.modified { color: var(--warning); }
+  .change-file.deleted { color: var(--error); }
+
+  .change-file-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-sm);
+  }
+
+  .change-file-diff-btn {
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    padding: 1px 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .change-file-diff-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-tertiary);
+  }
+
+  .inline-diff {
+    margin: 4px 0 8px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    overflow: hidden;
+  }
+
+  .inline-diff-actions {
+    display: flex;
+    gap: var(--sp-xs);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+  }
+
+  .inline-diff-empty {
+    padding: 8px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  .diff-hunk {
+    border-top: 1px solid var(--border);
+  }
+
+  .diff-hunk:first-child {
+    border-top: none;
+  }
+
+  .diff-hunk-header {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    background: var(--bg-secondary);
+    padding: 4px 8px;
+  }
+
+  .diff-line {
+    display: grid;
+    grid-template-columns: 40px 40px 14px 1fr;
+    gap: 6px;
+    align-items: start;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.35;
+    padding: 1px 8px;
+  }
+
+  .diff-line.add {
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+  }
+
+  .diff-line.remove {
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+  }
+
+  .diff-line-num {
+    color: var(--text-tertiary);
+    text-align: right;
+  }
+
+  .diff-line-prefix {
+    color: var(--text-secondary);
+    text-align: center;
+  }
+
+  .diff-line-text {
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   @keyframes chatPanelIn {

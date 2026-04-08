@@ -768,7 +768,7 @@
       </button>
       {#if $user}
         <button class="btn-ghost avatar-btn" onclick={onOpenSettings} title={$user.email}>
-          <div class="avatar">{$user.email?.[0]?.toUpperCase() || 'U'}</div>
+          <div class="avatar"><span class="avatar-initial">{$user.email?.[0]?.toUpperCase() || 'U'}</span></div>
         </button>
       {:else}
         <button class="btn-ghost" onclick={onOpenSettings}>Sign In</button>
@@ -1334,11 +1334,18 @@
     border-radius: 50%;
     background: var(--accent);
     color: var(--text-on-accent);
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: relative;
     font-size: var(--text-sm);
     font-weight: 700;
+    line-height: 1;
+  }
+
+  .avatar-initial {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    transform: translateY(0.5px);
   }
 
   .content {

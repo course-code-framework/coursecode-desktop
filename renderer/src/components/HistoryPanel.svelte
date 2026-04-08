@@ -3,7 +3,7 @@
   import Icon from './Icon.svelte';
   import { showToast } from '../stores/toast.js';
 
-  let { projectPath, onClose, onScrollToChat } = $props();
+  let { projectPath, onClose, onScrollToChat, onRestored } = $props();
 
   let snapshots = $state([]);
   let loading = $state(true);
@@ -48,8 +48,9 @@
     restoreTimeout = setTimeout(async () => {
       restoreToast = null;
       try {
-        await window.api.snapshots.restore(projectPath, snapshot.id);
+        const result = await window.api.snapshots.restore(projectPath, snapshot.id);
         await loadSnapshots();
+        await onRestored?.(result, snapshot);
       } catch (err) {
         showToast({ type: 'error', message: `Restore failed: ${err.message}` });
       }

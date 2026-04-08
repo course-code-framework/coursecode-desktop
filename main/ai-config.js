@@ -38,10 +38,16 @@ export const COURSE_SPECIFIC_RULES = `COURSE-SPECIFIC OPTIMIZATION:
 // ---------------------------------------------------------------------------
 
 export const MAX_TOKENS = 8192;
+export const MAX_CONTEXT_CHARS = 120000;
+export const OLDER_MESSAGE_MAX_CHARS = 1500;
 
 export const DEFAULT_PROVIDER = 'anthropic';
 export const DEFAULT_MODEL = null;
 export const DEFAULT_CLOUD_MODEL = null;
+export const FALLBACK_MODELS = {
+    anthropic: 'claude-3-5-sonnet-latest',
+    openai: 'gpt-4o'
+};
 
 // ---------------------------------------------------------------------------
 // Tool Definitions (sent to the LLM)

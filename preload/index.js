@@ -144,6 +144,8 @@ contextBridge.exposeInMainWorld('api', {
         restore: (projectPath, snapshotId) => ipcRenderer.invoke('snapshots:restore', projectPath, snapshotId),
         changes: (projectPath) => ipcRenderer.invoke('snapshots:changes', projectPath),
         diff: (projectPath, snapshotId) => ipcRenderer.invoke('snapshots:diff', projectPath, snapshotId),
+        fileDiff: (projectPath, snapshotId, filepath) => ipcRenderer.invoke('snapshots:fileDiff', projectPath, snapshotId, filepath),
+        applyFileVersion: (projectPath, snapshotId, filepath, source) => ipcRenderer.invoke('snapshots:applyFileVersion', projectPath, snapshotId, filepath, source),
         hasRepo: (projectPath) => ipcRenderer.invoke('snapshots:hasRepo', projectPath)
     },
 
@@ -156,6 +158,7 @@ contextBridge.exposeInMainWorld('api', {
         getMentions: (projectPath) => ipcRenderer.invoke('chat:getMentions', projectPath),
         summarizeContext: (projectPath) => ipcRenderer.invoke('chat:summarizeContext', projectPath),
         getContextMemory: (projectPath) => ipcRenderer.invoke('chat:getContextMemory', projectPath),
+        getSessionContext: (projectPath) => ipcRenderer.invoke('chat:getSessionContext', projectPath),
         onStream: (callback) => {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('chat:stream', handler);

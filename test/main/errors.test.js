@@ -57,12 +57,31 @@ describe('translateError', () => {
         expect(result.code).toBe('AUTH_EXPIRED');
     });
 
-    it('returns NO_CREDITS for 402 status', () => {
+    it('returns NO_CREDITS for 402 status when code indicates no credits', () => {
         const err = new Error('Payment Required');
         err.status = 402;
+        err.code = 'NO_CREDITS';
         const result = translateError(err);
         expect(result.code).toBe('NO_CREDITS');
         expect(result.message).toContain('credits');
+    });
+
+    it('does not force NO_CREDITS for generic 402 responses', () => {
+        const err = new Error('Model not enabled for this plan');
+        err.status = 402;
+        err.code = 'BILLING_REQUIRED';
+        const result = translateError(err);
+        expect(result.code).toBe('INTERNAL');
+        expect(result.message).toContain('Model not enabled for this plan');
+    });
+
+    it('does not classify generic credit-card billing messages as NO_CREDITS', () => {
+        const err = new Error('Billing action required: add a credit card to continue');
+        err.status = 402;
+        err.code = 'BILLING_REQUIRED';
+        const result = translateError(err);
+        expect(result.code).toBe('INTERNAL');
+        expect(result.message).toContain('Billing action required');
     });
 
     it('returns RATE_LIMITED for 429 status', () => {

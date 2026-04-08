@@ -5,11 +5,15 @@ import { startPreview, stopPreview, getPreviewStatus, getPreviewPort, getAllPrev
 import { exportBuild } from './build-manager.js';
 import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus, updatePreviewLink } from './cloud-client.js';
 import { getSetupStatus, installCLI, getDownloadUrl } from './cli-installer.js';
-import { sendMessage, stopGeneration, clearConversation, loadHistory, buildMentionIndex, summarizeContext, getContextMemory } from './chat-engine.js';
+import {
+    sendMessage, stopGeneration, clearConversation, loadHistory,
+    buildMentionIndex, summarizeContext, getContextMemory,
+    getSessionContext, resetConversationCache
+} from './chat-engine.js';
 import { listRefs, readRef, convertRef } from './ref-manager.js';
 import { getProviders, saveApiKey, removeApiKey, hasApiKey, getCloudModels, getCloudUsage } from './llm-provider.js';
 import { loadToken } from './cloud-client.js';
-import { listSnapshots, createSnapshot, restoreSnapshot, getChanges, diffSnapshot, hasRepo } from './snapshot-manager.js';
+import { listSnapshots, createSnapshot, restoreSnapshot, getChanges, diffSnapshot, diffSnapshotFile, applySnapshotFileVersion, hasRepo } from './snapshot-manager.js';
 import { runWorkflow, cancelWorkflow } from './workflow-runner.js';
 import { readProjectFile, writeProjectFile, listDirectory } from './file-manager.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
@@ -98,6 +102,7 @@ export function registerIpcHandlers() {
     handle('chat:getMentions', (_e, projectPath) => buildMentionIndex(projectPath));
     handle('chat:summarizeContext', (_e, projectPath) => summarizeContext(projectPath));
     handle('chat:getContextMemory', (_e, projectPath) => getContextMemory(projectPath));
+    handle('chat:getSessionContext', (_e, projectPath) => getSessionContext(projectPath));
 
     // --- References ---
     handle('refs:list', (_e, projectPath) => listRefs(projectPath));
@@ -105,12 +110,19 @@ export function registerIpcHandlers() {
     handle('refs:convert', (e, projectPath, filePath) => convertRef(projectPath, filePath, e.sender));
 
     // --- AI Settings ---
-    handle('ai:getConfig', () => {
+    handle('ai:getConfig', async () => {
         const settings = getAllSettings();
+        const currentProvider = settings.aiProvider;
+        const currentModel = settings.aiModel;
+        const providers = await getProviders();
         return {
-            provider: settings.aiProvider,
-            model: settings.aiModel,
-            hasKey: hasApiKey(settings.aiProvider),
+            providers,
+            currentProvider,
+            currentModel,
+            hasKey: hasApiKey(currentProvider),
+            // Legacy aliases for existing renderer code.
+            provider: currentProvider,
+            model: currentModel,
             customInstructions: settings.aiCustomInstructions
         };
     });
@@ -191,8 +203,35 @@ export function registerIpcHandlers() {
     // --- Snapshots ---
     handle('snapshots:list', (_e, projectPath) => listSnapshots(projectPath));
     handle('snapshots:create', (_e, projectPath, label) => createSnapshot(projectPath, label));
-    handle('snapshots:restore', (_e, projectPath, snapshotId) => restoreSnapshot(projectPath, snapshotId));
+    handle('snapshots:restore', async (_e, projectPath, snapshotId) => {
+        const restored = await restoreSnapshot(projectPath, snapshotId);
+        resetConversationCache(projectPath, { reloadFromDisk: true });
+        return restored;
+    });
     handle('snapshots:changes', (_e, projectPath) => getChanges(projectPath));
     handle('snapshots:diff', (_e, projectPath, snapshotId) => diffSnapshot(projectPath, snapshotId));
+    handle('snapshots:fileDiff', (_e, projectPath, snapshotId, filepath) => diffSnapshotFile(projectPath, snapshotId, filepath));
+    handle('snapshots:applyFileVersion', async (_e, projectPath, snapshotId, filepath, source) => {
+        const result = await applySnapshotFileVersion(projectPath, snapshotId, filepath, source);
+        const changes = await getChanges(projectPath);
+        const totalChanged = (changes.added?.length || 0) + (changes.modified?.length || 0) + (changes.deleted?.length || 0);
+
+        let snapshot = null;
+        if (totalChanged > 0) {
+            const actionLabel = source === 'parent' ? 'Applied previous file version' : 'Applied snapshot file version';
+            snapshot = await createSnapshot(projectPath, `${actionLabel}: ${filepath}`, {
+                files: changes,
+                source: 'chat-file-version',
+                filepath,
+                versionSource: source
+            });
+        }
+
+        return {
+            result,
+            changes,
+            snapshot
+        };
+    });
     handle('snapshots:hasRepo', (_e, projectPath) => hasRepo(projectPath));
 }
