@@ -67,7 +67,7 @@ const getSettingMock = settingsModule.getSetting;
 
 function defaultSettingValue(key) {
     if (key === 'aiProvider') return 'anthropic';
-    if (key === 'aiModel') return null;
+    if (key === 'aiModel') return 'claude-sonnet-4-20250514';
     if (key === 'cloudAiModel') return null;
     return null;
 }
