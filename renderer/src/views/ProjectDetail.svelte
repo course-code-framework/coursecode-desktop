@@ -83,15 +83,16 @@
       handleDeployProgress(data);
     });
 
-    // Always call startPreview here so we wait for readiness even if
-    // a background/server process is already tracked as running.
-    try {
-      startingPreview = true;
-      await startPreview({ openBrowser: false });
-    } catch (err) {
-      showToast({ type: 'error', message: `Failed to auto-start preview: ${err.message}` });
-    } finally {
-      startingPreview = false;
+    // Auto-start preview for chat workspace only.
+    if (chatPanelVisible) {
+      try {
+        startingPreview = true;
+        await startPreview({ openBrowser: false });
+      } catch (err) {
+        showToast({ type: 'error', message: `Failed to auto-start preview: ${err.message}` });
+      } finally {
+        startingPreview = false;
+      }
     }
 
     // Listen for openfile events from tool pills
@@ -597,6 +598,14 @@
     chatPanelVisible = nextVisible;
     try {
       await updateSetting('aiChatEnabled', nextVisible);
+      if (nextVisible && previewStatus !== 'running') {
+        startingPreview = true;
+        try {
+          await startPreview({ openBrowser: false });
+        } finally {
+          startingPreview = false;
+        }
+      }
     } catch {
       chatPanelVisible = !nextVisible;
       showToast({ type: 'error', message: 'Failed to save AI chat visibility preference.' });

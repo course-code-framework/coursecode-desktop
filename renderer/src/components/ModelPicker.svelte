@@ -77,6 +77,12 @@
     if (open) open = false;
   }
 
+  function openSettings() {
+    open = false;
+    document.dispatchEvent(new CustomEvent('open-settings'));
+    onClose?.();
+  }
+
   /** Compute $ tier for a cost value relative to the cheapest in the group */
   function getCostTier(cost, allCosts) {
     const valid = allCosts.filter(c => c != null && c > 0);
@@ -128,7 +134,7 @@
       <div class="section-label">
         Your Keys
         {#if !hasAnyKey}
-          <span class="setup-badge">Set up →</span>
+          <button type="button" class="setup-badge" onclick={openSettings}>Set up →</button>
         {/if}
       </div>
       {#if hasAnyKey}
@@ -305,11 +311,14 @@
   }
 
   .setup-badge {
+    border: none;
+    background: none;
     color: var(--accent);
     font-weight: 500;
     text-transform: none;
     letter-spacing: normal;
     cursor: pointer;
+    padding: 0;
   }
 
   .model-option {

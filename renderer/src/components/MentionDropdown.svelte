@@ -1,5 +1,5 @@
 <script>
-  let { items = [], visible = false, onSelect, selectedIndex = 0 } = $props();
+  let { items = [], visible = false, onSelect, onHover = null, selectedIndex = 0 } = $props();
 
   function handleKeydown(e) {
     // Handled by parent component
@@ -39,8 +39,6 @@
     return groups;
   }
 
-  // Flat index for keyboard navigation
-  let flatIndex = 0;
 </script>
 
 {#if visible && items.length > 0}
@@ -54,7 +52,7 @@
             class="mention-item"
             class:selected={globalIdx === selectedIndex}
             onclick={() => onSelect(item)}
-            onmouseenter={() => {}}
+            onmouseenter={() => onHover?.(globalIdx)}
           >
             <span class="mention-icon">{getIcon(item.type)}</span>
             <span class="mention-label">{getLabel(item)}</span>

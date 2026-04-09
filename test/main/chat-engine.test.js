@@ -123,7 +123,7 @@ describe('chat-engine storage and safety', () => {
         expect(chatFiles.some(file => file.endsWith('conversation.json'))).toBe(true);
     });
 
-    it('blocks path traversal for write_file tool calls', async () => {
+    it('blocks path traversal for edit_file tool calls', async () => {
         const outsidePath = join(projectDir, '..', 'evil.txt');
         let callCount = 0;
 
@@ -131,8 +131,8 @@ describe('chat-engine storage and safety', () => {
             async *chat() {
                 callCount += 1;
                 if (callCount === 1) {
-                    yield { type: 'tool_use_start', id: 'tool-1', name: 'write_file' };
-                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: '../evil.txt', content: 'bad' }) };
+                    yield { type: 'tool_use_start', id: 'tool-1', name: 'edit_file' };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: '../evil.txt', old_string: 'x', new_string: 'bad' }) };
                     yield { type: 'content_block_stop', index: 0 };
                     yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
                     return;

@@ -14,6 +14,7 @@
   } from '../stores/chat.js';
 
   let { projectPath, refCount = 0, onOpenRefs, onOpenOutline, onSnapshotRestored } = $props();
+  const isMac = navigator.platform.includes('Mac');
 
   let inputText = $state('');
   let inputEl = $state(null);
@@ -524,7 +525,7 @@
   <!-- Chat header with New Chat button -->
   {#if $messages.length > 0}
     <div class="chat-header">
-      <button class="new-chat-btn" onclick={handleClear} title="New conversation (⌘⇧N)">
+      <button class="new-chat-btn" onclick={handleClear} title={`New conversation (${isMac ? '⌘⇧N' : 'Ctrl+Shift+N'})`}>
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M13.5 2.5l-1-1-4 4H5v3.5l-1.5 1.5H14V7l-4.5-4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M2 14h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
@@ -939,6 +940,7 @@
         items={filteredMentions}
         visible={showMentions}
         selectedIndex={mentionSelectedIndex}
+        onHover={(index) => mentionSelectedIndex = index}
         onSelect={handleMentionSelect}
       />
 

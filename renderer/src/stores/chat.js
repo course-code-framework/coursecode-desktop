@@ -251,9 +251,21 @@ export async function sendMessage(projectPath, text, mentions = []) {
     chatPlan.set({ status: 'started', steps: [], note: '' });
     let mode;
     aiMode.subscribe(v => mode = v)();
-    await window.api.settings.set('defaultAiMode', mode);
-    await window.api.settings.set('aiModeInitialized', true);
-    await window.api.chat.send(projectPath, text, mentions, mode);
+    try {
+        await window.api.settings.set('defaultAiMode', mode);
+        await window.api.settings.set('aiModeInitialized', true);
+        await window.api.chat.send(projectPath, text, mentions, mode);
+    } catch (err) {
+        streaming.set(false);
+        streamingText.set('');
+        activeTools.set([]);
+        pendingScreenshots = [];
+        chatPlan.set({ status: 'error', steps: [], note: '' });
+        messages.update(msgs => [
+            ...msgs,
+            { role: 'assistant', content: err?.message || 'Failed to send message.', isError: true }
+        ]);
+    }
 }
 
 export async function stopGeneration(projectPath) {

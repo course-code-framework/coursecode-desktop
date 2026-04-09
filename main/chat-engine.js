@@ -471,8 +471,10 @@ function toolReason(toolName) {
             return 'Confirm current slide structure before editing';
         case 'read_file':
             return 'Inspect existing course content to preserve intent';
-        case 'write_file':
-            return 'Apply requested instructional content changes';
+        case 'edit_file':
+            return 'Apply targeted changes to course content';
+        case 'create_file':
+            return 'Create a new course file';
         case 'coursecode_screenshot':
             return 'Validate learner-facing visuals after edits';
         case 'coursecode_lint':
@@ -694,8 +696,21 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         return { content: readFileSync(filePath, 'utf-8') };
     }
 
-    if (toolName === 'write_file') {
+    if (toolName === 'edit_file') {
         const filePath = resolveToolPath(toolInput.path);
+        if (!existsSync(filePath)) return { error: `File not found: ${toolInput.path}` };
+        const content = readFileSync(filePath, 'utf-8');
+        const occurrences = content.split(toolInput.old_string).length - 1;
+        if (occurrences === 0) return { error: `old_string not found in ${toolInput.path}. Read the file first to see current content.` };
+        if (occurrences > 1) return { error: `old_string matches ${occurrences} locations in ${toolInput.path}. Include more surrounding lines to uniquely identify the target.` };
+        const updated = content.replace(toolInput.old_string, toolInput.new_string);
+        writeFileSync(filePath, updated);
+        return { success: true, path: toolInput.path };
+    }
+
+    if (toolName === 'create_file') {
+        const filePath = resolveToolPath(toolInput.path);
+        if (existsSync(filePath)) return { error: `File already exists: ${toolInput.path}. Use edit_file to modify existing files.` };
         const dir = dirname(filePath);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         writeFileSync(filePath, toolInput.content);
@@ -1334,6 +1349,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
         webContents?.send('chat:done', {
             projectPath,
+            message: messages.filter(m => m.role === 'assistant' && m.content).pop()?.content || '',
             usage: {
                 inputTokens: sessionInputTokens,
                 outputTokens: sessionOutputTokens,

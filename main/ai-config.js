@@ -22,10 +22,18 @@ CRITICAL RULES:
 
 PREFERRED WORKFLOW:
 1. Use coursecode_state first to understand the current course structure.
-2. Make changes via write_file.
-3. Take a screenshot to verify the result and describe what changed.
-4. Run coursecode_lint to catch any issues.
-5. Fix issues before moving on.`;
+2. Read files before editing to understand existing content.
+3. Use edit_file to make targeted changes (preferred) or create_file for new files.
+4. Take a screenshot to verify the result and describe what changed.
+5. Run coursecode_lint to catch any issues.
+6. Fix issues before moving on.
+
+FILE EDITING RULES:
+- Always use edit_file for modifying existing files. Never rewrite an entire file to change a few lines.
+- The old_string must match the file content exactly, including whitespace and indentation.
+- Include enough context lines in old_string to uniquely identify the target location.
+- Keep edits minimal and focused. Make multiple small edit_file calls rather than one large replacement.
+- Use create_file only when adding a brand-new file that does not exist yet.`;
 
 export const COURSE_SPECIFIC_RULES = `COURSE-SPECIFIC OPTIMIZATION:
 - Treat this as an instructional design assistant, not a generic coding assistant.
@@ -67,8 +75,21 @@ export const TOOL_DEFINITIONS = [
         }
     },
     {
-        name: 'write_file',
-        description: 'Write content to a file in the course project. Creates the file if it does not exist.',
+        name: 'edit_file',
+        description: 'Make a targeted edit to an existing file by replacing a specific string. The old_string must match exactly one location in the file. Include surrounding lines for context to ensure a unique match.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path relative to the project root' },
+                old_string: { type: 'string', description: 'The exact text to find in the file (must match exactly once). Include a few surrounding lines for uniqueness.' },
+                new_string: { type: 'string', description: 'The replacement text. Use an empty string to delete the matched text.' }
+            },
+            required: ['path', 'old_string', 'new_string']
+        }
+    },
+    {
+        name: 'create_file',
+        description: 'Create a new file in the course project. Fails if the file already exists. Use edit_file to modify existing files.',
         input_schema: {
             type: 'object',
             properties: {
@@ -200,7 +221,8 @@ export const TOOL_DEFINITIONS = [
 // ---------------------------------------------------------------------------
 
 export const TOOL_LABELS = {
-    write_file: 'Making changes…',
+    edit_file: 'Making changes…',
+    create_file: 'Creating file…',
     read_file: 'Reading file…',
     list_files: 'Browsing files…',
     coursecode_screenshot: 'Looking at the result…',

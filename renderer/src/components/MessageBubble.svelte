@@ -21,19 +21,40 @@
     const template = document.createElement('template');
     template.innerHTML = html;
 
-    template.content.querySelectorAll('script,style,iframe,object,embed,link,meta').forEach(node => node.remove());
+    template.content.querySelectorAll('script,style,iframe,object,embed,link,meta,img').forEach(node => node.remove());
+
+    const allowedTags = new Set(['p', 'br', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li', 'blockquote', 'h1', 'h2', 'h3', 'a']);
 
     for (const el of template.content.querySelectorAll('*')) {
+      const tag = el.tagName.toLowerCase();
+      if (!allowedTags.has(tag)) {
+        const text = document.createTextNode(el.textContent || '');
+        el.replaceWith(text);
+        continue;
+      }
+
       for (const attr of [...el.attributes]) {
         const name = attr.name.toLowerCase();
         const value = (attr.value || '').trim();
-        if (name.startsWith('on')) {
+        if (name.startsWith('on') || name === 'style' || name === 'srcset') {
           el.removeAttribute(attr.name);
           continue;
         }
-        if ((name === 'href' || name === 'src') && /^javascript:/i.test(value)) {
-          el.removeAttribute(attr.name);
+
+        if (tag === 'a' && name === 'href') {
+          const isHttp = /^https?:\/\//i.test(value);
+          const isRelativePath = /^(\.?\.\/|[^:\s]+\/[^\s]*|[^:\s]+$)/.test(value) && !/^[a-z]+:/i.test(value);
+          if (!isHttp && !isRelativePath) {
+            el.removeAttribute(attr.name);
+          }
+          continue;
         }
+
+        if (tag === 'a' && name === 'title') {
+          continue;
+        }
+
+        el.removeAttribute(attr.name);
       }
     }
 
@@ -46,7 +67,11 @@
 
     const href = anchor.getAttribute('href') || '';
     const isExternal = /^https?:\/\//i.test(href);
-    if (isExternal) return;
+    if (isExternal) {
+      event.preventDefault();
+      window.api.shell.openExternal(href);
+      return;
+    }
 
     if (!href || href.startsWith('#')) return;
 

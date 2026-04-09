@@ -20,6 +20,7 @@
   let updateToastBusy = $state(false);
   let unsubUpdateStatus = null;
   let unsubNavigate = null;
+  let handleOpenSettingsEvent = null;
   const isMac = navigator.platform.includes('Mac');
   const currentView = $derived(() => {
     if (!ready) return 'loading';
@@ -93,12 +94,21 @@
       else if (target === 'create') showOverlay('create');
     });
 
+    handleOpenSettingsEvent = () => {
+      showOverlay('settings');
+    };
+    document.addEventListener('open-settings', handleOpenSettingsEvent);
+
     ready = true;
   });
 
   onDestroy(() => {
     unsubUpdateStatus?.();
     unsubNavigate?.();
+    if (handleOpenSettingsEvent) {
+      document.removeEventListener('open-settings', handleOpenSettingsEvent);
+      handleOpenSettingsEvent = null;
+    }
   });
 
   function dismissUpdateToast() {
@@ -188,18 +198,20 @@
 
     <div class="tab-content">
       {#each $tabs as tab (tab.id)}
-        <div class="tab-panel" class:visible={$activeTabId === tab.id}>
-          {#if tab.type === 'home'}
-            <Dashboard
-              onCreateNew={() => showOverlay('create')}
-              onOpenProject={handleOpenProject}
-              onCloseProject={handleCloseProject}
-              onOpenSettings={() => showOverlay('settings')}
-            />
-          {:else if tab.type === 'course'}
-            <ProjectDetail projectPath={tab.path} />
-          {/if}
-        </div>
+        {#if $activeTabId === tab.id}
+          <div class="tab-panel visible">
+            {#if tab.type === 'home'}
+              <Dashboard
+                onCreateNew={() => showOverlay('create')}
+                onOpenProject={handleOpenProject}
+                onCloseProject={handleCloseProject}
+                onOpenSettings={() => showOverlay('settings')}
+              />
+            {:else if tab.type === 'course'}
+              <ProjectDetail projectPath={tab.path} />
+            {/if}
+          </div>
+        {/if}
       {/each}
     </div>
   {/if}
