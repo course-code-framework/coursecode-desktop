@@ -790,11 +790,14 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         const dirPath = resolveToolPath(toolInput.path || '.');
         if (!existsSync(dirPath)) return { error: `Directory not found: ${toolInput.path}` };
         const entries = readdirSync(dirPath, { withFileTypes: true });
+        const HIDDEN = new Set(['node_modules', '.git', 'dist', 'out', '.cache', '.DS_Store', 'thumbs.db']);
         return {
-            files: entries.map(e => ({
-                name: e.name,
-                type: e.isDirectory() ? 'directory' : 'file'
-            }))
+            files: entries
+                .filter(e => !HIDDEN.has(e.name) && !e.name.startsWith('.'))
+                .map(e => ({
+                    name: e.name,
+                    type: e.isDirectory() ? 'directory' : 'file'
+                }))
         };
     }
 
