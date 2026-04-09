@@ -59,20 +59,9 @@ function toNumberOrNull(value) {
 
 function normalizeCloudUsage(payload) {
     if (!payload || typeof payload !== 'object') return null;
-
-    const remaining =
-        toNumberOrNull(payload.remaining)
-        ?? toNumberOrNull(payload.remainingCredits)
-        ?? toNumberOrNull(payload.creditsRemaining)
-        ?? toNumberOrNull(payload.creditBalance)
-        ?? toNumberOrNull(payload.balance)
-        ?? toNumberOrNull(payload.usage?.remaining)
-        ?? toNumberOrNull(payload.usage?.remainingCredits)
-        ?? toNumberOrNull(payload.usage?.creditsRemaining);
-
     return {
         ...payload,
-        remaining
+        total_credits: toNumberOrNull(payload.total_credits)
     };
 }
 
@@ -194,10 +183,10 @@ export function subscribeToChatEvents() {
             if (usage.creditsCharged != null) {
                 sessionCredits.update(c => c + usage.creditsCharged);
                 credits.update((current) => {
-                    if (!current || current.remaining == null) return current;
+                    if (!current || current.total_credits == null) return current;
                     return {
                         ...current,
-                        remaining: Math.max(0, current.remaining - usage.creditsCharged)
+                        total_credits: Math.max(0, current.total_credits - usage.creditsCharged)
                     };
                 });
             }

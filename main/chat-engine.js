@@ -161,6 +161,129 @@ function prepareApiMessages(messages) {
     return apiMessages;
 }
 
+/**
+ * Translate internal Anthropic-format messages to OpenAI wire format.
+ * Called only when the cloud model's upstream provider is OpenAI.
+ */
+function prepareOpenAIMessages(messages) {
+    const anthropicMsgs = prepareApiMessages(messages);
+    const out = [];
+
+    for (const m of anthropicMsgs) {
+        if (m.role === 'user') {
+            // User messages may contain tool_result blocks (Anthropic format)
+            if (Array.isArray(m.content) && m.content.some(b => b.type === 'tool_result')) {
+                for (const block of m.content) {
+                    if (block.type === 'tool_result') {
+                        out.push({
+                            role: 'tool',
+                            tool_call_id: block.tool_use_id,
+                            content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || {})
+                        });
+                    } else if (block.type === 'text' && block.text?.trim()) {
+                        out.push({ role: 'user', content: block.text });
+                    }
+                }
+            } else {
+                const text = typeof m.content === 'string' ? m.content
+                    : Array.isArray(m.content)
+                        ? m.content.filter(b => b.type === 'text' && b.text?.trim()).map(b => b.text).join('\n\n')
+                        : JSON.stringify(m.content);
+                if (text) out.push({ role: 'user', content: text });
+            }
+            continue;
+        }
+
+        if (m.role === 'assistant') {
+            if (Array.isArray(m.content)) {
+                const textParts = m.content.filter(b => b.type === 'text' && b.text?.trim()).map(b => b.text);
+                const toolUses = m.content.filter(b => b.type === 'tool_use');
+
+                if (toolUses.length > 0) {
+                    out.push({
+                        role: 'assistant',
+                        content: textParts.length > 0 ? textParts.join('\n\n') : '',
+                        tool_calls: toolUses.map(tc => ({
+                            id: tc.id,
+                            type: 'function',
+                            function: { name: tc.name, arguments: JSON.stringify(tc.input || {}) }
+                        }))
+                    });
+                } else if (textParts.length > 0) {
+                    out.push({ role: 'assistant', content: textParts.join('\n\n') });
+                }
+            } else if (typeof m.content === 'string') {
+                out.push({ role: 'assistant', content: m.content });
+            }
+            continue;
+        }
+
+        // Pass through any other roles
+        out.push(m);
+    }
+
+    return out;
+}
+
+/**
+ * Translate internal Anthropic-format messages to Gemini wire format.
+ * Called only when the cloud model's upstream provider is Google.
+ */
+function prepareGoogleMessages(messages) {
+    const anthropicMsgs = prepareApiMessages(messages);
+    const contents = [];
+
+    for (const m of anthropicMsgs) {
+        if (m.role === 'user') {
+            const parts = [];
+            if (Array.isArray(m.content)) {
+                for (const block of m.content) {
+                    if (block.type === 'text' && block.text?.trim()) {
+                        parts.push({ text: block.text });
+                    }
+                    if (block.type === 'tool_result' && block.tool_use_id) {
+                        const raw = typeof block.content === 'string' ? block.content : JSON.stringify(block.content || {});
+                        let responseData;
+                        try { responseData = JSON.parse(raw); } catch { responseData = { result: raw }; }
+                        parts.push({
+                            functionResponse: {
+                                name: block._toolName || block.tool_use_id,
+                                response: responseData
+                            }
+                        });
+                    }
+                }
+            } else if (typeof m.content === 'string' && m.content.trim()) {
+                parts.push({ text: m.content });
+            }
+            if (parts.length > 0) contents.push({ role: 'user', parts });
+            continue;
+        }
+
+        if (m.role === 'assistant') {
+            const parts = [];
+            if (Array.isArray(m.content)) {
+                for (const block of m.content) {
+                    if (block.type === 'text' && block.text?.trim()) {
+                        parts.push({ text: block.text });
+                    }
+                    if (block.type === 'tool_use' && block.name) {
+                        parts.push({
+                            functionCall: { name: block.name, args: block.input || {} }
+                        });
+                    }
+                }
+            } else if (typeof m.content === 'string' && m.content.trim()) {
+                parts.push({ text: m.content });
+            }
+            if (parts.length > 0) contents.push({ role: 'model', parts });
+            continue;
+        }
+    }
+
+    return contents;
+}
+
 // --- Conversation persistence ---
 
 function getChatDir(projectPath) {
@@ -697,6 +820,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     log.info(`sendMessage → ${providerId}/${modelId}`, { mode, hasMentions: mentions?.length > 0 });
 
     let credential;
+    let cloudProvider = null;
     if (isCloud) {
         credential = loadToken();
         if (!credential) {
@@ -717,6 +841,13 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 const fallbackCloudModel = availableCloudModels[0].id;
                 log.info('Cloud model not available, falling back to first available model', { requested: modelId, fallback: fallbackCloudModel });
                 modelId = fallbackCloudModel;
+            }
+
+            // Resolve the upstream provider for the selected cloud model
+            const selectedModel = (availableCloudModels || []).find(m => m.id === modelId);
+            if (selectedModel?.provider) {
+                cloudProvider = selectedModel.provider;
+                log.debug('Resolved cloud provider', { modelId, cloudProvider });
             }
 
             if (!modelId) {
@@ -810,10 +941,18 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     });
 
     // Build API messages with truncation for efficiency
-    const apiMessages = prepareApiMessages(messages);
+    // For cloud models, translate to the upstream provider's wire format
+    let apiMessages;
+    if (cloudProvider === 'openai') {
+        apiMessages = prepareOpenAIMessages(messages);
+    } else if (cloudProvider === 'google') {
+        apiMessages = prepareGoogleMessages(messages);
+    } else {
+        apiMessages = prepareApiMessages(messages);
+    }
 
     try {
-        const provider = await createProvider(providerId, credential);
+        const provider = await createProvider(providerId, credential, { cloudProvider });
         let runtimeTools = getToolDefinitions();
         if (getPreviewStatus(projectPath) === 'running') {
             const discoveredTools = await getMcpTools(projectPath);
@@ -910,6 +1049,12 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     sessionCacheCreation += event.usage?.cacheCreationInputTokens || 0;
                     sessionCacheRead += event.usage?.cacheReadInputTokens || 0;
 
+                    // Cloud stream timeout — the upstream provider stopped responding
+                    if (event.timedOut && !currentText && currentToolCalls.length === 0) {
+                        log.warn('Cloud stream timed out with no content');
+                        throw new Error('The AI service timed out before producing a response. Try again.');
+                    }
+
                     // Store assistant message
                     const assistantContent = [];
                     if (currentText) {
@@ -937,7 +1082,33 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     };
                     messages.push(assistantMsg);
                     if (assistantContent.length > 0) {
-                        apiMessages.push({ role: 'assistant', content: assistantContent });
+                        if (cloudProvider === 'openai') {
+                            // OpenAI format: tool_calls on the assistant message, text as string
+                            const toolUses = assistantContent.filter(b => b.type === 'tool_use');
+                            const textParts = assistantContent.filter(b => b.type === 'text').map(b => b.text);
+                            const openaiMsg = {
+                                role: 'assistant',
+                                content: textParts.length > 0 ? textParts.join('\n\n') : ''
+                            };
+                            if (toolUses.length > 0) {
+                                openaiMsg.tool_calls = toolUses.map(tc => ({
+                                    id: tc.id,
+                                    type: 'function',
+                                    function: { name: tc.name, arguments: JSON.stringify(tc.input || {}) }
+                                }));
+                            }
+                            apiMessages.push(openaiMsg);
+                        } else if (cloudProvider === 'google') {
+                            // Gemini format: role 'model' with functionCall parts
+                            const parts = [];
+                            for (const block of assistantContent) {
+                                if (block.type === 'text' && block.text?.trim()) parts.push({ text: block.text });
+                                if (block.type === 'tool_use') parts.push({ functionCall: { name: block.name, args: block.input || {} } });
+                            }
+                            if (parts.length > 0) apiMessages.push({ role: 'model', parts });
+                        } else {
+                            apiMessages.push({ role: 'assistant', content: assistantContent });
+                        }
                     }
                     persistConversation(projectPath, messages, sessionContext);
 
@@ -1044,7 +1215,33 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             toolResultContents.push(toolResultMessage);
                         }
                         if (toolResultContents.length > 0) {
-                            apiMessages.push({ role: 'user', content: toolResultContents });
+                            if (cloudProvider === 'openai') {
+                                // OpenAI format: each tool result is a separate { role: 'tool' } message
+                                for (const tr of toolResultContents) {
+                                    const content = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});
+                                    apiMessages.push({
+                                        role: 'tool',
+                                        tool_call_id: tr.tool_use_id,
+                                        content
+                                    });
+                                }
+                            } else if (cloudProvider === 'google') {
+                                // Gemini format: functionResponse parts in a user message
+                                const parts = toolResultContents.map(tr => {
+                                    const raw = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});
+                                    let responseData;
+                                    try { responseData = JSON.parse(raw); } catch { responseData = { result: raw }; }
+                                    return {
+                                        functionResponse: {
+                                            name: tr._toolName || tr.tool_use_id,
+                                            response: responseData
+                                        }
+                                    };
+                                });
+                                apiMessages.push({ role: 'user', parts });
+                            } else {
+                                apiMessages.push({ role: 'user', content: toolResultContents });
+                            }
                         }
 
                         // Backfill tool metadata on the assistant message that triggered these tool calls

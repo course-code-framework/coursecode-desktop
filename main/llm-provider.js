@@ -33,6 +33,22 @@ const providers = {
     }
 };
 
+const googleProviderInfo = {
+    google: {
+        name: 'Google',
+        models: [],
+        keyPlaceholder: 'AIza...',
+        keyPattern: /^AIza/,
+        docs: 'https://aistudio.google.com/apikey',
+        pricing: {
+            'gemini-2.5-pro': { input: 1.25, output: 10 },
+            'gemini-2.5-flash': { input: 0.15, output: 0.6 }
+        }
+    }
+};
+
+Object.assign(providers, googleProviderInfo);
+
 // --- API Key Storage (encrypted via safeStorage) ---
 
 function getKeysDir() {
@@ -135,6 +151,22 @@ async function fetchOpenAIModels(apiKey) {
     return markDefaultModel(discovered, ['gpt-4o', 'o3']);
 }
 
+async function fetchGoogleModels(apiKey) {
+    const response = await net.fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+
+    if (!response.ok) {
+        throw Object.assign(new Error(`Google model fetch failed: HTTP ${response.status}`), { status: response.status });
+    }
+
+    const payload = await response.json();
+    const discovered = (payload.models || [])
+        .map(m => m?.name?.replace('models/', ''))
+        .filter(id => typeof id === 'string' && id.startsWith('gemini-'))
+        .map(id => ({ id, label: labelFromModelId(id) }));
+
+    return markDefaultModel(discovered, ['gemini-2.5-pro', 'gemini-2.5-flash']);
+}
+
 export async function getProviders() {
     const entries = await Promise.all(Object.entries(providers).map(async ([id, p]) => {
         const hasKey = hasApiKey(id);
@@ -155,6 +187,14 @@ export async function getProviders() {
                     }
                 } else if (id === 'openai') {
                     const discovered = await fetchOpenAIModels(key);
+                    if (discovered.length > 0) {
+                        models = discovered;
+                    } else {
+                        modelFetchFailed = true;
+                        modelFetchError = `No models were returned by ${p.name}.`;
+                    }
+                } else if (id === 'google') {
+                    const discovered = await fetchGoogleModels(key);
                     if (discovered.length > 0) {
                         models = discovered;
                     } else {
@@ -448,6 +488,184 @@ async function createOpenAIProvider(apiKey) {
     };
 }
 
+// --- Google / Gemini BYOK ---
+
+function toGeminiMessages(messages, system) {
+    const contents = [];
+
+    for (const msg of messages) {
+        if (msg.role === 'user') {
+            if (Array.isArray(msg.content)) {
+                const parts = [];
+                for (const block of msg.content) {
+                    if (!block || typeof block !== 'object') continue;
+                    if (block.type === 'text' && block.text?.trim()) {
+                        parts.push({ text: block.text });
+                    }
+                    if (block.type === 'tool_result' && block.tool_use_id) {
+                        const resultContent = typeof block.content === 'string'
+                            ? block.content
+                            : JSON.stringify(block.content || {});
+                        let responseData;
+                        try { responseData = JSON.parse(resultContent); } catch { responseData = { result: resultContent }; }
+                        parts.push({
+                            functionResponse: {
+                                name: block._toolName || block.tool_use_id,
+                                response: responseData
+                            }
+                        });
+                    }
+                }
+                if (parts.length > 0) contents.push({ role: 'user', parts });
+            } else if (typeof msg.content === 'string' && msg.content.trim()) {
+                contents.push({ role: 'user', parts: [{ text: msg.content }] });
+            }
+            continue;
+        }
+
+        if (msg.role === 'assistant') {
+            const parts = [];
+            if (Array.isArray(msg.content)) {
+                for (const block of msg.content) {
+                    if (!block || typeof block !== 'object') continue;
+                    if (block.type === 'text' && block.text?.trim()) {
+                        parts.push({ text: block.text });
+                    }
+                    if (block.type === 'tool_use' && block.name) {
+                        parts.push({
+                            functionCall: {
+                                name: block.name,
+                                args: block.input || {}
+                            }
+                        });
+                    }
+                }
+            } else if (typeof msg.content === 'string' && msg.content.trim()) {
+                parts.push({ text: msg.content });
+            }
+            if (parts.length > 0) contents.push({ role: 'model', parts });
+        }
+    }
+
+    return contents;
+}
+
+async function createGoogleProvider(apiKey) {
+    return {
+        async *chat({ messages, tools, system, model, signal }) {
+            const contents = toGeminiMessages(messages, system);
+
+            const geminiTools = tools?.map(t => ({
+                name: t.name,
+                description: t.description,
+                parameters: t.input_schema
+            }));
+
+            const requestBody = {
+                contents,
+                generationConfig: { maxOutputTokens: MAX_TOKENS },
+            };
+
+            if (system) {
+                requestBody.systemInstruction = { parts: [{ text: system }] };
+            }
+
+            if (geminiTools?.length) {
+                requestBody.tools = [{ functionDeclarations: geminiTools }];
+            }
+
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+            const response = await net.fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody),
+                signal
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw Object.assign(new Error(`Google API error: ${text}`), { status: response.status });
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let inputTokens = 0;
+            let outputTokens = 0;
+            let lastFinishReason = null;
+
+            while (true) {
+                const { done: readerDone, value } = await reader.read();
+                if (readerDone) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const data = line.slice(6);
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const event = JSON.parse(data);
+
+                        if (event.usageMetadata) {
+                            inputTokens = event.usageMetadata.promptTokenCount || 0;
+                            outputTokens = event.usageMetadata.candidatesTokenCount || 0;
+                        }
+
+                        const candidate = event.candidates?.[0];
+                        if (!candidate) continue;
+
+                        if (candidate.finishReason) {
+                            lastFinishReason = candidate.finishReason;
+                        }
+
+                        const parts = candidate.content?.parts;
+                        if (parts) {
+                            for (const part of parts) {
+                                if (part.text) {
+                                    yield { type: 'text', text: part.text };
+                                }
+                                if (part.functionCall) {
+                                    const callId = part.functionCall.id || `gemini_${part.functionCall.name}_${Date.now()}`;
+                                    yield { type: 'tool_use_start', id: callId, name: part.functionCall.name };
+                                    yield { type: 'tool_use_delta', json: JSON.stringify(part.functionCall.args || {}) };
+                                    yield { type: 'content_block_stop', index: 0 };
+                                }
+                            }
+                        }
+                    } catch { /* skip unparseable */ }
+                }
+            }
+
+            const stopReason = lastFinishReason === 'STOP' ? 'end_turn'
+                : lastFinishReason === 'MAX_TOKENS' ? 'max_tokens'
+                : (lastFinishReason?.toLowerCase() || 'end_turn');
+
+            yield {
+                type: 'done',
+                stopReason: stopReason === 'tool_use' ? 'tool_use' : stopReason,
+                usage: { inputTokens, outputTokens }
+            };
+        },
+
+        async validateKey() {
+            try {
+                const res = await net.fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+                if (!res.ok) {
+                    if (res.status === 400 || res.status === 403) return { valid: false, error: 'Invalid API key' };
+                }
+                return { valid: true };
+            } catch {
+                return { valid: true };
+            }
+        }
+    };
+}
+
 // --- Cloud Proxy ---
 
 function getCloudBaseUrl() {
@@ -485,12 +703,40 @@ function looksLikeNoCreditsError(errorCode, message) {
     );
 }
 
-async function createCloudProxyProvider(token) {
+/**
+ * Translate tool definitions from internal Anthropic format to the target provider's format.
+ * Internal tools use { name, description, input_schema }, which matches Anthropic's API.
+ * OpenAI requires { type: 'function', function: { name, description, parameters } }.
+ */
+function formatToolsForProvider(tools, cloudProvider) {
+    if (!tools) return tools;
+    if (cloudProvider === 'openai') {
+        return tools.map(t => ({
+            type: 'function',
+            function: {
+                name: t.name,
+                description: t.description,
+                parameters: t.input_schema
+            }
+        }));
+    }
+    if (cloudProvider === 'google') {
+        return tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            parameters: t.input_schema
+        }));
+    }
+    return tools;
+}
+
+async function createCloudProxyProvider(token, cloudProvider) {
     const baseUrl = getCloudBaseUrl();
 
     return {
         async *chat({ messages, tools, system, model, signal }) {
-            const body = { model, messages, tools, system, max_tokens: MAX_TOKENS };
+            const formattedTools = formatToolsForProvider(tools, cloudProvider);
+            const body = { model, messages, tools: formattedTools, system, max_tokens: MAX_TOKENS };
 
             // Compose a timeout abort with the user's signal
             const fetchController = new AbortController();
@@ -533,6 +779,8 @@ async function createCloudProxyProvider(token) {
                     }
                     throw Object.assign(new Error(message || 'Cloud AI request requires billing action.'), { status: 402, code: errorCode || 'BILLING_REQUIRED', errorCode });
                 }
+                if (res.status === 503) throw Object.assign(new Error('This AI model is temporarily unavailable. Try a different model.'), { status: 503 });
+                if (res.status === 504) throw Object.assign(new Error('The AI service took too long to respond. Try again in a moment.'), { status: 504 });
                 throw Object.assign(new Error(message || `Cloud proxy error: HTTP ${res.status}`), { status: res.status, code: errorCode || undefined, errorCode });
             }
 
@@ -575,9 +823,13 @@ async function createCloudProxyProvider(token) {
                             }
                             yield { type: 'content_block_stop', index: 0 };
                         } else if (event.type === 'done' || event.done === true) {
+                            if (event.stop_reason === 'timeout') {
+                                log.warn('Cloud proxy: upstream provider timed out');
+                            }
                             yield {
                                 type: 'done',
                                 stopReason: event.stop_reason || (event.done ? 'end_turn' : undefined),
+                                timedOut: event.stop_reason === 'timeout',
                                 usage: {
                                     inputTokens: event.usage?.input || 0,
                                     outputTokens: event.usage?.output || 0
@@ -616,11 +868,7 @@ export async function getCloudModels(token) {
         throw new Error(`Failed to fetch models: HTTP ${res.status}`);
     }
     const data = await res.json();
-    if (Array.isArray(data)) return data;
-    if (Array.isArray(data?.models)) return data.models;
-    if (Array.isArray(data?.data)) return data.data;
-    if (Array.isArray(data?.items)) return data.items;
-    return [];
+    return data?.models || [];
 }
 
 export async function getCloudUsage(token) {
@@ -637,11 +885,12 @@ export async function getCloudUsage(token) {
 
 // --- Provider Factory ---
 
-export async function createProvider(providerId, apiKeyOrToken) {
+export async function createProvider(providerId, apiKeyOrToken, { cloudProvider } = {}) {
     switch (providerId) {
         case 'anthropic': return createAnthropicProvider(apiKeyOrToken);
         case 'openai': return createOpenAIProvider(apiKeyOrToken);
-        case 'cloud': return createCloudProxyProvider(apiKeyOrToken);
+        case 'google': return createGoogleProvider(apiKeyOrToken);
+        case 'cloud': return createCloudProxyProvider(apiKeyOrToken, cloudProvider);
         default: throw new Error(`Unknown provider: ${providerId}`);
     }
 }

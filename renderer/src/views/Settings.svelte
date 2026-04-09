@@ -576,7 +576,7 @@
                   <option value="">No cloud models available</option>
                 {/if}
                 {#each filteredCloudModels as m}
-                  <option value={m.id}>{m.label || m.name || m.id}</option>
+                  <option value={m.id}>{m.name || m.id}</option>
                 {/each}
               </select>
             {:else}
@@ -635,10 +635,10 @@
           </div>
           <button class="btn-secondary" onclick={logout}>Sign Out</button>
         </div>
-        {#if $credits?.remaining != null}
+        {#if $credits?.total_credits != null}
           <div class="credits-row">
             <div class="credits-display">
-              <span class="credits-value">{Math.round($credits.remaining)}</span>
+              <span class="credits-value">{Math.round($credits.total_credits)}</span>
               <span class="credits-label">credits remaining</span>
             </div>
             <a

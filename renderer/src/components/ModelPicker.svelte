@@ -46,7 +46,7 @@
   function getSelectedLabel() {
     if ($aiMode === 'cloud') {
       const model = cloudModels.find(m => m.id === $settings.cloudAiModel);
-      return model?.label || model?.name || $settings.cloudAiModel || 'Cloud AI';
+      return model?.name || $settings.cloudAiModel || 'Cloud AI';
     }
     const provider = providers.find(p => p.id === $settings.aiProvider);
     const model = provider?.models?.find(m => m.id === $settings.aiModel);
@@ -186,7 +186,7 @@
               class:selected={$aiMode === 'cloud' && $settings.cloudAiModel === model.id}
               onclick={() => selectCloudModel(model.id)}
             >
-              <span class="model-name">{model.label || model.name || model.id}</span>
+              <span class="model-name">{model.name || model.id}</span>
               <span class="cost-tier">{getCloudCostTier(model)}</span>
               {#if $aiMode === 'cloud' && $settings.cloudAiModel === model.id}
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

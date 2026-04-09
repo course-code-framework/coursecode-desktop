@@ -46,7 +46,8 @@ export const DEFAULT_MODEL = null;
 export const DEFAULT_CLOUD_MODEL = null;
 export const FALLBACK_MODELS = {
     anthropic: 'claude-3-5-sonnet-latest',
-    openai: 'gpt-4o'
+    openai: 'gpt-4o',
+    google: 'gemini-2.5-pro'
 };
 
 // ---------------------------------------------------------------------------

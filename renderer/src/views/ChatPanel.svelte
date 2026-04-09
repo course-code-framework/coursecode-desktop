@@ -968,7 +968,7 @@
         {#if $aiMode === 'cloud' && ($credits != null || $sessionCredits > 0)}
           <span class="credit-badge">
             <span class="credit-dot"></span>
-            {#if $credits?.remaining != null}{Math.round($credits.remaining)} remaining{/if}{#if $sessionCredits > 0}{$credits?.remaining != null ? ' · ' : ''}{Math.round($sessionCredits)} credits used{/if}
+            {#if $credits?.total_credits != null}{Math.round($credits.total_credits)} remaining{/if}{#if $sessionCredits > 0}{$credits?.total_credits != null ? ' · ' : ''}{Math.round($sessionCredits)} credits used{/if}
           </span>
         {:else if $sessionUsage.inputTokens > 0}
           <span class="usage-badge">
