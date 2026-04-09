@@ -300,6 +300,75 @@ function prepareGoogleMessages(messages) {
     return contents;
 }
 
+/**
+ * Translate internal Anthropic-format messages to OpenAI Responses API input format.
+ * Called only when the cloud model uses apiType === 'responses' (Codex models).
+ *
+ * Responses API input items:
+ * - { role: "user", content: "..." }  (simple text messages)
+ * - { role: "assistant", content: "..." }  (assistant text)
+ * - { type: "function_call", call_id: "...", name: "...", arguments: "..." }
+ * - { type: "function_call_output", call_id: "...", output: "..." }
+ */
+function prepareOpenAIResponsesInput(messages) {
+    const anthropicMsgs = prepareApiMessages(messages);
+    const input = [];
+
+    for (const m of anthropicMsgs) {
+        if (m.role === 'user') {
+            if (Array.isArray(m.content) && m.content.some(b => b.type === 'tool_result')) {
+                for (const block of m.content) {
+                    if (block.type === 'tool_result') {
+                        input.push({
+                            type: 'function_call_output',
+                            call_id: block.tool_use_id,
+                            output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || {})
+                        });
+                    } else if (block.type === 'text' && block.text?.trim()) {
+                        input.push({ role: 'user', content: block.text });
+                    }
+                }
+            } else {
+                const text = typeof m.content === 'string' ? m.content
+                    : Array.isArray(m.content)
+                        ? m.content.filter(b => b.type === 'text' && b.text?.trim()).map(b => b.text).join('\n\n')
+                        : JSON.stringify(m.content);
+                if (text) input.push({ role: 'user', content: text });
+            }
+            continue;
+        }
+
+        if (m.role === 'assistant') {
+            if (Array.isArray(m.content)) {
+                const textParts = m.content.filter(b => b.type === 'text' && b.text?.trim()).map(b => b.text);
+                const toolUses = m.content.filter(b => b.type === 'tool_use');
+
+                // Emit text content as a message
+                if (textParts.length > 0) {
+                    input.push({ role: 'assistant', content: textParts.join('\n\n') });
+                }
+                // Emit each tool call as a function_call item
+                for (const tc of toolUses) {
+                    input.push({
+                        type: 'function_call',
+                        call_id: tc.id,
+                        name: tc.name,
+                        arguments: JSON.stringify(tc.input || {})
+                    });
+                }
+            } else if (typeof m.content === 'string') {
+                input.push({ role: 'assistant', content: m.content });
+            }
+            continue;
+        }
+
+        // Pass through any other items
+        input.push(m);
+    }
+
+    return input;
+}
+
 // --- Conversation persistence ---
 
 function getChatDir(projectPath) {
@@ -852,6 +921,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     let credential;
     let cloudProvider = null;
+    let cloudApiType = null;
     if (isCloud) {
         credential = loadToken();
         if (!credential) {
@@ -878,7 +948,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             const selectedModel = (availableCloudModels || []).find(m => m.id === modelId);
             if (selectedModel?.provider) {
                 cloudProvider = selectedModel.provider;
-                log.debug('Resolved cloud provider', { modelId, cloudProvider });
+                cloudApiType = selectedModel.apiType || null;
+                log.debug('Resolved cloud provider', { modelId, cloudProvider, cloudApiType });
             }
 
             if (!modelId) {
@@ -974,7 +1045,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     // Build API messages with truncation for efficiency
     // For cloud models, translate to the upstream provider's wire format
     let apiMessages;
-    if (cloudProvider === 'openai') {
+    if (cloudApiType === 'responses') {
+        apiMessages = prepareOpenAIResponsesInput(messages);
+    } else if (cloudProvider === 'openai') {
         apiMessages = prepareOpenAIMessages(messages);
     } else if (cloudProvider === 'google') {
         apiMessages = prepareGoogleMessages(messages);
@@ -983,7 +1056,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     }
 
     try {
-        const provider = await createProvider(providerId, credential, { cloudProvider });
+        const provider = await createProvider(providerId, credential, { cloudProvider, cloudApiType });
         let runtimeTools = getToolDefinitions();
         if (getPreviewStatus(projectPath) === 'running') {
             const discoveredTools = await getMcpTools(projectPath);
@@ -1113,7 +1186,22 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     };
                     messages.push(assistantMsg);
                     if (assistantContent.length > 0) {
-                        if (cloudProvider === 'openai') {
+                        if (cloudApiType === 'responses') {
+                            // Responses API format: separate items for text and function_calls
+                            const textParts = assistantContent.filter(b => b.type === 'text').map(b => b.text);
+                            const toolUses = assistantContent.filter(b => b.type === 'tool_use');
+                            if (textParts.length > 0) {
+                                apiMessages.push({ role: 'assistant', content: textParts.join('\n\n') });
+                            }
+                            for (const tc of toolUses) {
+                                apiMessages.push({
+                                    type: 'function_call',
+                                    call_id: tc.id,
+                                    name: tc.name,
+                                    arguments: JSON.stringify(tc.input || {})
+                                });
+                            }
+                        } else if (cloudProvider === 'openai') {
                             // OpenAI format: tool_calls on the assistant message, text as string
                             const toolUses = assistantContent.filter(b => b.type === 'tool_use');
                             const textParts = assistantContent.filter(b => b.type === 'text').map(b => b.text);
@@ -1246,7 +1334,17 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             toolResultContents.push(toolResultMessage);
                         }
                         if (toolResultContents.length > 0) {
-                            if (cloudProvider === 'openai') {
+                            if (cloudApiType === 'responses') {
+                                // Responses API format: each tool result is a function_call_output item
+                                for (const tr of toolResultContents) {
+                                    const output = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});
+                                    apiMessages.push({
+                                        type: 'function_call_output',
+                                        call_id: tr.tool_use_id,
+                                        output
+                                    });
+                                }
+                            } else if (cloudProvider === 'openai') {
                                 // OpenAI format: each tool result is a separate { role: 'tool' } message
                                 for (const tr of toolResultContents) {
                                     const content = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});

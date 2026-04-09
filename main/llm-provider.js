@@ -725,8 +725,17 @@ function looksLikeNoCreditsError(errorCode, message) {
  * Internal tools use { name, description, input_schema }, which matches Anthropic's API.
  * OpenAI requires { type: 'function', function: { name, description, parameters } }.
  */
-function formatToolsForProvider(tools, cloudProvider) {
+function formatToolsForProvider(tools, cloudProvider, cloudApiType) {
     if (!tools) return tools;
+    if (cloudApiType === 'responses') {
+        // Responses API: { type: 'function', name, parameters }
+        return tools.map(t => ({
+            type: 'function',
+            name: t.name,
+            description: t.description,
+            parameters: t.input_schema
+        }));
+    }
     if (cloudProvider === 'openai') {
         return tools.map(t => ({
             type: 'function',
@@ -747,12 +756,12 @@ function formatToolsForProvider(tools, cloudProvider) {
     return tools;
 }
 
-async function createCloudProxyProvider(token, cloudProvider) {
+async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
     const baseUrl = getCloudBaseUrl();
 
     return {
         async *chat({ messages, tools, system, model, signal }) {
-            const formattedTools = formatToolsForProvider(tools, cloudProvider);
+            const formattedTools = formatToolsForProvider(tools, cloudProvider, cloudApiType);
             const body = { model, messages, tools: formattedTools, system, max_tokens: MAX_TOKENS };
 
             // Compose a timeout abort with the user's signal
@@ -904,12 +913,12 @@ export async function getCloudUsage(token) {
 
 // --- Provider Factory ---
 
-export async function createProvider(providerId, apiKeyOrToken, { cloudProvider } = {}) {
+export async function createProvider(providerId, apiKeyOrToken, { cloudProvider, cloudApiType } = {}) {
     switch (providerId) {
         case 'anthropic': return createAnthropicProvider(apiKeyOrToken);
         case 'openai': return createOpenAIProvider(apiKeyOrToken);
         case 'google': return createGoogleProvider(apiKeyOrToken);
-        case 'cloud': return createCloudProxyProvider(apiKeyOrToken, cloudProvider);
+        case 'cloud': return createCloudProxyProvider(apiKeyOrToken, cloudProvider, cloudApiType);
         default: throw new Error(`Unknown provider: ${providerId}`);
     }
 }
