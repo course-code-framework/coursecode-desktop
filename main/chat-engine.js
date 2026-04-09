@@ -29,7 +29,6 @@ const MENTION_INTERACTION_MAX_CHARS = 4500;
 const CHAT_TRACE_PREVIEW_CHARS = 280;
 const MAX_AGENTIC_LOOP_ITERATIONS = 25;
 const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file']);
-const ACTION_DEFERRAL_PATTERN = /\b(i(?:'|’)ll|i will|going to|about to|thanks?\b|thank you|you(?:'|’)re right|you are right)\b/i;
 const verboseAiDiagnostics = !app.isPackaged && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '1'));
 const NOISY_CHAT_TRACE_STEPS = new Set([
     'stream-text-delta',
@@ -840,15 +839,6 @@ function createRequestId() {
     return `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * Detect if a message looks like the AI is deferring action ("I'll do that...")
- * rather than actually executing tool calls. Used for gentle nudge recovery.
- */
-function looksLikeActionDeferral(text = '') {
-    const trimmed = String(text || '').trim();
-    return trimmed.length > 0 && ACTION_DEFERRAL_PATTERN.test(trimmed.toLowerCase());
-}
-
 // --- Tool execution ---
 
 /**
@@ -1069,7 +1059,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     let modelId = isCloud ? getSetting('cloudAiModel') : getSetting('aiModel');
 
     log.info(`sendMessage → ${providerId}/${modelId}`, { mode, hasMentions: mentions?.length > 0 });
-    const maxActionRecoveryAttempts = 1;
 
     let credential;
     let cloudProvider = null;
@@ -1277,7 +1266,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         let continueLoop = true;
         let loopIteration = 0;
         let hadToolErrors = false;
-        let actionRecoveryAttempts = 0;
         // Auto-snapshot before AI starts making changes
         const chatIndex = messages.length - 1; // Index of the user message
         try { await createSnapshot(projectPath, 'Before AI changes', { chatIndex }); } catch (err) { log.debug('Pre-AI snapshot failed (repo may not be initialized)', err); }
@@ -1510,6 +1498,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     const result = await executeTool(tc.name, tc.input, projectPath, webContents);
                                     const finishedAt = Date.now();
                                     const elapsedMs = Math.max(0, finishedAt - (tc.startedAt || finishedAt));
+                                    const isToolError = result && typeof result === 'object' && 'error' in result && !result.success;
 
                                     if (tc.name === 'coursecode_screenshot' && result?.content) {
                                         const imageContent = Array.isArray(result.content)
@@ -1524,16 +1513,23 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
                                     webContents?.send('chat:toolUse', {
                                         projectPath, tool: tc.name, toolUseId: tc.id,
-                                        label: TOOL_LABELS[tc.name] || tc.name, status: 'done',
+                                        label: TOOL_LABELS[tc.name] || tc.name,
+                                        status: isToolError ? 'error' : 'done',
                                         finishedAt, elapsedMs, reason: toolReason(tc.name),
                                         filePath: tc.input?.path || undefined,
                                         detail: tc.input?.path || tc.input?.slideId || undefined
                                     });
-                                    successfulToolCount += 1;
+                                    if (isToolError) {
+                                        hadToolErrors = true;
+                                        failedToolCount += 1;
+                                    } else {
+                                        successfulToolCount += 1;
+                                    }
                                     return {
-                                        meta: { id: tc.id, name: tc.name, status: 'done', elapsedMs, filePath: tc.input?.path, detail: tc.input?.path || tc.input?.slideId, reason: toolReason(tc.name) },
+                                        meta: { id: tc.id, name: tc.name, status: isToolError ? 'error' : 'done', elapsedMs, filePath: tc.input?.path, detail: tc.input?.path || tc.input?.slideId, reason: toolReason(tc.name) },
                                         type: 'tool_result', tool_use_id: tc.id,
-                                        content: sanitizeToolResultForModel(tc.name, result)
+                                        content: sanitizeToolResultForModel(tc.name, result),
+                                        is_error: isToolError || undefined
                                     };
                                 } catch (err) {
                                     hadToolErrors = true;
@@ -1605,6 +1601,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                 const finishedAt = Date.now();
                                 const elapsedMs = Math.max(0, finishedAt - (tc.startedAt || finishedAt));
 
+                                // Detect tool-level errors returned as data (not thrown)
+                                const isToolError = result && typeof result === 'object' && 'error' in result && !result.success;
+
                                 // Special handling for screenshots
                                 if (tc.name === 'coursecode_screenshot' && result?.content) {
                                     const imageContent = Array.isArray(result.content)
@@ -1623,7 +1622,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     tool: tc.name,
                                     toolUseId: tc.id,
                                     label: TOOL_LABELS[tc.name] || tc.name,
-                                    status: 'done',
+                                    status: isToolError ? 'error' : 'done',
                                     finishedAt,
                                     elapsedMs,
                                     reason: toolReason(tc.name),
@@ -1635,16 +1634,23 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     toolUseId: tc.id,
                                     tool: tc.name,
                                     elapsedMs,
+                                    isToolError,
                                     outputPreview: toPreviewText(result)
                                 });
-                                successfulToolCount += 1;
-                                if (FILE_MUTATION_TOOLS.has(tc.name)) mutationToolSuccesses += 1;
+
+                                if (isToolError) {
+                                    hadToolErrors = true;
+                                    failedToolCount += 1;
+                                } else {
+                                    successfulToolCount += 1;
+                                    if (FILE_MUTATION_TOOLS.has(tc.name)) mutationToolSuccesses += 1;
+                                }
 
                                 toolResults.push({
                                     meta: {
                                         id: tc.id,
                                         name: tc.name,
-                                        status: 'done',
+                                        status: isToolError ? 'error' : 'done',
                                         elapsedMs,
                                         filePath: tc.input?.path || undefined,
                                         detail: tc.input?.path || tc.input?.slideId || undefined,
@@ -1652,7 +1658,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     },
                                     type: 'tool_result',
                                     tool_use_id: tc.id,
-                                    content: sanitizeToolResultForModel(tc.name, result)
+                                    content: sanitizeToolResultForModel(tc.name, result),
+                                    is_error: isToolError || undefined
                                 });
                             } catch (err) {
                                 log.warn(`Tool execution failed: ${tc.name}`, err);
@@ -1781,33 +1788,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         });
                         currentText = '';
                         currentToolCalls = [];
-                    } else {
-                        const deferralText = String(currentText || '').trim();
-                        const looksLikeDeferral = looksLikeActionDeferral(deferralText);
-
-                        if (looksLikeDeferral && actionRecoveryAttempts < maxActionRecoveryAttempts) {
-                            actionRecoveryAttempts += 1;
-
-                            const recoveryInstruction = 'Do the requested edits now using tools. Do not only acknowledge. Execute required tool calls, then provide a concrete summary of completed changes.';
-
-                            if (cloudApiType === 'responses' || cloudProvider === 'openai') {
-                                apiMessages.push({ role: 'user', content: recoveryInstruction });
-                            } else if (cloudProvider === 'google') {
-                                apiMessages.push({ role: 'user', parts: [{ text: recoveryInstruction }] });
-                            } else {
-                                apiMessages.push({ role: 'user', content: recoveryInstruction });
-                            }
-
-                            continueLoop = true;
-                            trace('llm-loop-continue', {
-                                reason: 'edit-intent-deferral-recovery',
-                                actionRecoveryAttempts,
-                                totalApiMessages: apiMessages.length,
-                                recoveryInstructionPreview: toPreviewText(recoveryInstruction)
-                            });
-                            currentText = '';
-                            currentToolCalls = [];
-                        }
                     }
                     // Done is terminal for this stream — break to prevent duplicate processing
                     break;
