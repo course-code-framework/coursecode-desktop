@@ -148,4 +148,134 @@ describe('chat-engine storage and safety', () => {
 
         expect(existsSync(outsidePath)).toBe(false);
     });
+
+    it('edit_file rejects when old_string matches zero times', async () => {
+        const { mkdirSync } = await import('fs');
+        mkdirSync(join(projectDir, 'course'), { recursive: true });
+        writeFileSync(join(projectDir, 'course', 'test.js'), 'const x = 1;');
+        let callCount = 0;
+
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                callCount += 1;
+                if (callCount === 1) {
+                    yield { type: 'tool_use_start', id: 'tool-1', name: 'edit_file' };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'course/test.js', old_string: 'NONEXISTENT', new_string: 'replaced' }) };
+                    yield { type: 'content_block_stop', index: 0 };
+                    yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
+                    return;
+                }
+                yield { type: 'text', text: 'Could not find the text.' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 12 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'Edit the file', [], webContents, 'byok');
+
+        // File should be unchanged
+        const { readFileSync } = await import('fs');
+        expect(readFileSync(join(projectDir, 'course', 'test.js'), 'utf-8')).toBe('const x = 1;');
+    });
+
+    it('edit_file rejects when old_string matches multiple times', async () => {
+        const { mkdirSync } = await import('fs');
+        mkdirSync(join(projectDir, 'course'), { recursive: true });
+        writeFileSync(join(projectDir, 'course', 'dup.js'), 'aaa\naaa\naaa');
+        let callCount = 0;
+
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                callCount += 1;
+                if (callCount === 1) {
+                    yield { type: 'tool_use_start', id: 'tool-1', name: 'edit_file' };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'course/dup.js', old_string: 'aaa', new_string: 'bbb' }) };
+                    yield { type: 'content_block_stop', index: 0 };
+                    yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
+                    return;
+                }
+                yield { type: 'text', text: 'Too many matches.' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 12 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'Edit the file', [], webContents, 'byok');
+
+        const { readFileSync } = await import('fs');
+        expect(readFileSync(join(projectDir, 'course', 'dup.js'), 'utf-8')).toBe('aaa\naaa\naaa');
+    });
+
+    it('create_file refuses to overwrite an existing file', async () => {
+        const { mkdirSync } = await import('fs');
+        mkdirSync(join(projectDir, 'course'), { recursive: true });
+        writeFileSync(join(projectDir, 'course', 'existing.js'), 'original');
+        let callCount = 0;
+
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                callCount += 1;
+                if (callCount === 1) {
+                    yield { type: 'tool_use_start', id: 'tool-1', name: 'create_file' };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'course/existing.js', content: 'overwritten!' }) };
+                    yield { type: 'content_block_stop', index: 0 };
+                    yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
+                    return;
+                }
+                yield { type: 'text', text: 'File already exists.' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 12 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'Create the file', [], webContents, 'byok');
+
+        const { readFileSync } = await import('fs');
+        expect(readFileSync(join(projectDir, 'course', 'existing.js'), 'utf-8')).toBe('original');
+    });
+
+    it('list_files filters hidden and system directories', async () => {
+        const { mkdirSync } = await import('fs');
+        mkdirSync(join(projectDir, 'course'), { recursive: true });
+        mkdirSync(join(projectDir, 'node_modules'), { recursive: true });
+        mkdirSync(join(projectDir, '.git'), { recursive: true });
+        writeFileSync(join(projectDir, '.DS_Store'), '');
+        writeFileSync(join(projectDir, 'package.json'), '{}');
+
+        let toolResult = null;
+        let callCount = 0;
+
+        providerFactory.mockResolvedValue({
+            async *chat(opts) {
+                callCount += 1;
+                if (callCount === 1) {
+                    yield { type: 'tool_use_start', id: 'tool-1', name: 'list_files' };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: '.' }) };
+                    yield { type: 'content_block_stop', index: 0 };
+                    yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
+                    return;
+                }
+                // Capture the tool result from the messages
+                const lastMsg = opts.messages[opts.messages.length - 1];
+                if (lastMsg?.role === 'user' && Array.isArray(lastMsg.content)) {
+                    const result = lastMsg.content.find(b => b.type === 'tool_result');
+                    if (result) toolResult = result.content;
+                }
+                yield { type: 'text', text: 'Listed files.' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 12 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'List files', [], webContents, 'byok');
+
+        expect(toolResult).toBeTruthy();
+        const parsed = JSON.parse(toolResult);
+        const names = parsed.files.map(f => f.name);
+        expect(names).not.toContain('node_modules');
+        expect(names).not.toContain('.git');
+        expect(names).not.toContain('.DS_Store');
+        expect(names).toContain('course');
+        expect(names).toContain('package.json');
+    });
 });
