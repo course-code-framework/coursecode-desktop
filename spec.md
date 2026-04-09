@@ -949,6 +949,7 @@ async function* streamChat(
 | `402` | `{"error": "Insufficient credits", "credits_required": N}` | Not enough credits — desktop shows "out of credits" with top-up link |
 | `502` | `{"error": "LLM provider error", "detail": "..."}` | Upstream provider failure |
 | `503` | `{"error": "Provider anthropic is not configured"}` | Server missing API key for provider |
+| `504` | `{"error": "Upstream provider timed out", "detail": "..."}` | Provider did not respond within 15s |
 
 #### 2. `GET /api/ai/models` — Available Models
 
@@ -1245,7 +1246,7 @@ In cloud mode, AI usage is charged in credits. Credits are deducted **atomically
 | Concept | Detail |
 |---------|--------|
 | Baseline | 1 credit ≈ $0.001 (1/10th of a cent) |
-| Deduction order | Personal top-up → Org subscription pool |
+| Deduction order | Signup bonus (personal org) → Org subscription pool → Org top-ups |
 | Minimum charge | 1 credit per request |
 
 The `chat:done` IPC event includes `creditsCharged` when in cloud mode. The chat store tracks credit balance via `loadCredits()` which calls `GET /api/ai/usage`. The ModelPicker displays the current credit balance inline when cloud mode is active.

@@ -284,9 +284,11 @@ function prepareGoogleMessages(messages) {
                         parts.push({ text: block.text });
                     }
                     if (block.type === 'tool_use' && block.name) {
-                        parts.push({
+                        const part = {
                             functionCall: { name: block.name, args: block.input || {} }
-                        });
+                        };
+                        if (block.thought_signature) part.thoughtSignature = block.thought_signature;
+                        parts.push(part);
                     }
                 }
             } else if (typeof m.content === 'string' && m.content.trim()) {
@@ -1124,6 +1126,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     currentToolName = event.name;
                     toolInputJson = '';
                     toolStartById.set(event.id, Date.now());
+                    // Gemini 2.5+ models include a thought_signature that must be preserved
+                    if (event.thought_signature) toolStartById.set(`${event.id}_sig`, event.thought_signature);
                     webContents?.send('chat:toolUse', {
                         projectPath,
                         tool: event.name,
@@ -1143,7 +1147,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             id: currentToolId,
                             name: currentToolName,
                             input: toolInput,
-                            startedAt: toolStartById.get(currentToolId) || Date.now()
+                            startedAt: toolStartById.get(currentToolId) || Date.now(),
+                            thought_signature: toolStartById.get(`${currentToolId}_sig`) || null
                         });
                         currentToolId = null;
                         currentToolName = null;
@@ -1168,7 +1173,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         assistantContent.push({ type: 'text', text: currentText });
                     }
                     for (const tc of currentToolCalls) {
-                        assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
+                        const toolBlock = { type: 'tool_use', id: tc.id, name: tc.name, input: tc.input };
+                        if (tc.thought_signature) toolBlock.thought_signature = tc.thought_signature;
+                        assistantContent.push(toolBlock);
                     }
 
                     const assistantMsg = {
@@ -1225,7 +1232,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             const parts = [];
                             for (const block of assistantContent) {
                                 if (block.type === 'text' && block.text?.trim()) parts.push({ text: block.text });
-                                if (block.type === 'tool_use') parts.push({ functionCall: { name: block.name, args: block.input || {} } });
+                                if (block.type === 'tool_use') {
+                                    const part = { functionCall: { name: block.name, args: block.input || {} } };
+                                    if (block.thought_signature) part.thoughtSignature = block.thought_signature;
+                                    parts.push(part);
+                                }
                             }
                             if (parts.length > 0) apiMessages.push({ role: 'model', parts });
                         } else {

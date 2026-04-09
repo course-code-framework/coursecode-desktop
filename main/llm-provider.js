@@ -544,12 +544,14 @@ function toGeminiMessages(messages, system) {
                         parts.push({ text: block.text });
                     }
                     if (block.type === 'tool_use' && block.name) {
-                        parts.push({
+                        const part = {
                             functionCall: {
                                 name: block.name,
                                 args: block.input || {}
                             }
-                        });
+                        };
+                        if (block.thought_signature) part.thoughtSignature = block.thought_signature;
+                        parts.push(part);
                     }
                 }
             } else if (typeof msg.content === 'string' && msg.content.trim()) {
@@ -643,7 +645,7 @@ async function createGoogleProvider(apiKey) {
                                 }
                                 if (part.functionCall) {
                                     const callId = part.functionCall.id || `gemini_${part.functionCall.name}_${Date.now()}`;
-                                    yield { type: 'tool_use_start', id: callId, name: part.functionCall.name };
+                                    yield { type: 'tool_use_start', id: callId, name: part.functionCall.name, thought_signature: part.thoughtSignature || null };
                                     yield { type: 'tool_use_delta', json: JSON.stringify(part.functionCall.args || {}) };
                                     yield { type: 'content_block_stop', index: 0 };
                                 }
@@ -845,7 +847,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                         if (event.type === 'text') {
                             yield { type: 'text', text: event.content };
                         } else if (event.type === 'tool_use') {
-                            yield { type: 'tool_use_start', id: event.id, name: event.name };
+                            yield { type: 'tool_use_start', id: event.id, name: event.name, thought_signature: event.thought_signature || null };
                             if (event.input) {
                                 yield { type: 'tool_use_delta', json: JSON.stringify(event.input) };
                             }
