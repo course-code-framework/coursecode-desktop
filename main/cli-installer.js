@@ -173,7 +173,8 @@ async function isBundledCLIReady(webContents) {
             });
         }
         return true;
-    } catch {
+    } catch (err) {
+        log.debug('Bundled CLI readiness check failed', err);
         return false;
     }
 }

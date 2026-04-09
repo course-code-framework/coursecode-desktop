@@ -461,7 +461,8 @@ async function readFileAtCommit(projectPath, oid, filepath) {
     try {
         const { blob } = await git.readBlob({ ...opts, oid, filepath });
         return Buffer.from(blob).toString('utf-8');
-    } catch {
+    } catch (err) {
+        log.debug('Failed to read blob at commit', { projectPath, oid, filepath, error: err?.message });
         return null;
     }
 }

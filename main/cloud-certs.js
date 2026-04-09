@@ -26,6 +26,9 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import tls from 'tls';
+import { createLogger } from './logger.js';
+
+const log = createLogger('cloud-certs');
 
 const execFileAsync = promisify(execFile);
 
@@ -76,7 +79,13 @@ export async function injectSystemCerts() {
                 for (const block of pem.split(/(?=-----BEGIN CERTIFICATE-----)/)) {
                     const trimmed = block.trim();
                     if (trimmed) {
-                        try { ctx.context.addCACert(trimmed); } catch { /* skip invalid */ }
+                        try {
+                            ctx.context.addCACert(trimmed);
+                        } catch (err) {
+                            log.debug('Skipping invalid CA cert block while patching TLS context', {
+                                error: err?.message
+                            });
+                        }
                     }
                 }
                 return ctx;
@@ -85,7 +94,11 @@ export async function injectSystemCerts() {
 
         // Set for child processes so CLI spawns also get system certs.
         process.env.NODE_EXTRA_CA_CERTS = certPath;
-    } catch {
+    } catch (err) {
+        log.warn('System CA injection failed; continuing without injected certs', {
+            platform: process.platform,
+            error: err?.message
+        });
         // Best-effort; failure is non-fatal.
     }
 }
@@ -146,7 +159,11 @@ async function readMacosCerts() {
                 'find-certificate', '-a', '-p', keychain,
             ], { maxBuffer: 16 * 1024 * 1024 });
             if (stdout) pems.push(stdout);
-        } catch {
+        } catch (err) {
+            log.debug('Skipping unavailable macOS keychain during cert export', {
+                keychain,
+                error: err?.message
+            });
             // Keychain not present on this OS version
         }
     }

@@ -519,7 +519,15 @@ function toGeminiMessages(messages, system) {
                             ? block.content
                             : JSON.stringify(block.content || {});
                         let responseData;
-                        try { responseData = JSON.parse(resultContent); } catch { responseData = { result: resultContent }; }
+                        try {
+                            responseData = JSON.parse(resultContent);
+                        } catch (err) {
+                            responseData = { result: resultContent };
+                            log.debug('Gemini conversion: failed to parse tool_result JSON, using raw fallback', {
+                                toolUseId: block.tool_use_id,
+                                error: err?.message
+                            });
+                        }
                         parts.push({
                             functionResponse: {
                                 name: findToolName(block.tool_use_id) || block.tool_use_id,
@@ -651,7 +659,12 @@ async function createGoogleProvider(apiKey) {
                                 }
                             }
                         }
-                    } catch { /* skip unparseable */ }
+                    } catch (err) {
+                        log.debug('Gemini SSE parse skipped unparseable event', {
+                            error: err?.message,
+                            preview: typeof data === 'string' ? data.slice(0, 200) : null
+                        });
+                    }
                 }
             }
 
@@ -673,7 +686,10 @@ async function createGoogleProvider(apiKey) {
                     if (res.status === 400 || res.status === 403) return { valid: false, error: 'Invalid API key' };
                 }
                 return { valid: true };
-            } catch {
+            } catch (err) {
+                log.debug('Google validateKey request failed; treating as transient for validation UX', {
+                    error: err?.message
+                });
                 return { valid: true };
             }
         }
@@ -762,9 +778,14 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
     const baseUrl = getCloudBaseUrl();
 
     return {
-        async *chat({ messages, tools, system, model, signal }) {
+        async *chat({ messages, tools, system, model, signal, requestId }) {
             const formattedTools = formatToolsForProvider(tools, cloudProvider, cloudApiType);
             const body = { model, messages, tools: formattedTools, system, max_tokens: MAX_TOKENS };
+            log.debug('Cloud proxy: request body sample', {
+                requestId,
+                firstMessage: messages?.[0] ? JSON.stringify(messages[0]).slice(0, 200) : null,
+                firstTool: formattedTools?.[0] ? JSON.stringify(formattedTools[0]).slice(0, 200) : null
+            });
 
             // Compose a timeout abort with the user's signal
             const fetchController = new AbortController();
@@ -776,7 +797,17 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
 
             let res;
             try {
-                log.debug('Cloud proxy: fetching', { url: `${baseUrl}/api/ai/chat`, model });
+                log.debug('Cloud proxy: fetching', {
+                    requestId,
+                    url: `${baseUrl}/api/ai/chat`,
+                    model,
+                    cloudProvider,
+                    cloudApiType,
+                    messageCount: messages?.length,
+                    toolCount: formattedTools?.length,
+                    systemLength: system?.length,
+                    bodyKeys: Object.keys(body)
+                });
                 res = await net.fetch(`${baseUrl}/api/ai/chat`, {
                     method: 'POST',
                     headers: {
@@ -786,7 +817,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                     body: JSON.stringify(body),
                     signal: fetchController.signal
                 });
-                log.debug('Cloud proxy: response received', { status: res.status, contentType: res.headers.get('content-type') });
+                log.debug('Cloud proxy: response received', { requestId, status: res.status, contentType: res.headers.get('content-type') });
             } catch (err) {
                 if (fetchController.signal.aborted && !signal?.aborted) {
                     throw new Error('Cloud proxy timed out — the server took too long to respond. Check that your cloud app is running and responsive.');
@@ -810,7 +841,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                 }
                 if (res.status === 503) throw Object.assign(new Error('This AI model is temporarily unavailable. Try a different model.'), { status: 503 });
                 if (res.status === 504) throw Object.assign(new Error('The AI service took too long to respond. Try again in a moment.'), { status: 504 });
-                log.error('Cloud proxy error', { status: res.status, message, detail });
+                log.error('Cloud proxy error', { requestId, status: res.status, message, detail, rawBody: JSON.stringify(errBody) });
                 throw Object.assign(new Error(message || `Cloud proxy error: HTTP ${res.status}`), { status: res.status, code: errorCode || undefined, errorCode });
             }
 
@@ -854,7 +885,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                             yield { type: 'content_block_stop', index: 0 };
                         } else if (event.type === 'done' || event.done === true) {
                             if (event.stop_reason === 'timeout') {
-                                log.warn('Cloud proxy: upstream provider timed out');
+                                log.warn('Cloud proxy: upstream provider timed out', { requestId });
                             }
                             yield {
                                 type: 'done',

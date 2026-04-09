@@ -86,7 +86,11 @@ export async function listDirectory(projectPath, relativePath = '') {
             if (courseStat.isDirectory()) {
                 relativePath = 'course';
             }
-        } catch {
+        } catch (err) {
+            log.debug('Course directory not available, listing project root instead', {
+                projectPath,
+                error: err?.message
+            });
             // course/ doesn't exist, fall back to project root
         }
     }

@@ -8,6 +8,7 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
 const MAX_ROTATED = 3;
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const isDev = !app.isPackaged;
+const devFileLoggingEnabled = isDev && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_DEV_FILE_LOGS || ''));
 
 // --- ANSI colors for dev console ---
 
@@ -32,7 +33,7 @@ function getLogDir() {
 
 function getLogFilePath() {
     if (!logFilePath) {
-        logFilePath = join(getLogDir(), 'main.log');
+        logFilePath = join(getLogDir(), devFileLoggingEnabled ? 'dev-main.log' : 'main.log');
     }
     return logFilePath;
 }
@@ -81,7 +82,7 @@ function writeToFile(jsonLine) {
 let startupRotationDone = false;
 
 function rotateOnStartup() {
-    if (startupRotationDone || isDev) return;
+    if (startupRotationDone || (isDev && !devFileLoggingEnabled)) return;
     startupRotationDone = true;
     rotateIfNeeded();
 }
@@ -156,8 +157,11 @@ export function createLogger(module) {
         const levelValue = LEVELS[level];
 
         if (isDev) {
-            // Dev: all levels to console, no file
+            // Dev: all levels to console. Optional file logging when enabled via env.
             devConsole(level, module, message, extra);
+            if (devFileLoggingEnabled) {
+                fileWrite(level, module, message, extra);
+            }
         } else {
             // Prod: warn+ to console, all levels to file
             if (levelValue >= LEVELS.warn) {

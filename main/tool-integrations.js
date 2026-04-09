@@ -2,6 +2,9 @@ import { execSync, spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import registry from './tool-registry.json';
 import { getCLISpawnArgs } from './node-env.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('tools');
 
 /**
  * Detect installed external tools using the tool registry.
@@ -50,7 +53,8 @@ function checkBundledCLI() {
         const useShell = process.platform === 'win32' && command === 'coursecode';
         const result = spawnSync(command, args, { stdio: 'ignore', shell: useShell });
         return result.status === 0;
-    } catch {
+    } catch (err) {
+        log.debug('Bundled CLI detection failed', { error: err?.message });
         return false;
     }
 }
@@ -60,7 +64,8 @@ function checkCommand(cmd) {
         const which = process.platform === 'win32' ? 'where' : 'which';
         execSync(`${which} ${cmd}`, { stdio: 'ignore' });
         return true;
-    } catch {
+    } catch (err) {
+        log.debug('Command detection failed', { cmd, error: err?.message });
         return false;
     }
 }

@@ -24,6 +24,7 @@ const MENTION_TOTAL_MAX_CHARS = 12000;
 const MENTION_REF_MAX_CHARS = 6000;
 const MENTION_SLIDE_MAX_CHARS = 4500;
 const MENTION_INTERACTION_MAX_CHARS = 4500;
+const CHAT_TRACE_PREVIEW_CHARS = 280;
 
 // --- Active conversations by projectPath ---
 const conversations = new Map();
@@ -260,7 +261,15 @@ function prepareGoogleMessages(messages) {
                     if (block.type === 'tool_result' && block.tool_use_id) {
                         const raw = typeof block.content === 'string' ? block.content : JSON.stringify(block.content || {});
                         let responseData;
-                        try { responseData = JSON.parse(raw); } catch { responseData = { result: raw }; }
+                        try {
+                            responseData = JSON.parse(raw);
+                        } catch (err) {
+                            responseData = { result: raw };
+                            log.debug('Failed to parse tool_result for Gemini payload, using raw fallback', {
+                                toolUseId: block.tool_use_id,
+                                error: err?.message
+                            });
+                        }
                         parts.push({
                             functionResponse: {
                                 name: resolveToolName(anthropicMsgs, block.tool_use_id) || block.tool_use_id,
@@ -745,6 +754,108 @@ function sanitizeToolResultForModel(toolName, result) {
     return truncateContent(safeJson);
 }
 
+function toPreviewText(value, maxChars = CHAT_TRACE_PREVIEW_CHARS) {
+    let text;
+    if (typeof value === 'string') {
+        text = value;
+    } else {
+        try {
+            text = JSON.stringify(value);
+        } catch (err) {
+            text = String(value);
+            log.debug('Failed to stringify value for chat trace preview', err);
+        }
+    }
+
+    if (!text) return '';
+    const singleLine = text.replace(/\s+/g, ' ').trim();
+    if (singleLine.length <= maxChars) return singleLine;
+    return `${singleLine.slice(0, maxChars)}...`;
+}
+
+function summarizeApiMessage(message) {
+    if (!message || typeof message !== 'object') return { kind: 'unknown' };
+
+    if (message.type === 'function_call') {
+        return {
+            kind: 'function_call',
+            callId: message.call_id,
+            name: message.name,
+            argsPreview: toPreviewText(message.arguments)
+        };
+    }
+
+    if (message.type === 'function_call_output') {
+        return {
+            kind: 'function_call_output',
+            callId: message.call_id,
+            outputPreview: toPreviewText(message.output)
+        };
+    }
+
+    const summary = { kind: 'message', role: message.role || 'unknown' };
+
+    if (typeof message.content === 'string') {
+        summary.textPreview = toPreviewText(message.content);
+        return summary;
+    }
+
+    if (Array.isArray(message.content)) {
+        summary.blockTypes = message.content.map(block => block?.type || 'unknown');
+        const textParts = message.content
+            .filter(block => block?.type === 'text' && typeof block.text === 'string')
+            .map(block => block.text)
+            .join(' ');
+        if (textParts) summary.textPreview = toPreviewText(textParts);
+        const toolCalls = message.content
+            .filter(block => block?.type === 'tool_use')
+            .map(block => ({ id: block.id, name: block.name, inputPreview: toPreviewText(block.input) }));
+        if (toolCalls.length > 0) summary.toolCalls = toolCalls;
+        return summary;
+    }
+
+    if (Array.isArray(message.parts)) {
+        summary.parts = message.parts.map(part => {
+            if (part?.text) return { type: 'text', preview: toPreviewText(part.text) };
+            if (part?.functionCall) {
+                return {
+                    type: 'functionCall',
+                    name: part.functionCall.name,
+                    argsPreview: toPreviewText(part.functionCall.args),
+                    thoughtSignature: Boolean(part.thoughtSignature)
+                };
+            }
+            if (part?.functionResponse) {
+                return {
+                    type: 'functionResponse',
+                    name: part.functionResponse.name,
+                    responsePreview: toPreviewText(part.functionResponse.response)
+                };
+            }
+            return { type: 'unknown' };
+        });
+    }
+
+    if (Array.isArray(message.tool_calls)) {
+        summary.toolCalls = message.tool_calls.map(call => ({
+            id: call.id,
+            name: call.function?.name,
+            argsPreview: toPreviewText(call.function?.arguments)
+        }));
+    }
+
+    return summary;
+}
+
+function logChatTrace(projectPath, step, details = {}) {
+    if (app.isPackaged) return;
+    log.debug(`[chat-trace] ${step}`, { projectPath, ...details });
+}
+
+function createRequestId() {
+    return `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 // --- Tool execution ---
 
 async function executeTool(toolName, toolInput, projectPath, webContents) {
@@ -1025,11 +1136,29 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         modelId,
         updatedAt: new Date().toISOString()
     };
+    const requestId = createRequestId();
+    const trace = (step, details = {}) => logChatTrace(projectPath, step, { requestId, ...details });
+    log.info('Chat turn started', {
+        projectPath,
+        requestId,
+        mode: sessionContext.mode,
+        providerId,
+        modelId
+    });
 
     // Resolve mentions and append user message
     const resolvedMessage = resolveMentions(projectPath, userMessage, mentions);
     messages.push({ role: 'user', content: resolvedMessage, _display: userMessage, _mentions: mentions });
     persistConversation(projectPath, messages, sessionContext);
+    trace('user-message-appended', {
+        mode: sessionContext.mode,
+        providerId,
+        modelId,
+        mentionCount: Array.isArray(mentions) ? mentions.length : 0,
+        userPreview: toPreviewText(userMessage),
+        resolvedPreview: toPreviewText(resolvedMessage),
+        conversationLength: messages.length
+    });
 
     // Set up abort controller
     const controller = new AbortController();
@@ -1059,6 +1188,15 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     } else {
         apiMessages = prepareApiMessages(messages);
     }
+    trace('prepared-api-messages', {
+        mode: sessionContext.mode,
+        providerId,
+        modelId,
+        cloudProvider,
+        cloudApiType,
+        totalMessages: apiMessages.length,
+        recentMessages: apiMessages.slice(-4).map(summarizeApiMessage)
+    });
 
     try {
         const provider = await createProvider(providerId, credential, { cloudProvider, cloudApiType });
@@ -1100,12 +1238,22 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             continueLoop = false;
 
             log.debug('Calling LLM', { messageCount: apiMessages.length, model: modelId });
+            trace('llm-request-start', {
+                mode: sessionContext.mode,
+                providerId,
+                modelId,
+                messageCount: apiMessages.length,
+                toolCount: runtimeTools.length,
+                tools: runtimeTools.map(t => t.name),
+                recentMessages: apiMessages.slice(-4).map(summarizeApiMessage)
+            });
             const stream = provider.chat({
                 messages: apiMessages,
                 tools: runtimeTools,
                 system: systemPrompt,
                 model: modelId,
-                signal: controller.signal
+                signal: controller.signal,
+                requestId
             });
 
             let currentText = '';
@@ -1121,6 +1269,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 if (event.type === 'text') {
                     currentText += event.text;
                     webContents?.send('chat:stream', { projectPath, text: currentText, delta: event.text });
+                    trace('stream-text-delta', {
+                        deltaChars: event.text?.length || 0,
+                        totalChars: currentText.length,
+                        preview: toPreviewText(event.text)
+                    });
                 } else if (event.type === 'tool_use_start') {
                     currentToolId = event.id;
                     currentToolName = event.name;
@@ -1137,6 +1290,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         startedAt: Date.now(),
                         reason: toolReason(event.name)
                     });
+                    trace('tool-call-start', {
+                        toolUseId: event.id,
+                        tool: event.name,
+                        reason: toolReason(event.name)
+                    });
                 } else if (event.type === 'tool_use_delta') {
                     toolInputJson += event.json;
                 } else if (event.type === 'content_block_stop') {
@@ -1149,6 +1307,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             input: toolInput,
                             startedAt: toolStartById.get(currentToolId) || Date.now(),
                             thought_signature: toolStartById.get(`${currentToolId}_sig`) || null
+                        });
+                        trace('tool-call-ready', {
+                            toolUseId: currentToolId,
+                            tool: currentToolName,
+                            inputPreview: toPreviewText(toolInput)
                         });
                         currentToolId = null;
                         currentToolName = null;
@@ -1166,6 +1329,19 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         log.warn('Cloud stream timed out with no content');
                         throw new Error('The AI service timed out before producing a response. Try again.');
                     }
+
+                    trace('llm-response-complete', {
+                        stopReason: event.stopReason,
+                        timedOut: Boolean(event.timedOut),
+                        usage: event.usage,
+                        creditsCharged: event.creditsCharged || 0,
+                        assistantPreview: toPreviewText(currentText),
+                        toolCalls: currentToolCalls.map(tc => ({
+                            id: tc.id,
+                            name: tc.name,
+                            inputPreview: toPreviewText(tc.input)
+                        }))
+                    });
 
                     // Store assistant message
                     const assistantContent = [];
@@ -1252,6 +1428,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         const toolResults = [];
                         for (const tc of currentToolCalls) {
                             log.debug(`Executing tool: ${tc.name}`);
+                            trace('tool-execution-start', {
+                                toolUseId: tc.id,
+                                tool: tc.name,
+                                inputPreview: toPreviewText(tc.input)
+                            });
                             try {
                                 const result = await executeTool(tc.name, tc.input, projectPath, webContents);
                                 const finishedAt = Date.now();
@@ -1281,6 +1462,13 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     reason: toolReason(tc.name),
                                     filePath: tc.input?.path || undefined,
                                     detail: tc.input?.path || tc.input?.slideId || undefined
+                                });
+
+                                trace('tool-execution-done', {
+                                    toolUseId: tc.id,
+                                    tool: tc.name,
+                                    elapsedMs,
+                                    outputPreview: toPreviewText(result)
                                 });
 
                                 toolResults.push({
@@ -1313,6 +1501,13 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     reason: toolReason(tc.name),
                                     filePath: tc.input?.path || undefined,
                                     detail: tc.input?.path || tc.input?.slideId || undefined
+                                });
+
+                                trace('tool-execution-error', {
+                                    toolUseId: tc.id,
+                                    tool: tc.name,
+                                    elapsedMs,
+                                    error: err?.message || String(err)
                                 });
 
                                 toolResults.push({
@@ -1373,7 +1568,15 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                 const parts = toolResultContents.map(tr => {
                                     const raw = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});
                                     let responseData;
-                                    try { responseData = JSON.parse(raw); } catch { responseData = { result: raw }; }
+                                    try {
+                                        responseData = JSON.parse(raw);
+                                    } catch (err) {
+                                        responseData = { result: raw };
+                                        log.debug('Failed to parse tool result for Gemini follow-up payload, using raw fallback', {
+                                            toolUseId: tr.tool_use_id,
+                                            error: err?.message
+                                        });
+                                    }
                                     const toolName = currentToolCalls.find(tc => tc.id === tr.tool_use_id)?.name || tr.tool_use_id;
                                     return {
                                         functionResponse: {
@@ -1401,6 +1604,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
                         // Continue the loop — LLM needs to process tool results
                         continueLoop = true;
+                        trace('llm-loop-continue', {
+                            reason: 'tool-results-appended',
+                            totalApiMessages: apiMessages.length,
+                            recentMessages: apiMessages.slice(-4).map(summarizeApiMessage)
+                        });
                         currentText = '';
                         currentToolCalls = [];
                     }
@@ -1482,14 +1690,33 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             status: hadToolErrors ? 'completed_with_errors' : 'completed',
             steps: planSteps
         });
+        trace('chat-finished', {
+            hadToolErrors,
+            totalMessages: messages.length,
+            usage: {
+                inputTokens: sessionInputTokens,
+                outputTokens: sessionOutputTokens,
+                cacheCreation: sessionCacheCreation,
+                cacheRead: sessionCacheRead,
+                creditsCharged: sessionCreditsCharged
+            },
+            assistantPreview: toPreviewText(messages.filter(m => m.role === 'assistant' && m.content).pop()?.content || '')
+        });
 
     } catch (err) {
         if (err.name === 'AbortError') {
             webContents?.send('chat:plan', { projectPath, status: 'cancelled' });
+            trace('chat-cancelled');
             return;
         }
 
         log.error('Chat flow failed', err);
+        trace('chat-error', {
+            message: err?.message || String(err),
+            status: err?.status,
+            code: err?.code,
+            errorCode: err?.errorCode
+        });
         persistConversation(projectPath, messages);
         const userMessage = translateChatError(err, isCloud);
         webContents?.send('chat:error', { projectPath, message: userMessage });

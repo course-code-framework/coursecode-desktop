@@ -68,7 +68,8 @@ function parseCliJson(stdout) {
 
     try {
         return JSON.parse(trimmed);
-    } catch {
+    } catch (err) {
+        log.debug('Failed to parse CLI JSON output', { error: err?.message, preview: trimmed.slice(0, 200) });
         return null;
     }
 }
@@ -129,7 +130,11 @@ function runCLI(args, { cwd } = {}) {
             }
             try {
                 resolve(JSON.parse(stdout));
-            } catch {
+            } catch (err) {
+                log.debug('runCLI stdout was not JSON; returning raw output', {
+                    error: err?.message,
+                    preview: stdout.trim().slice(0, 200)
+                });
                 resolve({ raw: stdout.trim() });
             }
         });
@@ -178,7 +183,12 @@ export async function cloudLogin(webContents) {
                             send({ stage: 'device', userCode: parsed.userCode, verificationUri: parsed.verificationUri });
                             continue;
                         }
-                    } catch { /* not JSON, fall through */ }
+                    } catch (err) {
+                        log.debug('Login stdout line was not JSON; falling through to text parsing', {
+                            error: err?.message,
+                            preview: trimmed.slice(0, 180)
+                        });
+                    }
                 }
 
                 // Approval confirmed
@@ -316,7 +326,12 @@ export async function cloudDeploy(projectPath, webContents, options = {}) {
                 if (!parsed) throw new Error('No JSON payload');
                 dashboardUrl = parsed.dashboardUrl || null;
                 previewUrl = parsed.url || null;
-            } catch { /* non-JSON output, ignore */ }
+            } catch (err) {
+                log.debug('Deploy success payload was not valid JSON; continuing without URLs', {
+                    error: err?.message,
+                    stdoutPreview: stdout.trim().slice(0, 200)
+                });
+            }
             send('complete', 'Deployed!');
             resolve({ success: true, timestamp: new Date().toISOString(), dashboardUrl, previewUrl });
         });
@@ -371,9 +386,13 @@ export async function getDeployStatus(projectPath, options = {}) {
                 resolve(parsed);
             });
 
-            child.on('error', () => resolve(null));
+            child.on('error', (err) => {
+                log.warn('Status CLI spawn failed', { projectPath, error: err?.message });
+                resolve(null);
+            });
         });
-    } catch {
+    } catch (err) {
+        log.warn('Failed getting deploy status', { projectPath, error: err?.message });
         return null;
     }
 }

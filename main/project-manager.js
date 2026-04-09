@@ -53,7 +53,9 @@ export async function scanProjects() {
                 if (rc.cloudId) project.cloudId = rc.cloudId;
                 if (rc.sourceType === 'github') project.githubLinked = true;
             }
-        } catch { /* ignore parse errors */ }
+        } catch (err) {
+            log.debug('Failed reading project rc metadata during scan', { projectPath, error: err?.message });
+        }
 
         // Read title/format from course-config.js via regex (fast, no eval)
         try {
@@ -64,13 +66,17 @@ export async function scanProjects() {
                 const formatMatch = configContent.match(/format\s*:\s*['"](.+?)['"]/);
                 if (formatMatch) project.format = formatMatch[1];
             }
-        } catch { /* ignore */ }
+        } catch (err) {
+            log.debug('Failed reading course-config during scan', { projectPath, error: err?.message });
+        }
 
         // Get last modified time
         try {
             const stats = await stat(projectPath);
             project.lastModified = stats.mtime.toISOString();
-        } catch { /* ignore */ }
+        } catch (err) {
+            log.debug('Failed reading project stat during scan', { projectPath, error: err?.message });
+        }
 
         projects.push(project);
     }
@@ -124,7 +130,12 @@ export async function createProject({ name, format, layout, blank, location }) {
                 await applyProjectPreferences(targetDir, { format, layout });
                 await initRepo(targetDir);
                 await createSnapshot(targetDir, 'Project created');
-            } catch { /* ignore snapshot init errors */ }
+            } catch (err) {
+                log.debug('Post-create setup (preferences/repo/snapshot) had non-fatal error', {
+                    targetDir,
+                    error: err?.message
+                });
+            }
 
             // Read back the created project metadata
             resolve(await openProject(targetDir));
@@ -222,7 +233,9 @@ export async function openProject(projectPath) {
             if (rc.cloudId) project.cloudId = rc.cloudId;
             if (rc.sourceType === 'github') project.githubLinked = true;
         }
-    } catch { /* ignore */ }
+    } catch (err) {
+        log.debug('Failed reading project rc metadata during open', { projectPath, error: err?.message });
+    }
 
     try {
         if (existsSync(configPath)) {
@@ -232,12 +245,16 @@ export async function openProject(projectPath) {
             const formatMatch = content.match(/format\s*:\s*['"](.+?)['"]/);
             if (formatMatch) project.format = formatMatch[1];
         }
-    } catch { /* ignore */ }
+    } catch (err) {
+        log.debug('Failed reading course-config during open', { projectPath, error: err?.message });
+    }
 
     try {
         const stats = await stat(projectPath);
         project.lastModified = stats.mtime.toISOString();
-    } catch { /* ignore */ }
+    } catch (err) {
+        log.debug('Failed reading project stat during open', { projectPath, error: err?.message });
+    }
 
     return project;
 }

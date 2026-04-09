@@ -4,5 +4,31 @@ dist/
 *.zip
 .DS_Store
 .env
+.env.*
+!.env.example
+.npmrc
 coverage/
 e2e-results/
+test-results/
+
+# Runtime and development logs
+logs/
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local Electron userData/runtime state (if redirected into workspace)
+.user-data/
+user-data/
+.electron-user-data/
+
+# Local secrets and signing material
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer

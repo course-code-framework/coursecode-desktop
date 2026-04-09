@@ -2,6 +2,9 @@ import { execSync } from 'child_process';
 import { app } from 'electron';
 import { join, dirname } from 'path';
 import { existsSync } from 'fs';
+import { createLogger } from './logger.js';
+
+const log = createLogger('node-env');
 
 /** Whether the app is running as a packaged build (not dev mode). */
 const isPackaged = app.isPackaged;
@@ -116,7 +119,15 @@ export function killProcessTree(child, signal = 'SIGTERM') {
     } catch (err) {
         // ESRCH = no such process (already dead). "not found" = taskkill on Windows.
         if (err.code !== 'ESRCH' && !err.message?.includes('not found')) {
-            try { child.kill(signal); } catch { /* already dead */ }
+            try {
+                child.kill(signal);
+            } catch (fallbackErr) {
+                log.debug('Direct child.kill fallback failed', {
+                    pid,
+                    signal,
+                    error: fallbackErr?.message
+                });
+            }
         }
     }
 }
