@@ -688,14 +688,19 @@ function extractCloudErrorDetails(payload, status) {
     if (!payload || typeof payload !== 'object') {
         return {
             message: `Cloud proxy error: HTTP ${status}`,
-            errorCode: null
+            errorCode: null,
+            detail: null
         };
     }
 
-    const message = payload.error || payload.message || payload.detail || `Cloud proxy error: HTTP ${status}`;
+    const rawError = payload.error || payload.message || `Cloud proxy error: HTTP ${status}`;
+    const detail = payload.detail || null;
+    // When the proxy returns a generic error string alongside a detail (the upstream provider's
+    // actual rejection reason), combine them so the user sees what actually went wrong.
+    const message = detail ? `${rawError}: ${detail}` : rawError;
     const errorCode = payload.errorCode || payload.error_code || payload.code || null;
 
-    return { message, errorCode };
+    return { message, errorCode, detail };
 }
 
 function looksLikeNoCreditsError(errorCode, message) {
@@ -792,13 +797,9 @@ async function createCloudProxyProvider(token, cloudProvider) {
                     }
                     throw Object.assign(new Error(message || 'Cloud AI request requires billing action.'), { status: 402, code: errorCode || 'BILLING_REQUIRED', errorCode });
                 }
-                if (res.status === 502) {
-                    const fullMessage = detail ? `${message}: ${detail}` : message;
-                    log.error('Cloud proxy upstream error', { status: 502, message, detail });
-                    throw Object.assign(new Error(fullMessage || 'The AI provider rejected the request. Try a different model.'), { status: 502, code: 'PROVIDER_ERROR', errorCode });
-                }
                 if (res.status === 503) throw Object.assign(new Error('This AI model is temporarily unavailable. Try a different model.'), { status: 503 });
                 if (res.status === 504) throw Object.assign(new Error('The AI service took too long to respond. Try again in a moment.'), { status: 504 });
+                log.error('Cloud proxy error', { status: res.status, message, detail });
                 throw Object.assign(new Error(message || `Cloud proxy error: HTTP ${res.status}`), { status: res.status, code: errorCode || undefined, errorCode });
             }
 
