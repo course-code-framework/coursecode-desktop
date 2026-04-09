@@ -3,7 +3,7 @@ import { BASE_PERSONA, COURSE_SPECIFIC_RULES, TOOL_DEFINITIONS } from './ai-conf
 
 // --- Assemble full system prompt ---
 
-export function buildSystemPrompt(projectContext = {}, projectMemory = null) {
+export function buildSystemPrompt(projectContext = {}) {
     const parts = [BASE_PERSONA, COURSE_SPECIFIC_RULES];
 
     // Project context
@@ -17,19 +17,6 @@ export function buildSystemPrompt(projectContext = {}, projectMemory = null) {
     if (projectContext.refs?.length) {
         const refList = projectContext.refs.map(r => `- ${r}`).join('\n');
         parts.push(`\n## Available Reference Documents\n${refList}`);
-    }
-
-    if (projectMemory?.summary) {
-        parts.push(`\n## Course Memory\n${projectMemory.summary}`);
-    }
-    if (projectMemory?.constraints?.length) {
-        parts.push(`\n## Course Constraints\n${projectMemory.constraints.map(c => `- ${c}`).join('\n')}`);
-    }
-    if (projectMemory?.decisions?.length) {
-        parts.push(`\n## Accepted Decisions\n${projectMemory.decisions.map(d => `- ${d}`).join('\n')}`);
-    }
-    if (projectMemory?.openQuestions?.length) {
-        parts.push(`\n## Open Questions\n${projectMemory.openQuestions.map(q => `- ${q}`).join('\n')}`);
     }
 
     // User custom instructions

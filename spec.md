@@ -264,8 +264,11 @@ All communication between renderer and main process flows through typed IPC chan
 ### Chat (AI)
 - `api.chat.send(projectPath, message, mentions, mode?)` → `void` — Send a user message to the AI. `mode` is `'byok'` or `'cloud'` (per-conversation). Triggers an agentic loop that streams responses and tool use events back to the renderer.
 - `api.chat.stop(projectPath)` → `void` — Abort the current AI generation.
-- `api.chat.loadHistory(projectPath)` → `Message[]` — Load conversation history from disk.
-- `api.chat.clear(projectPath)` → `void` — Clear the conversation for a project.
+- `api.chat.loadHistory(projectPath)` → `Message[]` — Load the active conversation's history from disk.
+- `api.chat.clear(projectPath)` → `void` — Archive the current conversation (if non-empty) and start a fresh one. Replaces the old destructive clear.
+- `api.chat.listConversations(projectPath)` → `ConversationSummary[]` — List all saved conversations for a project, newest first. Each summary includes `{ id, title, updatedAt, messageCount, mode }`.
+- `api.chat.loadConversation(projectPath, conversationId)` → `Message[]` — Load a specific past conversation by ID, making it the active conversation.
+- `api.chat.deleteConversation(projectPath, conversationId)` → `void` — Permanently delete a past conversation.
 - `api.chat.getMentions(projectPath)` → `MentionIndex` — Get available @mention targets (slides, refs, interactions).
 - `api.chat.onStream(callback)` → `unsubscribe` — Stream AI response text chunks: `{ token }`.
 - `api.chat.onToolUse(callback)` → `unsubscribe` — Stream tool invocations: `{ id, name, args, status }`.
@@ -808,8 +811,64 @@ Manages reactive state for the chat UI:
 - `sessionUsage` — Token usage tracking: `{ inputTokens, outputTokens, estimatedCost }`
 - `aiMode` — Per-conversation mode: `'byok'` or `'cloud'`
 - `credits` — Cloud credit balance (populated via `loadCredits()`)
+- `conversationList` — Writable store of `ConversationSummary[]` for the history panel
+- `activeConversationId` — ID of the currently loaded conversation (null for a fresh unsaved conversation)
 
 Provides `subscribeToChatEvents()` to set up IPC listeners for real-time streaming updates.
+
+### Conversation History
+
+Each project maintains a list of past conversations that users can browse and restore. Conversations are never silently deleted; starting a new chat archives the current one.
+
+#### Storage
+
+Conversations are stored per-project under `app.getPath('userData')/chat-history/{projectIdHash}/`. The active conversation is `conversation.json` (unchanged). Archived conversations are stored as `conversations/{conversationId}.json`, where `conversationId` is a short random ID (e.g., 8-character hex). A `conversations/index.json` file maintains the ordered list of conversation summaries for fast listing without reading every file.
+
+**Index file format (`conversations/index.json`):**
+```json
+[
+  {
+    "id": "a1b2c3d4",
+    "title": "Build a compliance training course",
+    "updatedAt": "2026-04-09T14:30:00.000Z",
+    "messageCount": 24,
+    "mode": "byok"
+  }
+]
+```
+
+**Auto-titling**: The conversation title is derived from the first user message, truncated to 60 characters. If the message is shorter than 60 characters, it is used as-is. No LLM summarization; simple truncation keeps it fast and predictable.
+
+#### "New Chat" Behavior
+
+When the user clicks "New Chat" (or presses ⌘⇧N / Ctrl+Shift+N):
+1. If the current conversation has messages, archive it: copy `conversation.json` to `conversations/{newId}.json`, append a summary to `conversations/index.json`, and clear the active conversation.
+2. If the current conversation is empty, do nothing (avoid accumulating blank entries).
+3. Reset the chat UI to the empty/walkthrough state.
+4. Course memory (`context-memory.json`) is preserved across conversations since it represents accumulated project knowledge, not conversation-specific state.
+
+#### History Panel
+
+A dropdown panel accessible from a clock/history icon button in the chat header, next to the "New Chat" button. Only visible when past conversations exist.
+
+**Panel contents:**
+- Scrollable list of past conversations, newest first
+- Each row shows: title (truncated), relative timestamp ("2 hours ago", "Yesterday"), message count, and AI mode badge (BYOK/Cloud)
+- Clicking a row loads that conversation into the chat view
+- Each row has a delete button (trash icon) that permanently removes the conversation after confirmation
+- Maximum height: 320px with overflow scroll
+
+**Loading a past conversation:**
+1. If the current conversation has unsaved messages, archive it first (same as "New Chat" step 1).
+2. Load the selected conversation's messages into the chat view.
+3. Restore the session context (AI mode, provider, model) from the loaded conversation.
+4. The loaded conversation becomes the active conversation. Further messages are appended to it.
+
+**Deleting a conversation:**
+1. Show a brief confirmation ("Delete this conversation?").
+2. Remove the conversation file from `conversations/`.
+3. Remove its entry from `conversations/index.json`.
+4. If the deleted conversation was the active one, reset to an empty chat.
 
 ---
 

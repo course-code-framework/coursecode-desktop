@@ -7,8 +7,8 @@ import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus, up
 import { getSetupStatus, installCLI, getDownloadUrl } from './cli-installer.js';
 import {
     sendMessage, stopGeneration, clearConversation, loadHistory,
-    buildMentionIndex, summarizeContext, getContextMemory,
-    getSessionContext, resetConversationCache, resolveToolApproval
+    buildMentionIndex, getSessionContext, resetConversationCache, resolveToolApproval,
+    listConversations, loadPastConversation, deleteConversation
 } from './chat-engine.js';
 import { listRefs, readRef, convertRef } from './ref-manager.js';
 import { getProviders, saveApiKey, removeApiKey, hasApiKey, getCloudModels, getCloudUsage } from './llm-provider.js';
@@ -98,11 +98,12 @@ export function registerIpcHandlers() {
     });
     handle('chat:stop', (_e, projectPath) => stopGeneration(projectPath));
     handle('chat:clear', (_e, projectPath) => clearConversation(projectPath));
+    handle('chat:listConversations', (_e, projectPath) => listConversations(projectPath));
+    handle('chat:loadConversation', (_e, projectPath, conversationId) => loadPastConversation(projectPath, conversationId));
+    handle('chat:deleteConversation', (_e, projectPath, conversationId) => deleteConversation(projectPath, conversationId));
     handle('chat:approveToolCall', (_e, projectPath, toolUseId, approved) => resolveToolApproval(projectPath, toolUseId, approved));
     handle('chat:loadHistory', (_e, projectPath) => loadHistory(projectPath));
     handle('chat:getMentions', (_e, projectPath) => buildMentionIndex(projectPath));
-    handle('chat:summarizeContext', (_e, projectPath) => summarizeContext(projectPath));
-    handle('chat:getContextMemory', (_e, projectPath) => getContextMemory(projectPath));
     handle('chat:getSessionContext', (_e, projectPath) => getSessionContext(projectPath));
 
     // --- References ---

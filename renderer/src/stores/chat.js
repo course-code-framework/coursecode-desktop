@@ -17,12 +17,6 @@ export const streamingText = writable('');
 /** Active tool use indicators */
 export const activeTools = writable([]);
 
-/** Execution plan state for current message */
-export const chatPlan = writable({ status: 'idle', steps: [], note: '' });
-
-/** Saved course memory summary */
-export const contextMemory = writable(null);
-
 /** Session token usage */
 export const sessionUsage = writable({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
 
@@ -44,6 +38,12 @@ export const pendingApprovals = writable([]);
 /** Cost warning state — tracks which thresholds have been shown */
 export const costWarningsShown = writable(new Set());
 
+/** List of past conversation summaries for the history panel */
+export const conversationList = writable([]);
+
+/** ID of the currently active conversation (null for fresh/unsaved) */
+export const activeConversationId = writable(null);
+
 // --- IPC event subscriptions ---
 let unsubStream = null;
 let unsubToolUse = null;
@@ -51,8 +51,6 @@ let unsubScreenshot = null;
 let unsubError = null;
 let unsubDone = null;
 let unsubChangeSummary = null;
-let unsubPlan = null;
-let unsubMemoryUpdated = null;
 let unsubToolApproval = null;
 let unsubToolArgsDelta = null;
 
@@ -207,9 +205,6 @@ export function subscribeToChatEvents() {
                     changedFiles,
                     hasVerifiedFileChanges,
                     hasUnverifiedMutationOutcome,
-                    strictEditExecution: Boolean(execution.strictEditExecution),
-                    editIntent: Boolean(execution.editIntent),
-                    strictPolicyTriggered: Boolean(execution.strictPolicyTriggered),
                     outcomeClass: execution.outcomeClass || 'no_changes'
                 }
             ]);
@@ -219,7 +214,6 @@ export function subscribeToChatEvents() {
         streamingText.set('');
         activeTools.set([]);
         pendingScreenshots = [];
-        chatPlan.set({ status: 'idle', steps: [], note: '' });
 
         // Update session usage
         if (usage) {
@@ -299,20 +293,6 @@ export function subscribeToChatEvents() {
         ]);
     });
 
-    unsubPlan = window.api.chat.onPlan?.(({ projectPath, status, steps, note }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
-        chatPlan.update(current => ({
-            status: status || current.status,
-            steps: steps || current.steps,
-            note: note || current.note
-        }));
-    });
-
-    unsubMemoryUpdated = window.api.chat.onMemoryUpdated?.(({ projectPath, memory }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
-        contextMemory.set(memory || null);
-    });
-
     unsubToolApproval = window.api.chat.onToolApproval?.(({ projectPath, toolUseId, tool, label, input, filePath }) => {
         if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
         pendingApprovals.update(list => [...list, { toolUseId, tool, label, input, filePath }]);
@@ -327,8 +307,6 @@ export function unsubscribeFromChatEvents() {
     unsubError?.();
     unsubDone?.();
     unsubChangeSummary?.();
-    unsubPlan?.();
-    unsubMemoryUpdated?.();
     unsubToolApproval?.();
 }
 
@@ -351,7 +329,6 @@ export async function sendMessage(projectPath, text, mentions = []) {
     streaming.set(true);
     streamingText.set('');
     activeTools.set([]);
-    chatPlan.set({ status: 'started', steps: [], note: '' });
     let mode;
     aiMode.subscribe(v => mode = v)();
     try {
@@ -363,7 +340,6 @@ export async function sendMessage(projectPath, text, mentions = []) {
         streamingText.set('');
         activeTools.set([]);
         pendingScreenshots = [];
-        chatPlan.set({ status: 'error', steps: [], note: '' });
         messages.update(msgs => [
             ...msgs,
             { role: 'assistant', content: err?.message || 'Failed to send message.', isError: true }
@@ -377,7 +353,6 @@ export async function stopGeneration(projectPath) {
     streamingText.set('');
     activeTools.set([]);
     pendingScreenshots = [];
-    chatPlan.set({ status: 'cancelled', steps: [], note: 'Generation cancelled' });
 }
 
 export async function clearChat(projectPath) {
@@ -387,10 +362,11 @@ export async function clearChat(projectPath) {
     streamingText.set('');
     activeTools.set([]);
     pendingScreenshots = [];
-    chatPlan.set({ status: 'idle', steps: [], note: '' });
-    contextMemory.set(null);
+    // context memory is preserved across conversations
     sessionUsage.set({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
     sessionCredits.set(0);
+    activeConversationId.set(null);
+    await refreshConversationList(projectPath);
 }
 
 /** Load cloud credit balance. */
@@ -408,6 +384,8 @@ export async function loadChatHistory(projectPath) {
     pendingScreenshots = [];
     const history = await window.api.chat.loadHistory(projectPath);
     messages.set(history || []);
+    activeConversationId.set(null);
+    refreshConversationList(projectPath);
 
     try {
         const session = await window.api.chat.getSessionContext?.(projectPath);
@@ -435,12 +413,6 @@ export async function loadChatHistory(projectPath) {
         // Backward compatibility: older app versions may not expose session context.
     }
 
-    try {
-        const memory = await window.api.chat.getContextMemory(projectPath);
-        contextMemory.set(memory || null);
-    } catch {
-        contextMemory.set(null);
-    }
 }
 
 export async function refreshMentionIndex(projectPath) {
@@ -448,10 +420,45 @@ export async function refreshMentionIndex(projectPath) {
     mentionIndex.set(index);
 }
 
-export async function summarizeToContext(projectPath) {
-    const summary = await window.api.chat.summarizeContext(projectPath);
-    contextMemory.set(summary || null);
-    return summary;
+export async function refreshConversationList(projectPath) {
+    try {
+        const list = await window.api.chat.listConversations(projectPath);
+        conversationList.set(list || []);
+    } catch {
+        conversationList.set([]);
+    }
+}
+
+export async function loadPastConversation(projectPath, conversationId) {
+    const history = await window.api.chat.loadConversation(projectPath, conversationId);
+    messages.set(history || []);
+    activeConversationId.set(null); // now the active conversation, no longer archived
+    sessionUsage.set({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
+    sessionCredits.set(0);
+
+    try {
+        const session = await window.api.chat.getSessionContext?.(projectPath);
+        if (session?.mode === 'cloud' || session?.mode === 'byok') {
+            aiMode.set(session.mode);
+            await updateSetting('defaultAiMode', session.mode);
+            if (session.mode === 'byok') {
+                if (session.providerId) await updateSetting('aiProvider', session.providerId);
+                if (session.modelId) await updateSetting('aiModel', session.modelId);
+            } else if (session.mode === 'cloud' && session.modelId) {
+                await updateSetting('cloudAiModel', session.modelId);
+            }
+            if (session.mode === 'cloud') await loadCredits();
+        }
+    } catch {
+        // Session context may not be available
+    }
+
+    await refreshConversationList(projectPath);
+}
+
+export async function deletePastConversation(projectPath, conversationId) {
+    await window.api.chat.deleteConversation(projectPath, conversationId);
+    await refreshConversationList(projectPath);
 }
 
 /** Format token count for display */

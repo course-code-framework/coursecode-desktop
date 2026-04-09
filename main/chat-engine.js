@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, unlinkSync } from 'fs';
-import { createHash } from 'crypto';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, unlinkSync, renameSync } from 'fs';
+import { createHash, randomBytes } from 'crypto';
 import { app } from 'electron';
 import { join, resolve, dirname } from 'path';
 import { createProvider, loadApiKey, estimateCost, getCloudModels, getProviderModels } from './llm-provider.js';
@@ -13,9 +13,9 @@ import { createSnapshot, getChanges } from './snapshot-manager.js';
 import { createLogger } from './logger.js';
 import { translateChatError } from './errors.js';
 import {
-    TOOL_LABELS, PREVIEW_TOOLS, DEFAULT_PROVIDER, DEFAULT_MODEL, DEFAULT_CLOUD_MODEL,
+    TOOL_LABELS, PREVIEW_TOOLS, DEFAULT_PROVIDER,
     TOOL_RESULT_MAX_CHARS, TOOL_RESULT_TRUNCATION_NOTE,
-    OLDER_MESSAGE_MAX_CHARS, FALLBACK_MODELS,
+    OLDER_MESSAGE_MAX_CHARS,
     SAFE_TOOLS, MUTATION_TOOLS, PARALLELIZABLE_TOOLS,
     getMaxContextChars, COST_WARNING_THRESHOLDS, CREDIT_LOW_THRESHOLD
 } from './ai-config.js';
@@ -27,11 +27,8 @@ const MENTION_REF_MAX_CHARS = 6000;
 const MENTION_SLIDE_MAX_CHARS = 4500;
 const MENTION_INTERACTION_MAX_CHARS = 4500;
 const CHAT_TRACE_PREVIEW_CHARS = 280;
-const MAX_AGENTIC_LOOP_ITERATIONS = 12;
+const MAX_AGENTIC_LOOP_ITERATIONS = 25;
 const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file']);
-const EDIT_ACTION_PATTERN = /\b(fix|edit|update|change|modify|rewrite|refactor|remove|create|add|rename)\b/i;
-const EDIT_TARGET_PATTERN = /\b(file|slide|component|css|class|lint|error|issue|bug|line|function|heading|text|copy)\b/i;
-const NON_ACTION_CHAT_PATTERN = /\b(explain|why|what|how|brainstorm|discuss|review|thoughts|help me understand|question)\b/i;
 const ACTION_DEFERRAL_PATTERN = /\b(i(?:'|’)ll|i will|going to|about to|thanks?\b|thank you|you(?:'|’)re right|you are right)\b/i;
 const verboseAiDiagnostics = !app.isPackaged && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '1'));
 const NOISY_CHAT_TRACE_STEPS = new Set([
@@ -426,10 +423,6 @@ function getConversationPath(projectPath) {
     return join(getChatDir(projectPath), 'conversation.json');
 }
 
-function getMemoryPath(projectPath) {
-    return join(getChatDir(projectPath), 'context-memory.json');
-}
-
 function getLegacyChatDir(projectPath) {
     return join(projectPath, '.chat');
 }
@@ -442,16 +435,11 @@ function migrateLegacyChatStorage(projectPath) {
     if (!existsSync(nextChatDir)) mkdirSync(nextChatDir, { recursive: true });
 
     const legacyConversation = join(legacyDir, 'conversation.json');
-    const legacyMemory = join(legacyDir, 'context-memory.json');
     const nextConversation = getConversationPath(projectPath);
-    const nextMemory = getMemoryPath(projectPath);
 
     try {
         if (existsSync(legacyConversation) && !existsSync(nextConversation)) {
             writeFileSync(nextConversation, readFileSync(legacyConversation, 'utf-8'));
-        }
-        if (existsSync(legacyMemory) && !existsSync(nextMemory)) {
-            writeFileSync(nextMemory, readFileSync(legacyMemory, 'utf-8'));
         }
         rmSync(legacyDir, { recursive: true, force: true });
     } catch (err) {
@@ -535,49 +523,80 @@ function persistConversation(projectPath, messages, sessionOverride) {
     saveConversation(projectPath, serializeConversation(messages), nextSession);
 }
 
-function loadProjectMemory(projectPath) {
-    migrateLegacyChatStorage(projectPath);
-    const memoryPath = getMemoryPath(projectPath);
-    if (!existsSync(memoryPath)) return null;
+// --- Conversation history (multi-conversation support) ---
+
+function getConversationsDir(projectPath) {
+    return join(getChatDir(projectPath), 'conversations');
+}
+
+function getConversationsIndexPath(projectPath) {
+    return join(getConversationsDir(projectPath), 'index.json');
+}
+
+function loadConversationsIndex(projectPath) {
+    const indexPath = getConversationsIndexPath(projectPath);
+    if (!existsSync(indexPath)) return [];
     try {
-        return JSON.parse(readFileSync(memoryPath, 'utf-8'));
-    } catch (err) {
-        log.warn('Failed to load course memory', err);
+        const data = JSON.parse(readFileSync(indexPath, 'utf-8'));
+        return Array.isArray(data) ? data : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveConversationsIndex(projectPath, index) {
+    const dir = getConversationsDir(projectPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(getConversationsIndexPath(projectPath), JSON.stringify(index, null, 2));
+}
+
+function deriveConversationTitle(messages) {
+    const firstUserMsg = messages.find(m => m.role === 'user');
+    if (!firstUserMsg) return 'Untitled conversation';
+    const text = typeof firstUserMsg.content === 'string'
+        ? firstUserMsg.content
+        : (firstUserMsg._display || JSON.stringify(firstUserMsg.content));
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    return cleaned.length > 60 ? cleaned.slice(0, 57) + '…' : cleaned;
+}
+
+function archiveActiveConversation(projectPath) {
+    const convPath = getConversationPath(projectPath);
+    if (!existsSync(convPath)) return null;
+
+    let data;
+    try {
+        data = JSON.parse(readFileSync(convPath, 'utf-8'));
+    } catch {
         return null;
     }
-}
 
-function saveProjectMemory(projectPath, memory) {
-    const chatDir = getChatDir(projectPath);
-    if (!existsSync(chatDir)) mkdirSync(chatDir, { recursive: true });
-    writeFileSync(getMemoryPath(projectPath), JSON.stringify(memory, null, 2));
-}
+    const msgs = Array.isArray(data.messages) ? data.messages : [];
+    if (msgs.length === 0) return null;
 
-function uniqueList(items = []) {
-    return [...new Set(items.filter(Boolean).map(s => String(s).trim()).filter(Boolean))];
-}
+    const id = randomBytes(4).toString('hex');
+    const dir = getConversationsDir(projectPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-function deriveExecutionPlan(userMessage = '', projectContext = {}) {
-    const text = userMessage.toLowerCase();
-    const steps = [];
+    // Move active conversation to archive
+    const archivePath = join(dir, `${id}.json`);
+    renameSync(convPath, archivePath);
 
-    steps.push({ id: 'inspect', label: 'Inspect course structure and references', status: 'pending' });
+    // Update index
+    const session = normalizeSessionContext(data.session);
+    const summary = {
+        id,
+        title: deriveConversationTitle(msgs),
+        updatedAt: data.savedAt || new Date().toISOString(),
+        messageCount: msgs.filter(m => m.role === 'user' || m.role === 'assistant').length,
+        mode: session?.mode || 'byok'
+    };
 
-    if (text.includes('outline')) {
-        steps.push({ id: 'author', label: 'Draft or refine the course outline', status: 'pending' });
-    } else if (text.includes('quiz') || text.includes('assessment') || text.includes('interaction')) {
-        steps.push({ id: 'author', label: 'Update learning interactions and assessment flow', status: 'pending' });
-    } else if (text.includes('copy') || text.includes('wording') || text.includes('tone')) {
-        steps.push({ id: 'author', label: 'Revise instructional copy and tone', status: 'pending' });
-    } else if (projectContext.slides?.length) {
-        steps.push({ id: 'author', label: 'Apply updates to relevant slides', status: 'pending' });
-    } else {
-        steps.push({ id: 'author', label: 'Create the requested course content', status: 'pending' });
-    }
+    const index = loadConversationsIndex(projectPath);
+    index.unshift(summary);
+    saveConversationsIndex(projectPath, index);
 
-    steps.push({ id: 'verify', label: 'Verify visuals and run quality checks', status: 'pending' });
-    steps.push({ id: 'summarize', label: 'Summarize outcomes and next authoring steps', status: 'pending' });
-    return steps;
+    return id;
 }
 
 function toolReason(toolName) {
@@ -603,66 +622,6 @@ function toolReason(toolName) {
         default:
             return 'Collect context needed for the requested update';
     }
-}
-
-function extractCourseMemory(messages = [], existing = null) {
-    const userMessages = messages.filter(m => m.role === 'user').map(m => String(m._display || m.content || ''));
-    const assistantMessages = messages.filter(m => m.role === 'assistant').map(m => String(m.content || ''));
-    const recentUser = userMessages.slice(-20);
-    const recentAssistant = assistantMessages.slice(-12);
-    const textBlob = recentUser.join('\n').toLowerCase();
-    const allBlob = `${recentUser.join('\n')}\n${recentAssistant.join('\n')}`;
-
-    const constraints = [];
-    if (/scorm 1\.2|scorm1\.2/i.test(textBlob)) constraints.push('Target LMS format: SCORM 1.2');
-    if (/scorm 2004|scorm2004/i.test(textBlob)) constraints.push('Target LMS format: SCORM 2004');
-    if (/cmi5/i.test(textBlob)) constraints.push('Target LMS format: cmi5');
-    if (/lti/i.test(textBlob)) constraints.push('Target LMS format: LTI');
-    if (/wcag|accessib|screen reader|alt text|keyboard/i.test(textBlob)) constraints.push('Accessibility requirements are important');
-    if (/compliance|policy|regulat|safety|hipaa|sox|gdpr/i.test(textBlob)) constraints.push('Compliance accuracy is required');
-    if (/brand|style guide|voice|tone/i.test(textBlob)) constraints.push('Keep language aligned with brand/style guidance');
-
-    const goals = [];
-    for (const msg of recentUser.slice(-8)) {
-        const clean = msg.replace(/\s+/g, ' ').trim();
-        if (!clean) continue;
-        if (clean.length < 24) continue;
-        goals.push(clean.slice(0, 160));
-    }
-
-    const decisions = [];
-    for (const msg of recentAssistant.slice(-6)) {
-        const lines = msg.split('\n').map(l => l.trim()).filter(Boolean);
-        for (const line of lines) {
-            if (/^[-*]\s|^\d+\./.test(line) || /updated|changed|added|revised|implemented|created/i.test(line)) {
-                decisions.push(line.replace(/^[-*]\s*/, '').slice(0, 160));
-            }
-        }
-    }
-
-    const openQuestions = [];
-    for (const msg of recentAssistant.slice(-6)) {
-        const questions = msg.split('\n').filter(l => l.includes('?')).slice(0, 3);
-        for (const q of questions) openQuestions.push(q.trim().slice(0, 160));
-    }
-
-    const audienceMatch = allBlob.match(/(audience|learners?|employees?|students?)[:\s-]{1,6}([^\n.]{4,80})/i);
-    const durationMatch = allBlob.match(/(\d+\s?(minute|min|hour|hr|day|week)s?)/i);
-
-    const summaryParts = [];
-    if (audienceMatch?.[2]) summaryParts.push(`Audience: ${audienceMatch[2].trim()}`);
-    if (durationMatch?.[1]) summaryParts.push(`Target duration: ${durationMatch[1].trim()}`);
-    if (goals.length) summaryParts.push(`Current goals: ${uniqueList(goals).slice(0, 3).join(' | ')}`);
-    if (!summaryParts.length) summaryParts.push('Maintain course coherence across slides, interactions, and assessments.');
-
-    return {
-        updatedAt: new Date().toISOString(),
-        summary: summaryParts.join(' '),
-        constraints: uniqueList([...(existing?.constraints || []), ...constraints]).slice(-10),
-        decisions: uniqueList([...(existing?.decisions || []), ...decisions]).slice(-12),
-        openQuestions: uniqueList(openQuestions).slice(-8),
-        recentGoals: uniqueList(goals).slice(-8)
-    };
 }
 
 // --- @ mention resolution ---
@@ -763,20 +722,9 @@ function mergeToolDefinitions(staticTools = [], discoveredTools = []) {
 
 function sanitizeToolResultForModel(toolName, result) {
     if (toolName === 'coursecode_screenshot' && result?.content && Array.isArray(result.content)) {
-        const textBlocks = result.content
-            .filter(block => block?.type === 'text' && typeof block.text === 'string')
-            .map(block => block.text.trim())
-            .filter(Boolean);
-        const imageCount = result.content.filter(block => block?.type === 'image').length;
-
-        const summary = [
-            textBlocks.join('\n').trim(),
-            imageCount > 0
-                ? `[${imageCount} screenshot image block(s) omitted from model context; screenshot already sent to the UI]`
-                : ''
-        ].filter(Boolean).join('\n\n');
-
-        return truncateContent(summary || '[Screenshot captured]');
+        // Pass the full content (including image blocks) to the model so it can
+        // actually see what it rendered. Strip only non-essential metadata.
+        return result.content;
     }
 
     const safeJson = JSON.stringify(result, (key, value) => {
@@ -892,19 +840,13 @@ function createRequestId() {
     return `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function isExplicitEditIntent(text = '') {
-    const message = String(text || '').trim().toLowerCase();
-    if (!message) return false;
-
-    const hasAction = EDIT_ACTION_PATTERN.test(message);
-    const hasTarget = EDIT_TARGET_PATTERN.test(message);
-    const isQuestionLike = NON_ACTION_CHAT_PATTERN.test(message) || message.endsWith('?');
-    const startsWithAction = /^(fix|edit|update|change|modify|rewrite|refactor|remove|create|add|rename)\b/.test(message);
-
-    // Strict enforcement should apply only to clear action requests, not analysis/chat.
-    if (startsWithAction && hasTarget) return true;
-    if (hasAction && hasTarget && !isQuestionLike) return true;
-    return false;
+/**
+ * Detect if a message looks like the AI is deferring action ("I'll do that...")
+ * rather than actually executing tool calls. Used for gentle nudge recovery.
+ */
+function looksLikeActionDeferral(text = '') {
+    const trimmed = String(text || '').trim();
+    return trimmed.length > 0 && ACTION_DEFERRAL_PATTERN.test(trimmed.toLowerCase());
 }
 
 // --- Tool execution ---
@@ -1124,11 +1066,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     // Resolve provider based on mode
     const isCloud = mode === 'cloud';
     const providerId = isCloud ? 'cloud' : (getSetting('aiProvider') || DEFAULT_PROVIDER);
-    let modelId = isCloud ? (getSetting('cloudAiModel') || DEFAULT_CLOUD_MODEL) : (getSetting('aiModel') || DEFAULT_MODEL);
+    let modelId = isCloud ? getSetting('cloudAiModel') : getSetting('aiModel');
 
     log.info(`sendMessage → ${providerId}/${modelId}`, { mode, hasMentions: mentions?.length > 0 });
-    const strictEditExecution = Boolean(getSetting('strictEditExecution'));
-    const editIntent = isExplicitEditIntent(userMessage);
     const maxActionRecoveryAttempts = 1;
 
     let credential;
@@ -1228,7 +1168,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         }
 
         if (!modelId) {
-            modelId = providerModels.find(m => m.default)?.id || providerModels[0]?.id || FALLBACK_MODELS[providerId] || DEFAULT_MODEL;
+            modelId = providerModels.find(m => m.default)?.id || providerModels[0]?.id;
             if (modelId) {
                 log.info('Using BYOK fallback model', { providerId, fallback: modelId });
             }
@@ -1286,17 +1226,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     const controller = new AbortController();
     abortControllers.set(projectPath, controller);
 
-    // Build system prompt with project context + memory
+    // Build system prompt with project context
     const projectContext = getProjectContext(projectPath);
-    const storedMemory = loadProjectMemory(projectPath);
-    const executionPlan = deriveExecutionPlan(userMessage, projectContext);
-    const systemPrompt = buildSystemPrompt(projectContext, storedMemory);
-
-    webContents?.send('chat:plan', {
-        projectPath,
-        status: 'started',
-        steps: executionPlan
-    });
+    const systemPrompt = buildSystemPrompt(projectContext);
 
     // Build API messages with truncation for efficiency
     // For cloud models, translate to the upstream provider's wire format
@@ -1346,24 +1278,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         let loopIteration = 0;
         let hadToolErrors = false;
         let actionRecoveryAttempts = 0;
-        let planSteps = executionPlan.map(s => ({ ...s }));
-        const markPlanStep = (stepId, status, note) => {
-            planSteps = planSteps.map(s => s.id === stepId ? { ...s, status } : s);
-            webContents?.send('chat:plan', {
-                projectPath,
-                status: 'step',
-                steps: planSteps,
-                stepId,
-                stepStatus: status,
-                note
-            });
-        };
-
         // Auto-snapshot before AI starts making changes
         const chatIndex = messages.length - 1; // Index of the user message
         try { await createSnapshot(projectPath, 'Before AI changes', { chatIndex }); } catch (err) { log.debug('Pre-AI snapshot failed (repo may not be initialized)', err); }
-
-        markPlanStep('inspect', 'in_progress', 'Reviewing current course state');
 
         while (continueLoop) {
             continueLoop = false;
@@ -1571,8 +1488,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
                     // Execute tool calls — parallel for safe tools, sequential for mutations.
                     if (currentToolCalls.length > 0) {
-                        markPlanStep('inspect', 'completed', 'Context gathered');
-                        markPlanStep('author', 'in_progress', 'Applying requested course updates');
                         const toolResults = [];
 
                         // Partition into parallelizable (read-only) and sequential (mutation) groups
@@ -1868,9 +1783,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         currentToolCalls = [];
                     } else {
                         const deferralText = String(currentText || '').trim();
-                        const looksLikeDeferral = deferralText.length > 0 && ACTION_DEFERRAL_PATTERN.test(deferralText.toLowerCase());
+                        const looksLikeDeferral = looksLikeActionDeferral(deferralText);
 
-                        if (editIntent && !strictEditExecution && looksLikeDeferral && actionRecoveryAttempts < maxActionRecoveryAttempts) {
+                        if (looksLikeDeferral && actionRecoveryAttempts < maxActionRecoveryAttempts) {
                             actionRecoveryAttempts += 1;
 
                             const recoveryInstruction = 'Do the requested edits now using tools. Do not only acknowledge. Execute required tool calls, then provide a concrete summary of completed changes.';
@@ -1945,10 +1860,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             }
         } catch (err) { log.debug('Post-AI snapshot failed', err); }
 
-        markPlanStep('author', hadToolErrors ? 'error' : 'completed', hadToolErrors ? 'Some tool actions failed' : 'Requested updates applied');
-        markPlanStep('verify', hadToolErrors ? 'error' : 'completed', hadToolErrors ? 'Review suggested due to tool errors' : 'Validation complete');
-        markPlanStep('summarize', 'completed', 'Response finalized');
-
         // Done
         const cost = isCloud ? null : estimateCost(
             getSetting('aiProvider') || DEFAULT_PROVIDER,
@@ -1958,34 +1869,14 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         );
 
         const hasVerifiedFileChanges = mutationToolSuccesses > 0 && typeof detectedChangedFiles === 'number' && detectedChangedFiles > 0;
-        const strictPolicyTriggered = strictEditExecution && editIntent && !hasVerifiedFileChanges;
 
         let outcomeClass = 'no_changes';
-        if (strictPolicyTriggered) {
-            outcomeClass = 'strict_policy_blocked';
-        } else if (hasVerifiedFileChanges) {
+        if (hasVerifiedFileChanges) {
             outcomeClass = 'verified_changes';
         } else if (failedToolCount > 0) {
             outcomeClass = 'tool_failures';
         } else if (executedToolCount === 0) {
             outcomeClass = 'model_text_only';
-        }
-
-        if (strictPolicyTriggered) {
-            hadToolErrors = true;
-            const strictMessage = 'No verified file edits were applied. Strict edit mode blocked completion for this edit request. Try again with a specific file target and expected change.';
-            const lastAssistant = messages.slice().reverse().find(m => m.role === 'assistant' && typeof m.content === 'string');
-            if (lastAssistant) {
-                lastAssistant.content = strictMessage;
-                if (lastAssistant._raw?.content && Array.isArray(lastAssistant._raw.content)) {
-                    const textBlock = lastAssistant._raw.content.find(block => block?.type === 'text');
-                    if (textBlock) textBlock.text = strictMessage;
-                }
-                persistConversation(projectPath, messages, sessionContext);
-            }
-            markPlanStep('author', 'error', 'Strict mode blocked completion without verified edits');
-            markPlanStep('verify', 'error', 'No verified file edits detected');
-            markPlanStep('summarize', 'completed', 'Strict-mode result finalized');
         }
 
         const execution = {
@@ -1997,9 +1888,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             changedFiles: detectedChangedFiles,
             hasVerifiedFileChanges,
             hasUnverifiedMutationOutcome: mutationToolAttempts > 0 && !hasVerifiedFileChanges,
-            strictEditExecution,
-            editIntent,
-            strictPolicyTriggered,
             outcomeClass
         };
 
@@ -2020,17 +1908,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             }
         });
 
-        const updatedMemory = extractCourseMemory(messages, storedMemory);
-        saveProjectMemory(projectPath, updatedMemory);
-        webContents?.send('chat:memoryUpdated', {
-            projectPath,
-            memory: updatedMemory
-        });
-        webContents?.send('chat:plan', {
-            projectPath,
-            status: hadToolErrors ? 'completed_with_errors' : 'completed',
-            steps: planSteps
-        });
         trace('chat-finished', {
             hadToolErrors,
             totalMessages: messages.length,
@@ -2046,7 +1923,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     } catch (err) {
         if (err.name === 'AbortError') {
-            webContents?.send('chat:plan', { projectPath, status: 'cancelled' });
             trace('chat-cancelled');
             return;
         }
@@ -2066,19 +1942,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     }
 }
 
-export function summarizeContext(projectPath) {
-    const messages = conversations.get(projectPath) || loadConversation(projectPath);
-    const existing = loadProjectMemory(projectPath);
-    const memory = extractCourseMemory(messages, existing);
-    saveProjectMemory(projectPath, memory);
-    conversations.set(projectPath, messages);
-    return memory;
-}
-
-export function getContextMemory(projectPath) {
-    return loadProjectMemory(projectPath);
-}
-
 export function stopGeneration(projectPath) {
     const controller = abortControllers.get(projectPath);
     if (controller) {
@@ -2088,17 +1951,49 @@ export function stopGeneration(projectPath) {
 }
 
 export function clearConversation(projectPath) {
+    // Archive the current conversation if it has messages, then start fresh
+    archiveActiveConversation(projectPath);
     conversations.delete(projectPath);
     conversationSessions.delete(projectPath);
+    // Note: context-memory.json is preserved across conversations
+}
+
+export function listConversations(projectPath) {
     migrateLegacyChatStorage(projectPath);
+    return loadConversationsIndex(projectPath);
+}
+
+export function loadPastConversation(projectPath, conversationId) {
+    // Archive current conversation first (if non-empty)
+    archiveActiveConversation(projectPath);
+    conversations.delete(projectPath);
+    conversationSessions.delete(projectPath);
+
+    const archivePath = join(getConversationsDir(projectPath), `${conversationId}.json`);
+    if (!existsSync(archivePath)) return [];
+
+    // Move the selected conversation back to active
     const convPath = getConversationPath(projectPath);
-    if (existsSync(convPath)) {
-        unlinkSync(convPath);
+    renameSync(archivePath, convPath);
+
+    // Remove from index
+    const index = loadConversationsIndex(projectPath);
+    const filtered = index.filter(entry => entry.id !== conversationId);
+    saveConversationsIndex(projectPath, filtered);
+
+    // Load it as the active conversation
+    return loadHistory(projectPath);
+}
+
+export function deleteConversation(projectPath, conversationId) {
+    const archivePath = join(getConversationsDir(projectPath), `${conversationId}.json`);
+    if (existsSync(archivePath)) {
+        unlinkSync(archivePath);
     }
-    const memoryPath = getMemoryPath(projectPath);
-    if (existsSync(memoryPath)) {
-        unlinkSync(memoryPath);
-    }
+
+    const index = loadConversationsIndex(projectPath);
+    const filtered = index.filter(entry => entry.id !== conversationId);
+    saveConversationsIndex(projectPath, filtered);
 }
 
 export function loadHistory(projectPath) {

@@ -7,10 +7,12 @@
   import { showToast } from '../stores/toast.js';
   import {
     messages, streaming, streamingText, activeTools,
-    sessionUsage, sessionCredits, mentionIndex, aiMode, credits, chatPlan,
+    sessionUsage, sessionCredits, mentionIndex, aiMode, credits,
+    conversationList,
     subscribeToChatEvents, unsubscribeFromChatEvents,
     sendMessage, stopGeneration, clearChat, loadChatHistory, loadCredits,
-    refreshMentionIndex, formatTokens, formatCost
+    refreshMentionIndex, formatTokens, formatCost,
+    loadPastConversation, deletePastConversation
   } from '../stores/chat.js';
 
   let { projectPath, refCount = 0, onOpenRefs, onOpenOutline, onSnapshotRestored } = $props();
@@ -26,6 +28,10 @@
   let mentionSelectedIndex = $state(0);
   let filteredMentions = $derived(filterMentions(mentionQuery));
   let unsubNewChat = null;
+
+  // History panel state
+  let showHistory = $state(false);
+  let confirmDeleteId = $state(null);
 
   // Workflow state
   let workflowActive = $state(false);
@@ -304,6 +310,7 @@
     inputText = '';
     selectedMentions = [];
     showMentions = false;
+    showHistory = false;
 
     await sendMessage(projectPath, text, deduped);
   }
@@ -314,7 +321,38 @@
 
   async function handleClear() {
     await clearChat(projectPath);
+    showHistory = false;
     inputEl?.focus();
+  }
+
+  function toggleHistory() {
+    showHistory = !showHistory;
+  }
+
+  async function handleLoadConversation(conversationId) {
+    showHistory = false;
+    await loadPastConversation(projectPath, conversationId);
+    scrollToBottom();
+  }
+
+  async function handleDeleteConversation(conversationId) {
+    await deletePastConversation(projectPath, conversationId);
+    confirmDeleteId = null;
+  }
+
+  function formatRelativeTime(dateStr) {
+    const date = new Date(dateStr);
+    const now = Date.now();
+    const diffMs = now - date.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'Just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h ago`;
+    const diffDay = Math.floor(diffHr / 24);
+    if (diffDay === 1) return 'Yesterday';
+    if (diffDay < 7) return `${diffDay}d ago`;
+    return date.toLocaleDateString();
   }
 
   function handleGlobalKeydown(e) {
@@ -534,9 +572,18 @@
 <svelte:window onkeydown={handleGlobalKeydown} />
 
 <div class="chat-panel" data-testid="chat-panel">
-  <!-- Chat header with New Chat button -->
-  {#if $messages.length > 0}
+  <!-- Chat header with New Chat button and History -->
+  {#if $messages.length > 0 || $conversationList.length > 0}
     <div class="chat-header">
+      {#if $conversationList.length > 0}
+        <button class="history-btn" class:active={showHistory} onclick={toggleHistory} title="Chat history">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="history-count">{$conversationList.length}</span>
+        </button>
+      {/if}
       <button class="new-chat-btn" onclick={handleClear} title={`New conversation (${isMac ? '⌘⇧N' : 'Ctrl+Shift+N'})`}>
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M13.5 2.5l-1-1-4 4H5v3.5l-1.5 1.5H14V7l-4.5-4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
@@ -544,6 +591,41 @@
         </svg>
         New Chat
       </button>
+    </div>
+  {/if}
+
+  <!-- History panel dropdown -->
+  {#if showHistory && $conversationList.length > 0}
+    <div class="history-panel">
+      <div class="history-list">
+        {#each $conversationList as conv (conv.id)}
+          <div class="history-item">
+            {#if confirmDeleteId === conv.id}
+              <div class="history-confirm-delete">
+                <span class="history-confirm-text">Delete this conversation?</span>
+                <button class="history-confirm-btn destructive" onclick={() => handleDeleteConversation(conv.id)}>Delete</button>
+                <button class="history-confirm-btn" onclick={() => confirmDeleteId = null}>Cancel</button>
+              </div>
+            {:else}
+              <button class="history-item-btn" onclick={() => handleLoadConversation(conv.id)} title={conv.title}>
+                <span class="history-title">{conv.title}</span>
+                <span class="history-meta">
+                  <span class="history-time">{formatRelativeTime(conv.updatedAt)}</span>
+                  <span class="history-count-badge">{conv.messageCount} msgs</span>
+                  {#if conv.mode === 'cloud'}
+                    <span class="history-mode-badge cloud">Cloud</span>
+                  {/if}
+                </span>
+              </button>
+              <button class="history-delete-btn" onclick={() => confirmDeleteId = conv.id} title="Delete conversation">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v5M10 7v5M4.5 4l.5 9a1 1 0 001 1h4a1 1 0 001-1l.5-9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -585,20 +667,6 @@
               Build Course
             {/if}
           </button>
-        </div>
-      </div>
-    {/if}
-
-    {#if $chatPlan.status !== 'idle' && $chatPlan.steps.length > 0}
-      <div class="execution-plan">
-        <div class="execution-plan-title">Course Plan</div>
-        <div class="execution-steps">
-          {#each $chatPlan.steps as step}
-            <div class="execution-step" class:done={step.status === 'completed'} class:active={step.status === 'in_progress'} class:error={step.status === 'error'}>
-              <span class="execution-dot"></span>
-              <span>{step.label}</span>
-            </div>
-          {/each}
         </div>
       </div>
     {/if}
@@ -899,9 +967,7 @@
               {#if message.hasUnverifiedMutationOutcome}
                 <span class="change-summary-detail">Warning: mutation tools ran but no verified file changes were detected.</span>
               {/if}
-              {#if message.strictPolicyTriggered}
-                <span class="change-summary-detail">Strict mode: edit intent detected but no successful mutation tool call occurred.</span>
-              {/if}
+
             </div>
           </div>
         {:else if message.type === 'costWarning'}
@@ -1083,6 +1149,153 @@
     border-color: var(--text-tertiary);
   }
 
+  .history-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    transition: all var(--duration-fast) var(--ease);
+  }
+
+  .history-btn:hover,
+  .history-btn.active {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-color: var(--text-tertiary);
+  }
+
+  .history-count {
+    font-weight: 500;
+    font-size: 10px;
+    background: var(--bg-tertiary);
+    padding: 0 5px;
+    border-radius: var(--radius-pill);
+    line-height: 16px;
+  }
+
+  .history-panel {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    max-height: 320px;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+
+  .history-list {
+    padding: var(--sp-xs);
+  }
+
+  .history-item {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    border-radius: var(--radius-md);
+  }
+
+  .history-item:hover {
+    background: var(--bg-tertiary);
+  }
+
+  .history-item-btn {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--sp-xs) var(--sp-sm);
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+  }
+
+  .history-title {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .history-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+  }
+
+  .history-count-badge {
+    opacity: 0.7;
+  }
+
+  .history-mode-badge.cloud {
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .history-delete-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    opacity: 0;
+    flex-shrink: 0;
+    transition: opacity var(--duration-fast) var(--ease);
+  }
+
+  .history-item:hover .history-delete-btn {
+    opacity: 1;
+  }
+
+  .history-delete-btn:hover {
+    color: var(--danger);
+    background: var(--danger-subtle, rgba(239, 68, 68, 0.1));
+  }
+
+  .history-confirm-delete {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-xs);
+    padding: var(--sp-xs) var(--sp-sm);
+    width: 100%;
+    font-size: var(--text-xs);
+  }
+
+  .history-confirm-text {
+    flex: 1;
+    color: var(--text-secondary);
+  }
+
+  .history-confirm-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .history-confirm-btn.destructive {
+    background: var(--danger);
+    color: white;
+    border-color: var(--danger);
+  }
+
   .usage-badge {
     font-size: var(--text-xs);
     color: var(--text-tertiary);
@@ -1221,58 +1434,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--sp-xs);
-  }
-
-  .execution-plan {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: var(--sp-sm) var(--sp-md);
-    margin-bottom: var(--sp-md);
-  }
-
-  .execution-plan-title {
-    font-size: var(--text-xs);
-    font-weight: 600;
-    color: var(--text-secondary);
-    margin-bottom: 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .execution-steps {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .execution-step {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-tertiary);
-    font-size: var(--text-xs);
-  }
-
-  .execution-step.active {
-    color: var(--accent);
-  }
-
-  .execution-step.done {
-    color: var(--success);
-  }
-
-  .execution-step:global(.error),
-  .execution-step.error {
-    color: var(--error);
-  }
-
-  .execution-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: 0.85;
   }
 
   /* Empty state */

@@ -15,7 +15,6 @@ const DEFAULTS = {
     defaultFormat: 'cmi5',
     defaultLayout: 'article',
     aiChatEnabled: false,
-    showAiChatByDefault: false,
     keepPreviewRunningWithoutTab: false,
     previewPorts: {},
     theme: 'system',
@@ -28,7 +27,6 @@ const DEFAULTS = {
     aiCustomInstructions: '',
     defaultAiMode: 'byok',
     aiModeInitialized: false,
-    strictEditExecution: true,
     toolApprovalMode: 'auto',  // 'auto' | 'mutations' | 'all' — controls whether tools need user approval
     cloudAiModel: null,
     cloudModelCache: []
@@ -49,18 +47,11 @@ export function loadSettings() {
         settings = { ...DEFAULTS };
     }
 
-    // Backward/forward compatibility for AI chat toggle key.
+    // Backward compatibility: migrate old showAiChatByDefault key.
     if (typeof settings.aiChatEnabled !== 'boolean' && typeof settings.showAiChatByDefault === 'boolean') {
         settings.aiChatEnabled = settings.showAiChatByDefault;
     }
-    if (typeof settings.showAiChatByDefault !== 'boolean') {
-        settings.showAiChatByDefault = settings.aiChatEnabled;
-    }
-    settings.showAiChatByDefault = settings.aiChatEnabled;
-
-    // Strict edit execution is always enabled by default to ensure edit/fix
-    // requests fail closed when no verified file mutation occurred.
-    settings.strictEditExecution = true;
+    delete settings.showAiChatByDefault;
 
     // Ensure projects directory exists
     if (!existsSync(settings.projectsDir)) {
@@ -86,22 +77,14 @@ export function getSetting(key) {
 
 /** Set a single setting value and persist. */
 export function saveSetting(key, value) {
-    if (key === 'aiChatEnabled' || key === 'showAiChatByDefault') {
-        settings.aiChatEnabled = !!value;
-        settings.showAiChatByDefault = !!value;
-    } else {
-        settings[key] = value;
-    }
+    if (key === 'showAiChatByDefault') key = 'aiChatEnabled';
+    settings[key] = value;
     persistSettings();
 }
 
 /** Get all settings. */
 export function getAllSettings() {
-    return {
-        ...settings,
-        aiChatEnabled: !!settings.aiChatEnabled,
-        showAiChatByDefault: !!settings.aiChatEnabled
-    };
+    return { ...settings };
 }
 
 /** Check if this is the first launch (setup not completed). */

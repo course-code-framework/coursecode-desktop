@@ -97,13 +97,7 @@ export const COST_WARNING_THRESHOLDS = [2, 5, 10, 25];
 export const CREDIT_LOW_THRESHOLD = 50;
 
 export const DEFAULT_PROVIDER = 'anthropic';
-export const DEFAULT_MODEL = null;
-export const DEFAULT_CLOUD_MODEL = null;
-export const FALLBACK_MODELS = {
-    anthropic: 'claude-3-5-sonnet-latest',
-    openai: 'gpt-4o',
-    google: 'gemini-2.5-pro'
-};
+export const DEFAULT_PROVIDER = 'anthropic';
 
 // ---------------------------------------------------------------------------
 // Tool Definitions (sent to the LLM)

@@ -154,11 +154,12 @@ contextBridge.exposeInMainWorld('api', {
         send: (projectPath, message, mentions, mode) => ipcRenderer.invoke('chat:send', projectPath, message, mentions, mode),
         stop: (projectPath) => ipcRenderer.invoke('chat:stop', projectPath),
         clear: (projectPath) => ipcRenderer.invoke('chat:clear', projectPath),
+        listConversations: (projectPath) => ipcRenderer.invoke('chat:listConversations', projectPath),
+        loadConversation: (projectPath, conversationId) => ipcRenderer.invoke('chat:loadConversation', projectPath, conversationId),
+        deleteConversation: (projectPath, conversationId) => ipcRenderer.invoke('chat:deleteConversation', projectPath, conversationId),
         approveToolCall: (projectPath, toolUseId, approved) => ipcRenderer.invoke('chat:approveToolCall', projectPath, toolUseId, approved),
         loadHistory: (projectPath) => ipcRenderer.invoke('chat:loadHistory', projectPath),
         getMentions: (projectPath) => ipcRenderer.invoke('chat:getMentions', projectPath),
-        summarizeContext: (projectPath) => ipcRenderer.invoke('chat:summarizeContext', projectPath),
-        getContextMemory: (projectPath) => ipcRenderer.invoke('chat:getContextMemory', projectPath),
         getSessionContext: (projectPath) => ipcRenderer.invoke('chat:getSessionContext', projectPath),
         onStream: (callback) => {
             const handler = (_event, data) => callback(data);
@@ -194,16 +195,6 @@ contextBridge.exposeInMainWorld('api', {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('chat:changeSummary', handler);
             return () => ipcRenderer.removeListener('chat:changeSummary', handler);
-        },
-        onPlan: (callback) => {
-            const handler = (_event, data) => callback(data);
-            ipcRenderer.on('chat:plan', handler);
-            return () => ipcRenderer.removeListener('chat:plan', handler);
-        },
-        onMemoryUpdated: (callback) => {
-            const handler = (_event, data) => callback(data);
-            ipcRenderer.on('chat:memoryUpdated', handler);
-            return () => ipcRenderer.removeListener('chat:memoryUpdated', handler);
         },
         onToolApproval: (callback) => {
             const handler = (_event, data) => callback(data);
