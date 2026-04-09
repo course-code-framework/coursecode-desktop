@@ -25,6 +25,32 @@ const MENTION_REF_MAX_CHARS = 6000;
 const MENTION_SLIDE_MAX_CHARS = 4500;
 const MENTION_INTERACTION_MAX_CHARS = 4500;
 const CHAT_TRACE_PREVIEW_CHARS = 280;
+const MAX_AGENTIC_LOOP_ITERATIONS = 12;
+const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file']);
+const EDIT_INTENT_PATTERN = /\b(fix|edit|update|change|modify|rewrite|refactor|remove|create|add|rename|lint|bug|issue|error)\b/i;
+const verboseAiDiagnostics = !app.isPackaged && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '1'));
+const NOISY_CHAT_TRACE_STEPS = new Set([
+    'stream-text-delta',
+    'prepared-api-messages',
+    'llm-request-start',
+    'llm-loop-continue'
+]);
+
+function inferCloudProviderFromModelId(modelId) {
+    const id = String(modelId || '').toLowerCase();
+    if (!id) return null;
+    if (id.includes('claude')) return 'anthropic';
+    if (id.includes('gemini')) return 'google';
+    if (id.includes('gpt') || id.includes('codex') || /^o\d/.test(id)) return 'openai';
+    return null;
+}
+
+function inferCloudApiType(modelId, provider) {
+    if (provider !== 'openai') return null;
+    const id = String(modelId || '').toLowerCase();
+    if (id.includes('codex') || /^gpt-5(\.|-|$)/.test(id)) return 'responses';
+    return 'chat';
+}
 
 // --- Active conversations by projectPath ---
 const conversations = new Map();
@@ -849,6 +875,7 @@ function summarizeApiMessage(message) {
 
 function logChatTrace(projectPath, step, details = {}) {
     if (app.isPackaged) return;
+    if (!verboseAiDiagnostics && NOISY_CHAT_TRACE_STEPS.has(step)) return;
     log.debug(`[chat-trace] ${step}`, { projectPath, ...details });
 }
 
@@ -1034,6 +1061,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     let modelId = isCloud ? (getSetting('cloudAiModel') || DEFAULT_CLOUD_MODEL) : (getSetting('aiModel') || DEFAULT_MODEL);
 
     log.info(`sendMessage → ${providerId}/${modelId}`, { mode, hasMentions: mentions?.length > 0 });
+    const strictEditExecution = Boolean(getSetting('strictEditExecution'));
+    const editIntent = EDIT_INTENT_PATTERN.test(String(userMessage || ''));
 
     let credential;
     let cloudProvider = null;
@@ -1084,6 +1113,32 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 });
                 return;
             }
+        }
+
+        // If cloud model metadata couldn't be resolved (e.g., temporary model API failure),
+        // infer provider/api type from model ID so request formatting stays valid.
+        if (!cloudProvider && modelId) {
+            const inferredProvider = inferCloudProviderFromModelId(modelId);
+            const inferredApiType = inferCloudApiType(modelId, inferredProvider);
+            if (inferredProvider) {
+                cloudProvider = inferredProvider;
+                cloudApiType = inferredApiType;
+                log.warn('Cloud provider metadata unavailable; using model-id inference fallback', {
+                    modelId,
+                    cloudProvider,
+                    cloudApiType
+                });
+            } else {
+                log.warn('Cloud provider metadata unavailable and inference failed', { modelId });
+            }
+        }
+
+        if (!cloudProvider) {
+            webContents?.send('chat:error', {
+                projectPath,
+                message: 'Unable to determine cloud model format right now. Open Settings → AI and reselect your cloud model, then try again.'
+            });
+            return;
         }
     } else {
         credential = loadApiKey(providerId);
@@ -1211,9 +1266,16 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         let sessionCreditsCharged = 0;
         let sessionCacheCreation = 0;
         let sessionCacheRead = 0;
+        let executedToolCount = 0;
+        let successfulToolCount = 0;
+        let failedToolCount = 0;
+        let mutationToolAttempts = 0;
+        let mutationToolSuccesses = 0;
+        let detectedChangedFiles = null;
 
         // Agentic loop: keep calling LLM until it stops requesting tools
         let continueLoop = true;
+        let loopIteration = 0;
         let hadToolErrors = false;
         let planSteps = executionPlan.map(s => ({ ...s }));
         const markPlanStep = (stepId, status, note) => {
@@ -1236,9 +1298,20 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
         while (continueLoop) {
             continueLoop = false;
+            loopIteration += 1;
+
+            if (loopIteration > MAX_AGENTIC_LOOP_ITERATIONS) {
+                trace('llm-loop-guard-triggered', {
+                    loopIteration,
+                    maxIterations: MAX_AGENTIC_LOOP_ITERATIONS,
+                    recentMessages: apiMessages.slice(-4).map(summarizeApiMessage)
+                });
+                throw new Error('The AI requested too many consecutive tool steps without finishing. Please try again with a more specific request.');
+            }
 
             log.debug('Calling LLM', { messageCount: apiMessages.length, model: modelId });
             trace('llm-request-start', {
+                loopIteration,
                 mode: sessionContext.mode,
                 providerId,
                 modelId,
@@ -1427,6 +1500,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         markPlanStep('author', 'in_progress', 'Applying requested course updates');
                         const toolResults = [];
                         for (const tc of currentToolCalls) {
+                            executedToolCount += 1;
+                            if (FILE_MUTATION_TOOLS.has(tc.name)) mutationToolAttempts += 1;
                             log.debug(`Executing tool: ${tc.name}`);
                             trace('tool-execution-start', {
                                 toolUseId: tc.id,
@@ -1470,6 +1545,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     elapsedMs,
                                     outputPreview: toPreviewText(result)
                                 });
+                                successfulToolCount += 1;
+                                if (FILE_MUTATION_TOOLS.has(tc.name)) mutationToolSuccesses += 1;
 
                                 toolResults.push({
                                     meta: {
@@ -1488,6 +1565,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             } catch (err) {
                                 log.warn(`Tool execution failed: ${tc.name}`, err);
                                 hadToolErrors = true;
+                                failedToolCount += 1;
                                 const finishedAt = Date.now();
                                 const elapsedMs = Math.max(0, finishedAt - (tc.startedAt || finishedAt));
                                 webContents?.send('chat:toolUse', {
@@ -1636,8 +1714,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         try {
             const changes = await getChanges(projectPath);
             const totalChanged = (changes.added?.length || 0) + (changes.modified?.length || 0) + (changes.deleted?.length || 0);
+            detectedChangedFiles = totalChanged;
 
-            if (totalChanged > 0) {
+            if (totalChanged > 0 && mutationToolSuccesses > 0) {
                 // Get a summary label from the last assistant text
                 const lastText = messages.filter(m => m.role === 'assistant' && m.content).pop()?.content || '';
                 const summaryLabel = lastText.slice(0, 60).replace(/\n/g, ' ').trim() || 'Made changes';
@@ -1651,6 +1730,13 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     modified: changes.modified,
                     deleted: changes.deleted,
                     snapshotId: snap.id
+                });
+            } else if (totalChanged > 0) {
+                log.debug('Change summary suppressed: diffs detected without successful mutation tool execution', {
+                    requestId,
+                    totalChanged,
+                    mutationToolSuccesses,
+                    mutationToolAttempts
                 });
             }
         } catch (err) { log.debug('Post-AI snapshot failed', err); }
@@ -1667,9 +1753,41 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             sessionOutputTokens
         );
 
+        const hasVerifiedFileChanges = mutationToolSuccesses > 0 && typeof detectedChangedFiles === 'number' && detectedChangedFiles > 0;
+        const strictPolicyTriggered = strictEditExecution && editIntent && mutationToolSuccesses === 0;
+
+        let outcomeClass = 'no_changes';
+        if (hasVerifiedFileChanges) {
+            outcomeClass = 'verified_changes';
+        } else if (failedToolCount > 0) {
+            outcomeClass = 'tool_failures';
+        } else if (executedToolCount === 0) {
+            outcomeClass = 'model_text_only';
+        }
+
+        const execution = {
+            totalToolCalls: executedToolCount,
+            succeededToolCalls: successfulToolCount,
+            failedToolCalls: failedToolCount,
+            mutationToolAttempts,
+            mutationToolSuccesses,
+            changedFiles: detectedChangedFiles,
+            hasVerifiedFileChanges,
+            hasUnverifiedMutationOutcome: mutationToolAttempts > 0 && !hasVerifiedFileChanges,
+            strictEditExecution,
+            editIntent,
+            strictPolicyTriggered,
+            outcomeClass
+        };
+
+        trace('chat-execution-receipt', execution);
+
+        const finalAssistantMessage = messages.filter(m => m.role === 'assistant' && m.content).pop()?.content || '';
+
         webContents?.send('chat:done', {
             projectPath,
-            message: messages.filter(m => m.role === 'assistant' && m.content).pop()?.content || '',
+            message: finalAssistantMessage,
+            execution,
             usage: {
                 inputTokens: sessionInputTokens,
                 outputTokens: sessionOutputTokens,

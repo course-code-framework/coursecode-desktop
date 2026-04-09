@@ -861,6 +861,37 @@
               {/if}
             </div>
           </div>
+        {:else if message.type === 'executionReceipt'}
+          <div class="change-summary-card execution-receipt-card">
+            <div class="change-summary-icon">
+              <Icon size={14}>
+                <path d="M4 12h16M4 7h16M4 17h10"/>
+              </Icon>
+            </div>
+            <div class="change-summary-body">
+              <span class="change-summary-title">Execution Receipt</span>
+              <span class="change-summary-detail">Outcome: {message.outcomeClass}</span>
+              <span class="change-summary-detail">
+                {message.totalToolCalls} tool call{message.totalToolCalls !== 1 ? 's' : ''}
+                {' · '}{message.succeededToolCalls} succeeded
+                {#if message.failedToolCalls > 0}{' · '}{message.failedToolCalls} failed{/if}
+              </span>
+              {#if message.mutationToolAttempts > 0}
+                <span class="change-summary-detail">
+                  Mutation tools: {message.mutationToolSuccesses}/{message.mutationToolAttempts} succeeded
+                  {#if message.changedFiles != null}{' · '}Detected file changes: {message.changedFiles}{/if}
+                </span>
+              {:else if message.changedFiles != null}
+                <span class="change-summary-detail">Detected file changes: {message.changedFiles}</span>
+              {/if}
+              {#if message.hasUnverifiedMutationOutcome}
+                <span class="change-summary-detail">Warning: mutation tools ran but no verified file changes were detected.</span>
+              {/if}
+              {#if message.strictPolicyTriggered}
+                <span class="change-summary-detail">Strict mode: edit intent detected but no successful mutation tool call occurred.</span>
+              {/if}
+            </div>
+          </div>
         {:else}
           <MessageBubble {message} />
         {/if}

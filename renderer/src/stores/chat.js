@@ -144,11 +144,12 @@ export function subscribeToChatEvents() {
         ]);
     });
 
-    unsubDone = window.api.chat.onDone(({ projectPath, usage }) => {
+    unsubDone = window.api.chat.onDone(({ projectPath, message, usage, execution }) => {
         if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
         // Finalize the streaming message
-        let finalText = '';
-        streamingText.subscribe(v => finalText = v)();
+        let streamText = '';
+        streamingText.subscribe(v => streamText = v)();
+        const finalText = (typeof message === 'string' && message.trim()) ? message : streamText;
 
         let tools = [];
         activeTools.subscribe(v => tools = v)();
@@ -163,6 +164,32 @@ export function subscribeToChatEvents() {
                     toolCalls: tools.filter(t => t.status === 'done' || t.status === 'error'),
                     screenshots: [...pendingScreenshots],
                     usage
+                }
+            ]);
+        }
+
+        if (execution && typeof execution === 'object') {
+            const changedFiles = Number.isFinite(Number(execution.changedFiles)) ? Number(execution.changedFiles) : null;
+            const hasVerifiedFileChanges = Boolean(execution.hasVerifiedFileChanges);
+            const hasUnverifiedMutationOutcome = Boolean(execution.hasUnverifiedMutationOutcome);
+
+            messages.update(msgs => [
+                ...msgs,
+                {
+                    role: 'system',
+                    type: 'executionReceipt',
+                    totalToolCalls: execution.totalToolCalls || 0,
+                    succeededToolCalls: execution.succeededToolCalls || 0,
+                    failedToolCalls: execution.failedToolCalls || 0,
+                    mutationToolAttempts: execution.mutationToolAttempts || 0,
+                    mutationToolSuccesses: execution.mutationToolSuccesses || 0,
+                    changedFiles,
+                    hasVerifiedFileChanges,
+                    hasUnverifiedMutationOutcome,
+                    strictEditExecution: Boolean(execution.strictEditExecution),
+                    editIntent: Boolean(execution.editIntent),
+                    strictPolicyTriggered: Boolean(execution.strictPolicyTriggered),
+                    outcomeClass: execution.outcomeClass || 'no_changes'
                 }
             ]);
         }

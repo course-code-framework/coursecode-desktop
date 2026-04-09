@@ -1,0 +1,81 @@
+{
+  "responses": {
+    "validBody": {
+      "model": "gpt-5.3-codex",
+      "messages": [
+        { "role": "user", "content": "fix one lint error" },
+        { "type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":\"course/slide.js\"}" },
+        { "type": "function_call_output", "call_id": "call_1", "output": "{\"content\":\"ok\"}" }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "read_file",
+          "description": "Read file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" }
+            },
+            "required": ["path"]
+          }
+        }
+      ],
+      "system": "You are an assistant",
+      "max_tokens": 8192,
+      "cloud_provider": "openai",
+      "cloud_api_type": "responses"
+    },
+    "invalidBodyBadMessage": {
+      "model": "gpt-5.3-codex",
+      "messages": [
+        { "role": "user", "content": "fix one lint error" },
+        { "type": "function_call", "name": "read_file", "arguments": "{}" }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "read_file",
+          "description": "Read file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" }
+            }
+          }
+        }
+      ],
+      "system": "You are an assistant"
+    },
+    "invalidBodyBadTool": {
+      "model": "gpt-5.3-codex",
+      "messages": [
+        { "role": "user", "content": "fix one lint error" }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "description": "Missing name and parameters"
+        }
+      ],
+      "system": "You are an assistant"
+    }
+  },
+  "tools": {
+    "anthropicTools": [
+      {
+        "name": "edit_file",
+        "description": "Edit file",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "old_string": { "type": "string" },
+            "new_string": { "type": "string" }
+          },
+          "required": ["path", "old_string", "new_string"]
+        }
+      }
+    ]
+  }
+}

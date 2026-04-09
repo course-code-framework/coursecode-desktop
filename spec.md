@@ -1233,6 +1233,16 @@ The `llm-provider.js` module implements a format adapter layer. When in cloud mo
 3. Pass the `system` prompt as a top-level field (the proxy maps it).
 4. Parse the unified SSE response stream (same format regardless of provider).
 
+**Resilience behavior (desktop-side):**
+- If `GET /api/ai/models` metadata is temporarily unavailable, `chat-engine.js` infers provider format from `modelId` as a fallback:
+  - `claude*` → `anthropic`
+  - `gemini*` → `google`
+  - `gpt*` / `codex*` / `o*` → `openai`
+- For inferred OpenAI models, `apiType` falls back to:
+  - `responses` for `codex` and `gpt-5*` model IDs
+  - `chat` otherwise
+- If provider format still cannot be determined, the client aborts before calling `/api/ai/chat` and surfaces a user-facing error instructing model reselection. This prevents malformed requests that return `400 Invalid request body`.
+
 The agentic tool loop in `chat-engine.js` reconstructs conversation history after tool execution. This reconstruction **must** use the correct provider format:
 - Anthropic: assistant message with content blocks → user message with tool_result blocks.
 - OpenAI Chat: assistant message with tool_calls → tool-role messages.
@@ -1351,8 +1361,25 @@ Zero-dependency logger providing scoped, leveled output. Every module creates a 
 | Behavior | Development (`!app.isPackaged`) | Production (`app.isPackaged`) |
 |---|---|---|
 | Console output | All levels (debug+), colorized | warn+ only |
-| File logging | None | JSON lines to `userData/logs/main.log` |
-| File rotation | N/A | 5 MB max, 3 backups |
+| File logging | JSON lines to `userData/logs/dev-main.log` (enabled by default in dev, opt-out with `COURSECODE_DEV_FILE_LOGS=0`) | JSON lines to `userData/logs/main.log` |
+| File rotation | 5 MB max, 3 backups | 5 MB max, 3 backups |
+
+### Chat Trace Logging
+
+The AI chat pipeline emits detailed structured debug traces in development to make provider/payload/tool-loop debugging straightforward.
+
+- Each chat turn gets a correlation ID (`requestId`) generated in `chat-engine.js`.
+- The same `requestId` is propagated into cloud proxy provider logs in `llm-provider.js`.
+- Trace events include request shaping, stream deltas, tool call start/finish, loop continuation, final usage, and terminal errors.
+- Traces are emitted only in development (`app.isPackaged === false`) and are written to both console and dev log file by default.
+
+Example trace sequence:
+- `user-message-appended`
+- `prepared-api-messages`
+- `llm-request-start`
+- `stream-text-delta` / `tool-call-start` / `tool-execution-*`
+- `llm-response-complete`
+- `chat-finished` or `chat-error`
 
 ### Error Translation (`main/errors.js`)
 

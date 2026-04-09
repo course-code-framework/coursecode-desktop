@@ -28,6 +28,7 @@ const DEFAULTS = {
     aiCustomInstructions: '',
     defaultAiMode: 'byok',
     aiModeInitialized: false,
+    strictEditExecution: false,
     cloudAiModel: null,
     cloudModelCache: []
 };

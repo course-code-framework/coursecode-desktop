@@ -8,7 +8,7 @@
 
 import { readFile as fsReadFile, writeFile as fsWriteFile } from 'fs/promises';
 import { readdir, stat } from 'fs/promises';
-import { join, resolve, relative, extname, basename, sep } from 'path';
+import { join, resolve, extname, basename, sep } from 'path';
 import { createLogger } from './logger.js';
 
 const log = createLogger('file-manager');

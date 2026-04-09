@@ -6,6 +6,7 @@ import { MAX_TOKENS } from './ai-config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('ai');
+const verboseAiDiagnostics = !app.isPackaged && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '1'));
 
 // --- Provider Registry ---
 
@@ -774,18 +775,281 @@ function formatToolsForProvider(tools, cloudProvider, cloudApiType) {
     return tools;
 }
 
+function validateCloudProxyBody(body, cloudProvider, cloudApiType) {
+    const issues = [];
+
+    if (!body || typeof body !== 'object') {
+        return ['request body must be an object'];
+    }
+
+    if (typeof body.model !== 'string' || !body.model.trim()) {
+        issues.push('model must be a non-empty string');
+    }
+    if (!Array.isArray(body.messages) || body.messages.length === 0) {
+        issues.push('messages must be a non-empty array');
+    }
+    if (typeof body.system !== 'string') {
+        issues.push('system must be a string');
+    }
+
+    if (body.tools != null && !Array.isArray(body.tools)) {
+        issues.push('tools must be an array when present');
+    }
+
+    if (cloudApiType === 'responses' && Array.isArray(body.messages)) {
+        for (let i = 0; i < body.messages.length; i++) {
+            const item = body.messages[i];
+            const prefix = `messages[${i}]`;
+
+            if (!item || typeof item !== 'object') {
+                issues.push(`${prefix} must be an object`);
+                continue;
+            }
+
+            const isRoleMessage = (item.role === 'user' || item.role === 'assistant')
+                && typeof item.content === 'string';
+            const isFunctionCall = item.type === 'function_call'
+                && typeof item.call_id === 'string' && item.call_id.trim()
+                && typeof item.name === 'string' && item.name.trim()
+                && typeof item.arguments === 'string';
+            const outputType = typeof item.output;
+            const isFunctionCallOutput = item.type === 'function_call_output'
+                && typeof item.call_id === 'string' && item.call_id.trim()
+                && (
+                    outputType === 'string'
+                    || outputType === 'number'
+                    || outputType === 'boolean'
+                    || outputType === 'object'
+                );
+
+            if (!isRoleMessage && !isFunctionCall && !isFunctionCallOutput) {
+                issues.push(`${prefix} is not a valid responses input item`);
+            }
+        }
+
+        if (Array.isArray(body.tools)) {
+            for (let i = 0; i < body.tools.length; i++) {
+                const tool = body.tools[i];
+                const prefix = `tools[${i}]`;
+                const valid = tool
+                    && typeof tool === 'object'
+                    && tool.type === 'function'
+                    && typeof tool.name === 'string' && tool.name.trim()
+                    && tool.parameters
+                    && typeof tool.parameters === 'object'
+                    && !Array.isArray(tool.parameters);
+
+                if (!valid) {
+                    issues.push(`${prefix} is not a valid responses function tool definition`);
+                }
+            }
+        }
+    }
+
+    if (cloudProvider === 'openai' && cloudApiType !== 'responses' && Array.isArray(body.tools)) {
+        for (let i = 0; i < body.tools.length; i++) {
+            const tool = body.tools[i];
+            const prefix = `tools[${i}]`;
+            const valid = tool
+                && typeof tool === 'object'
+                && tool.type === 'function'
+                && tool.function
+                && typeof tool.function === 'object'
+                && typeof tool.function.name === 'string' && tool.function.name.trim();
+            if (!valid) {
+                issues.push(`${prefix} is not a valid openai function tool definition`);
+            }
+        }
+    }
+
+    return issues;
+}
+
+function assertCloudProxyBodyValid(body, cloudProvider, cloudApiType, requestId, phase) {
+    const issues = validateCloudProxyBody(body, cloudProvider, cloudApiType);
+    if (issues.length === 0) return;
+
+    const summary = issues.slice(0, 8).join('; ');
+    log.error('Cloud proxy local payload validation failed', {
+        requestId,
+        phase,
+        cloudProvider,
+        cloudApiType,
+        issueCount: issues.length,
+        issues: verboseAiDiagnostics ? issues.slice(0, 50) : issues.slice(0, 8),
+        bodyKeys: Object.keys(body || {}),
+        messageCount: Array.isArray(body?.messages) ? body.messages.length : null,
+        toolCount: Array.isArray(body?.tools) ? body.tools.length : null
+    });
+
+    throw Object.assign(
+        new Error(`Cloud request payload validation failed (${phase}): ${summary}`),
+        { code: 'CLOUD_PAYLOAD_VALIDATION_FAILED' }
+    );
+}
+
+function normalizeResponsesMessagesForRetry(messages = []) {
+    const normalized = [];
+
+    for (const item of messages) {
+        if (!item || typeof item !== 'object') continue;
+
+        if (item.type === 'function_call_output') {
+            let nextOutput = item.output;
+            if (typeof nextOutput === 'string') {
+                try {
+                    nextOutput = JSON.parse(nextOutput);
+                } catch {
+                    // Keep string output if it is not JSON.
+                }
+            }
+
+            normalized.push({
+                type: 'function_call_output',
+                call_id: item.call_id,
+                output: nextOutput
+            });
+            continue;
+        }
+
+        normalized.push(item);
+    }
+
+    return normalized;
+}
+
+function compactResponsesMessagesForRetry(messages = []) {
+    const roleMessages = [];
+
+    for (const item of messages) {
+        if (!item || typeof item !== 'object') continue;
+        if (item.role === 'user' || item.role === 'assistant') {
+            const content = item.content;
+            if (typeof content === 'string' && content.trim()) {
+                roleMessages.push({ role: item.role, content });
+            }
+        }
+    }
+
+    const compacted = roleMessages.slice(-4);
+
+    // Preserve the latest function call + output so the model can continue from
+    // real tool state instead of repeatedly requesting the same tool.
+    let latestOutput = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const item = messages[i];
+        if (item?.type === 'function_call_output' && item.call_id) {
+            latestOutput = item;
+            break;
+        }
+    }
+
+    if (latestOutput) {
+        let latestCall = null;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const item = messages[i];
+            if (item?.type === 'function_call' && item.call_id === latestOutput.call_id) {
+                latestCall = item;
+                break;
+            }
+        }
+
+        if (latestCall) {
+            compacted.push({
+                type: 'function_call',
+                call_id: latestCall.call_id,
+                name: latestCall.name,
+                arguments: latestCall.arguments
+            });
+        }
+
+        compacted.push({
+            type: 'function_call_output',
+            call_id: latestOutput.call_id,
+            output: latestOutput.output
+        });
+    }
+
+    return compacted;
+}
+
+const responsesCompactionModeByRequestId = new Map();
+
+function rememberResponsesCompactionMode(requestId) {
+    if (!requestId) return;
+    responsesCompactionModeByRequestId.set(requestId, Date.now());
+
+    // Keep this tiny and self-cleaning; request IDs are per-chat-turn.
+    if (responsesCompactionModeByRequestId.size > 512) {
+        const staleBefore = Date.now() - (30 * 60 * 1000);
+        for (const [id, ts] of responsesCompactionModeByRequestId.entries()) {
+            if (ts < staleBefore) {
+                responsesCompactionModeByRequestId.delete(id);
+            }
+        }
+    }
+}
+
+function shouldCompactResponsesForRequest(requestId) {
+    if (!requestId) return false;
+    return responsesCompactionModeByRequestId.has(requestId);
+}
+
 async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
     const baseUrl = getCloudBaseUrl();
 
     return {
         async *chat({ messages, tools, system, model, signal, requestId }) {
+            const requestMetrics = {
+                requestId: requestId || null,
+                cloudProvider: cloudProvider || null,
+                cloudApiType: cloudApiType || null,
+                firstAttemptStatus: null,
+                retryNormalizedStatus: null,
+                retryCompactedStatus: null,
+                fallbackUsed: 'none',
+                finalStatus: null,
+                finalPhase: 'initial'
+            };
+            let outcomeLogged = false;
+            const logRequestOutcome = (result) => {
+                if (outcomeLogged) return;
+                outcomeLogged = true;
+                log.info('Cloud proxy request outcome', {
+                    ...requestMetrics,
+                    result
+                });
+            };
+
             const formattedTools = formatToolsForProvider(tools, cloudProvider, cloudApiType);
-            const body = { model, messages, tools: formattedTools, system, max_tokens: MAX_TOKENS };
-            log.debug('Cloud proxy: request body sample', {
-                requestId,
-                firstMessage: messages?.[0] ? JSON.stringify(messages[0]).slice(0, 200) : null,
-                firstTool: formattedTools?.[0] ? JSON.stringify(formattedTools[0]).slice(0, 200) : null
-            });
+            const useCompactedMessages = cloudApiType === 'responses' && shouldCompactResponsesForRequest(requestId);
+            const outboundMessages = useCompactedMessages ? compactResponsesMessagesForRetry(messages) : messages;
+
+            const body = {
+                model,
+                messages: outboundMessages,
+                tools: formattedTools,
+                system,
+                max_tokens: MAX_TOKENS,
+                cloud_provider: cloudProvider || null,
+                cloud_api_type: cloudApiType || null
+            };
+            assertCloudProxyBodyValid(body, cloudProvider, cloudApiType, requestId, 'initial');
+            if (verboseAiDiagnostics) {
+                log.debug('Cloud proxy: request body sample', {
+                    requestId,
+                    firstMessage: outboundMessages?.[0] ? JSON.stringify(outboundMessages[0]).slice(0, 200) : null,
+                    firstTool: formattedTools?.[0] ? JSON.stringify(formattedTools[0]).slice(0, 200) : null
+                });
+            }
+
+            if (useCompactedMessages) {
+                log.debug('Cloud proxy: using compacted responses history for request', {
+                    requestId,
+                    compactedMessageCount: outboundMessages.length,
+                    originalMessageCount: messages?.length || 0
+                });
+            }
 
             // Compose a timeout abort with the user's signal
             const fetchController = new AbortController();
@@ -797,17 +1061,19 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
 
             let res;
             try {
-                log.debug('Cloud proxy: fetching', {
-                    requestId,
-                    url: `${baseUrl}/api/ai/chat`,
-                    model,
-                    cloudProvider,
-                    cloudApiType,
-                    messageCount: messages?.length,
-                    toolCount: formattedTools?.length,
-                    systemLength: system?.length,
-                    bodyKeys: Object.keys(body)
-                });
+                if (verboseAiDiagnostics) {
+                    log.debug('Cloud proxy: fetching', {
+                        requestId,
+                        url: `${baseUrl}/api/ai/chat`,
+                        model,
+                        cloudProvider,
+                        cloudApiType,
+                        messageCount: outboundMessages?.length,
+                        toolCount: formattedTools?.length,
+                        systemLength: system?.length,
+                        bodyKeys: Object.keys(body)
+                    });
+                }
                 res = await net.fetch(`${baseUrl}/api/ai/chat`, {
                     method: 'POST',
                     headers: {
@@ -817,6 +1083,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                     body: JSON.stringify(body),
                     signal: fetchController.signal
                 });
+                requestMetrics.firstAttemptStatus = res.status;
                 log.debug('Cloud proxy: response received', { requestId, status: res.status, contentType: res.headers.get('content-type') });
             } catch (err) {
                 if (fetchController.signal.aborted && !signal?.aborted) {
@@ -832,18 +1099,145 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                 const errBody = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
                 const { message, errorCode } = extractCloudErrorDetails(errBody, res.status);
                 const detail = errBody?.detail;
-                if (res.status === 401) throw Object.assign(new Error('Not signed in to CourseCode Cloud'), { status: 401 });
-                if (res.status === 402) {
+
+                // Some OpenAI Responses payload validators are strict about function_call_output
+                // shape. If we hit a 400 invalid-body response, retry once with normalized output.
+                if (
+                    res.status === 400
+                    && cloudApiType === 'responses'
+                    && /invalid request body/i.test(message || '')
+                ) {
+                    rememberResponsesCompactionMode(requestId);
+                    const retryMessages = normalizeResponsesMessagesForRetry(messages);
+                    const retryBody = {
+                        ...body,
+                        messages: retryMessages
+                    };
+                    assertCloudProxyBodyValid(retryBody, cloudProvider, cloudApiType, requestId, 'retry-normalized-output');
+
+                    log.warn('Cloud proxy 400 on responses payload; retrying with normalized function_call_output', {
+                        requestId,
+                        originalMessageCount: messages?.length || 0,
+                        retryMessageCount: retryMessages.length
+                    });
+
+                    const retryRes = await net.fetch(`${baseUrl}/api/ai/chat`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(retryBody),
+                        signal: fetchController.signal
+                    });
+                    requestMetrics.retryNormalizedStatus = retryRes.status;
+
+                    if (retryRes.ok) {
+                        requestMetrics.fallbackUsed = 'normalized';
+                        requestMetrics.finalPhase = 'retry-normalized-output';
+                        log.info('Cloud proxy retry succeeded after response payload normalization', {
+                            requestId,
+                            status: retryRes.status
+                        });
+                        res = retryRes;
+                    } else {
+                        const retryErrBody = await retryRes.json().catch(() => ({ error: `HTTP ${retryRes.status}` }));
+                        const retryExtracted = extractCloudErrorDetails(retryErrBody, retryRes.status);
+                        log.error('Cloud proxy retry failed', {
+                            requestId,
+                            status: retryRes.status,
+                            message: retryExtracted.message,
+                            detail: retryErrBody?.detail,
+                            rawBody: JSON.stringify(retryErrBody)
+                        });
+
+                        // Final fallback: drop tool-call transcript items and retry with text-only
+                        // role messages. This recovers from strict validator failures on mixed
+                        // function_call/function_call_output history from previous interrupted turns.
+                        if (retryRes.status === 400 && /invalid request body/i.test(retryExtracted.message || '')) {
+                            const compactedMessages = compactResponsesMessagesForRetry(messages);
+                            const compactedBody = {
+                                ...body,
+                                messages: compactedMessages
+                            };
+                            assertCloudProxyBodyValid(compactedBody, cloudProvider, cloudApiType, requestId, 'retry-compacted-history');
+
+                            log.warn('Cloud proxy 2nd retry: sending compacted responses history', {
+                                requestId,
+                                compactedMessageCount: compactedMessages.length,
+                                originalMessageCount: messages?.length || 0
+                            });
+
+                            const retry2Res = await net.fetch(`${baseUrl}/api/ai/chat`, {
+                                method: 'POST',
+                                headers: {
+                                    'Authorization': `Bearer ${token}`,
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify(compactedBody),
+                                signal: fetchController.signal
+                            });
+                            requestMetrics.retryCompactedStatus = retry2Res.status;
+
+                            if (retry2Res.ok) {
+                                requestMetrics.fallbackUsed = 'compacted';
+                                requestMetrics.finalPhase = 'retry-compacted-history';
+                                log.info('Cloud proxy second retry succeeded with compacted responses history', {
+                                    requestId,
+                                    status: retry2Res.status
+                                });
+                                res = retry2Res;
+                            } else {
+                                const retry2ErrBody = await retry2Res.json().catch(() => ({ error: `HTTP ${retry2Res.status}` }));
+                                const retry2Extracted = extractCloudErrorDetails(retry2ErrBody, retry2Res.status);
+                                log.error('Cloud proxy second retry failed', {
+                                    requestId,
+                                    status: retry2Res.status,
+                                    message: retry2Extracted.message,
+                                    detail: retry2ErrBody?.detail,
+                                    rawBody: JSON.stringify(retry2ErrBody)
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // If retry succeeded, continue normal stream processing below.
+                if (res.ok) {
+                    // no-op: fall through to stream handling after this block
+                } else if (res.status === 401) {
+                    requestMetrics.finalStatus = res.status;
+                    logRequestOutcome('error');
+                    throw Object.assign(new Error('Not signed in to CourseCode Cloud'), { status: 401 });
+                }
+                else if (res.status === 402) {
+                    requestMetrics.finalStatus = res.status;
+                    logRequestOutcome('error');
                     if (looksLikeNoCreditsError(errorCode, message)) {
                         throw Object.assign(new Error(message || 'Insufficient credits'), { status: 402, code: 'NO_CREDITS', errorCode });
                     }
                     throw Object.assign(new Error(message || 'Cloud AI request requires billing action.'), { status: 402, code: errorCode || 'BILLING_REQUIRED', errorCode });
                 }
-                if (res.status === 503) throw Object.assign(new Error('This AI model is temporarily unavailable. Try a different model.'), { status: 503 });
-                if (res.status === 504) throw Object.assign(new Error('The AI service took too long to respond. Try again in a moment.'), { status: 504 });
-                log.error('Cloud proxy error', { requestId, status: res.status, message, detail, rawBody: JSON.stringify(errBody) });
-                throw Object.assign(new Error(message || `Cloud proxy error: HTTP ${res.status}`), { status: res.status, code: errorCode || undefined, errorCode });
+                else if (res.status === 503) {
+                    requestMetrics.finalStatus = res.status;
+                    logRequestOutcome('error');
+                    throw Object.assign(new Error('This AI model is temporarily unavailable. Try a different model.'), { status: 503 });
+                }
+                else if (res.status === 504) {
+                    requestMetrics.finalStatus = res.status;
+                    logRequestOutcome('error');
+                    throw Object.assign(new Error('The AI service took too long to respond. Try again in a moment.'), { status: 504 });
+                }
+                else {
+                    requestMetrics.finalStatus = res.status;
+                    logRequestOutcome('error');
+                    log.error('Cloud proxy error', { requestId, status: res.status, message, detail, rawBody: JSON.stringify(errBody) });
+                    throw Object.assign(new Error(message || `Cloud proxy error: HTTP ${res.status}`), { status: res.status, code: errorCode || undefined, errorCode });
+                }
             }
+
+            requestMetrics.finalStatus = res.status;
+            logRequestOutcome('success');
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
@@ -955,3 +1349,10 @@ export async function createProvider(providerId, apiKeyOrToken, { cloudProvider,
         default: throw new Error(`Unknown provider: ${providerId}`);
     }
 }
+
+export const __testables = {
+    formatToolsForProvider,
+    validateCloudProxyBody,
+    normalizeResponsesMessagesForRetry,
+    compactResponsesMessagesForRetry
+};
