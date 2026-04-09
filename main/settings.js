@@ -28,7 +28,8 @@ const DEFAULTS = {
     aiCustomInstructions: '',
     defaultAiMode: 'byok',
     aiModeInitialized: false,
-    strictEditExecution: false,
+    strictEditExecution: true,
+    toolApprovalMode: 'auto',  // 'auto' | 'mutations' | 'all' — controls whether tools need user approval
     cloudAiModel: null,
     cloudModelCache: []
 };
@@ -56,6 +57,10 @@ export function loadSettings() {
         settings.showAiChatByDefault = settings.aiChatEnabled;
     }
     settings.showAiChatByDefault = settings.aiChatEnabled;
+
+    // Strict edit execution is always enabled by default to ensure edit/fix
+    // requests fail closed when no verified file mutation occurred.
+    settings.strictEditExecution = true;
 
     // Ensure projects directory exists
     if (!existsSync(settings.projectsDir)) {

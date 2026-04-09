@@ -17,13 +17,36 @@ const connections = new Map();
 /** Auto-incrementing JSON-RPC request ID */
 let nextRequestId = 1;
 
+/** Health check interval (ms) */
+const HEALTH_CHECK_INTERVAL = 30000;
+
+/** Tool-specific timeouts (ms) */
+const TOOL_TIMEOUTS = {
+    coursecode_build:    120000,
+    coursecode_deploy:   120000,
+    coursecode_publish:  120000,
+    coursecode_lint:     30000,
+    coursecode_state:    15000,
+    screenshot:          20000,
+    read_file:           10000,
+    list_directory:      10000,
+};
+const DEFAULT_TOOL_TIMEOUT = 60000;
+
+/** Maximum auto-reconnection attempts before giving up */
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY_MS = 1000;
+
 class McpConnection {
-    constructor(process) {
+    constructor(process, projectPath) {
         this.process = process;
+        this.projectPath = projectPath;
         this.pending = new Map();    // id → { resolve, reject, timer }
         this.buffer = '';
         this.initialized = false;
         this.initPromise = null;
+        this._healthTimer = null;
+        this._dead = false;
 
         // Parse newline-delimited JSON from stdout
         process.stdout.on('data', (chunk) => {
@@ -37,6 +60,7 @@ class McpConnection {
 
         process.on('exit', (code) => {
             log.info('Process exited', { code });
+            this._stopHealthCheck();
             // Reject all pending requests
             for (const [id, entry] of this.pending) {
                 clearTimeout(entry.timer);
@@ -44,6 +68,30 @@ class McpConnection {
             }
             this.pending.clear();
         });
+    }
+
+    _startHealthCheck() {
+        this._stopHealthCheck();
+        this._healthTimer = setInterval(async () => {
+            try {
+                await this.request('ping', {}, 5000);
+            } catch {
+                log.warn('Health check failed', { projectPath: this.projectPath });
+                this._dead = true;
+                this._stopHealthCheck();
+            }
+        }, HEALTH_CHECK_INTERVAL);
+    }
+
+    _stopHealthCheck() {
+        if (this._healthTimer) {
+            clearInterval(this._healthTimer);
+            this._healthTimer = null;
+        }
+    }
+
+    get isAlive() {
+        return !this._dead && !this.process.killed && this.process.exitCode == null;
     }
 
     _processBuffer() {
@@ -134,6 +182,7 @@ class McpConnection {
             });
             this.notify('notifications/initialized');
             this.initialized = true;
+            this._startHealthCheck();
             return result;
         })();
 
@@ -142,10 +191,12 @@ class McpConnection {
 
     /**
      * Call an MCP tool and return the result.
+     * Uses tool-specific timeouts for builds vs reads.
      */
     async callTool(name, args = {}) {
         await this.initialize();
-        const result = await this.request('tools/call', { name, arguments: args });
+        const timeout = TOOL_TIMEOUTS[name] || DEFAULT_TOOL_TIMEOUT;
+        const result = await this.request('tools/call', { name, arguments: args }, timeout);
         return result;
     }
 
@@ -159,6 +210,8 @@ class McpConnection {
     }
 
     kill() {
+        this._stopHealthCheck();
+        this._dead = true;
         killProcessTree(this.process, 'SIGTERM');
         this._killTimer = setTimeout(() => {
             killProcessTree(this.process, 'SIGKILL');
@@ -170,6 +223,8 @@ class McpConnection {
      * when the event loop is tearing down and setTimeout won't fire.
      */
     forceKill() {
+        this._stopHealthCheck();
+        this._dead = true;
         clearTimeout(this._killTimer);
         killProcessTree(this.process, 'SIGKILL');
     }
@@ -182,8 +237,15 @@ class McpConnection {
 export async function getMcpClient(projectPath) {
     // Return existing live connection
     const existing = connections.get(projectPath);
-    if (existing && !existing.process.killed && existing.process.exitCode == null) {
+    if (existing?.isAlive) {
         return existing;
+    }
+
+    // Clean up dead connection if present
+    if (existing) {
+        log.info('Replacing dead MCP connection', { projectPath });
+        try { existing.kill(); } catch { /* already dead */ }
+        connections.delete(projectPath);
     }
 
     // Need preview port
@@ -192,7 +254,27 @@ export async function getMcpClient(projectPath) {
         throw new Error('Preview server is not running. Cannot start MCP client.');
     }
 
-    // Spawn coursecode mcp --port <port>
+    // Spawn with retry logic
+    let lastError;
+    for (let attempt = 1; attempt <= MAX_RECONNECT_ATTEMPTS; attempt++) {
+        try {
+            const conn = await _spawnMcpConnection(projectPath, port);
+            return conn;
+        } catch (err) {
+            lastError = err;
+            log.warn(`MCP connection attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} failed`, {
+                projectPath, error: err?.message
+            });
+            if (attempt < MAX_RECONNECT_ATTEMPTS) {
+                await new Promise(r => setTimeout(r, RECONNECT_DELAY_MS * attempt));
+            }
+        }
+    }
+
+    throw lastError || new Error('Failed to connect to MCP server');
+}
+
+async function _spawnMcpConnection(projectPath, port) {
     const { command, args } = getCLISpawnArgs(['mcp', '--port', String(port)]);
     const env = getChildEnv();
 
@@ -207,7 +289,7 @@ export async function getMcpClient(projectPath) {
         ...(process.platform !== 'win32' ? { detached: true } : {})
     });
 
-    const conn = new McpConnection(child);
+    const conn = new McpConnection(child, projectPath);
     connections.set(projectPath, conn);
 
     // Clean up on exit

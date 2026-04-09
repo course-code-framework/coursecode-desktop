@@ -250,12 +250,52 @@ async function createAnthropicProvider(apiKey) {
 
     return {
         async *chat({ messages, tools, system, model, signal }) {
+            // Apply cache_control to tools and early conversation messages
+            // for maximum prompt caching benefit.
+            // Anthropic caches from the top of the request down to the last
+            // cache_control marker, so we mark: system, tools (last tool),
+            // and the boundary message right before the recent turns.
+            const cachedTools = tools?.length ? tools.map((t, i) => {
+                if (i === tools.length - 1) {
+                    // Mark the last tool with cache_control so the entire tool
+                    // definitions block is cached across turns
+                    return { ...t, cache_control: { type: 'ephemeral' } };
+                }
+                return t;
+            }) : [];
+
+            // Mark the conversation history cache boundary.
+            // We cache everything up to (but not including) the last 2 messages,
+            // which change every turn. This means the system prompt + tools +
+            // all older conversation history is cached.
+            const cachedMessages = messages.map((m, i) => {
+                // Mark the message just before the last 2 messages as a cache point
+                if (i === messages.length - 3 && i >= 0 && m.role === 'user') {
+                    if (typeof m.content === 'string') {
+                        return {
+                            ...m,
+                            content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }]
+                        };
+                    }
+                    if (Array.isArray(m.content) && m.content.length > 0) {
+                        const lastIdx = m.content.length - 1;
+                        return {
+                            ...m,
+                            content: m.content.map((block, bi) =>
+                                bi === lastIdx ? { ...block, cache_control: { type: 'ephemeral' } } : block
+                            )
+                        };
+                    }
+                }
+                return m;
+            });
+
             const stream = client.messages.stream({
                 model,
                 max_tokens: MAX_TOKENS,
                 system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
-                messages,
-                tools: tools || [],
+                messages: cachedMessages,
+                tools: cachedTools,
             }, { signal });
 
             for await (const event of stream) {
@@ -422,10 +462,15 @@ async function createOpenAIProvider(apiKey) {
                 tools: openaiTools?.length ? openaiTools : undefined,
                 stream: true,
                 stream_options: { include_usage: true },
+                // Enable OpenAI automatic prompt caching \u2014 identical prefixes
+                // (system prompt + tools + older messages) are cached server-side,
+                // reducing latency and cost on subsequent turns.
+                store: true,
             }, { signal });
 
             let inputTokens = 0;
             let outputTokens = 0;
+            let cachedTokens = 0;
             let lastFinishReason = null;
             const toolCallsByIndex = new Map();
 
@@ -457,6 +502,10 @@ async function createOpenAIProvider(apiKey) {
                 if (chunk.usage) {
                     inputTokens = chunk.usage.prompt_tokens || 0;
                     outputTokens = chunk.usage.completion_tokens || 0;
+                    // OpenAI automatic caching reports cached tokens in prompt_tokens_details
+                    if (chunk.usage.prompt_tokens_details?.cached_tokens) {
+                        cachedTokens = chunk.usage.prompt_tokens_details.cached_tokens;
+                    }
                 }
             }
 
@@ -473,7 +522,7 @@ async function createOpenAIProvider(apiKey) {
             yield {
                 type: 'done',
                 stopReason: lastFinishReason === 'tool_calls' ? 'tool_use' : (lastFinishReason || 'stop'),
-                usage: { inputTokens, outputTokens }
+                usage: { inputTokens, outputTokens, cacheReadInputTokens: cachedTokens }
             };
         },
 
@@ -616,6 +665,7 @@ async function createGoogleProvider(apiKey) {
             let buffer = '';
             let inputTokens = 0;
             let outputTokens = 0;
+            let cachedTokens = 0;
             let lastFinishReason = null;
 
             while (true) {
@@ -637,6 +687,8 @@ async function createGoogleProvider(apiKey) {
                         if (event.usageMetadata) {
                             inputTokens = event.usageMetadata.promptTokenCount || 0;
                             outputTokens = event.usageMetadata.candidatesTokenCount || 0;
+                            // Gemini 2.5+ reports cached token counts when implicit caching kicks in
+                            cachedTokens = event.usageMetadata.cachedContentTokenCount || 0;
                         }
 
                         const candidate = event.candidates?.[0];
@@ -676,7 +728,7 @@ async function createGoogleProvider(apiKey) {
             yield {
                 type: 'done',
                 stopReason: stopReason === 'tool_use' ? 'tool_use' : stopReason,
-                usage: { inputTokens, outputTokens }
+                usage: { inputTokens, outputTokens, cacheReadInputTokens: cachedTokens }
             };
         },
 

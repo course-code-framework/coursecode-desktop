@@ -517,6 +517,18 @@
       .replace(/>/g, '&gt;');
     return escaped.replace(/\n/g, '<br>');
   }
+
+  function formatStreamingArgs(json) {
+    try {
+      const partial = JSON.parse(json + (json.endsWith('}') ? '' : '"}'));
+      if (partial.file_path) return partial.file_path.split('/').pop();
+      if (partial.path) return partial.path.split('/').pop();
+      if (partial.query) return partial.query.length > 30 ? partial.query.slice(0, 30) + '…' : partial.query;
+    } catch { /* partial JSON, try regex extraction */ }
+    const fileMatch = json.match(/"(?:file_path|path)"\s*:\s*"([^"]+)/);
+    if (fileMatch) return fileMatch[1].split('/').pop();
+    return '';
+  }
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
@@ -892,6 +904,17 @@
               {/if}
             </div>
           </div>
+        {:else if message.type === 'costWarning'}
+          <div class="change-summary-card cost-warning-card">
+            <div class="change-summary-icon cost-warning-icon">
+              <Icon size={14}>
+                <path d="M12 9v4m0 4h.01M4.93 19h14.14c1.34 0 2.18-1.46 1.49-2.63L13.49 4.01c-.68-1.17-2.3-1.17-2.98 0L3.44 16.37c-.69 1.17.15 2.63 1.49 2.63z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+              </Icon>
+            </div>
+            <div class="change-summary-body">
+              <span class="change-summary-detail">{message.content}</span>
+            </div>
+          </div>
         {:else}
           <MessageBubble {message} />
         {/if}
@@ -915,6 +938,9 @@
                     {tool.label}
                     {#if tool.elapsedMs}
                       <span class="tool-pill-time">{Math.max(0, Math.round(tool.elapsedMs / 100) / 10)}s</span>
+                    {/if}
+                    {#if tool.status === 'running' && tool.streamingArgs}
+                      <span class="tool-pill-args">{formatStreamingArgs(tool.streamingArgs)}</span>
                     {/if}
                   </span>
                 {/each}
@@ -1506,6 +1532,16 @@
     font-size: 10px;
   }
 
+  .tool-pill-args {
+    opacity: 0.6;
+    font-size: 10px;
+    font-style: italic;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .tool-running {
     background: var(--accent-subtle);
     color: var(--accent);
@@ -1741,6 +1777,15 @@
   .change-summary-detail {
     color: var(--text-tertiary);
     font-size: var(--text-xs);
+  }
+
+  .cost-warning-card {
+    border-color: var(--warning, #e5a100);
+    background: color-mix(in srgb, var(--warning, #e5a100) 8%, var(--bg-secondary));
+  }
+
+  .cost-warning-icon {
+    color: var(--warning, #e5a100);
   }
 
   .change-summary-actions {

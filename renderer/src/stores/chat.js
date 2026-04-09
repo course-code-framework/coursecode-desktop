@@ -1,6 +1,10 @@
 import { writable, derived } from 'svelte/store';
 import { updateSetting } from './settings.js';
 
+// Cost warning thresholds (mirrors main/ai-config.js)
+const COST_WARNING_THRESHOLDS = [2, 5, 10, 25];
+const CREDIT_LOW_THRESHOLD = 50;
+
 /** Chat messages array */
 export const messages = writable([]);
 
@@ -34,6 +38,12 @@ export const credits = writable(null);
 /** Mention index for the current project */
 export const mentionIndex = writable({ slides: [], refs: [], interactions: [] });
 
+/** Pending tool approvals (tools waiting for user to approve/reject) */
+export const pendingApprovals = writable([]);
+
+/** Cost warning state — tracks which thresholds have been shown */
+export const costWarningsShown = writable(new Set());
+
 // --- IPC event subscriptions ---
 let unsubStream = null;
 let unsubToolUse = null;
@@ -43,6 +53,8 @@ let unsubDone = null;
 let unsubChangeSummary = null;
 let unsubPlan = null;
 let unsubMemoryUpdated = null;
+let unsubToolApproval = null;
+let unsubToolArgsDelta = null;
 
 let currentAiMode = 'byok';
 let activeProjectPath = null;
@@ -122,6 +134,15 @@ export function subscribeToChatEvents() {
                     filePath: filePath || tt.filePath,
                     detail: detail || tt.detail
                 }
+                : tt
+        ));
+    });
+
+    unsubToolArgsDelta = window.api.chat.onToolArgsDelta?.(({ projectPath, toolUseId, delta, accumulated }) => {
+        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        activeTools.update(t => t.map(tt =>
+            tt.toolUseId === toolUseId
+                ? { ...tt, streamingArgs: accumulated }
                 : tt
         ));
     });
@@ -207,6 +228,27 @@ export function subscribeToChatEvents() {
                 outputTokens: s.outputTokens + (usage.outputTokens || 0),
                 estimatedCost: (s.estimatedCost || 0) + (usage.estimatedCost || 0)
             }));
+
+            // Check cost warning thresholds (BYOK mode)
+            if (currentAiMode === 'byok' && usage.estimatedCost > 0) {
+                let totalCost = 0;
+                sessionUsage.subscribe(s => totalCost = s.estimatedCost)();
+                costWarningsShown.update(shown => {
+                    const newShown = new Set(shown);
+                    for (const threshold of COST_WARNING_THRESHOLDS) {
+                        if (totalCost >= threshold && !shown.has(threshold)) {
+                            newShown.add(threshold);
+                            messages.update(msgs => [...msgs, {
+                                role: 'system',
+                                type: 'costWarning',
+                                content: `Session cost has reached $${threshold}. Total so far: $${totalCost.toFixed(2)}.`
+                            }]);
+                        }
+                    }
+                    return newShown;
+                });
+            }
+
             if (usage.creditsCharged != null) {
                 sessionCredits.update(c => c + usage.creditsCharged);
                 credits.update((current) => {
@@ -216,6 +258,23 @@ export function subscribeToChatEvents() {
                         total_credits: Math.max(0, current.total_credits - usage.creditsCharged)
                     };
                 });
+
+                // Check low credit warning (cloud mode)
+                let currentCredits = null;
+                credits.subscribe(c => currentCredits = c)();
+                if (currentCredits?.total_credits != null && currentCredits.total_credits < CREDIT_LOW_THRESHOLD) {
+                    costWarningsShown.update(shown => {
+                        if (shown.has('low_credits')) return shown;
+                        const newShown = new Set(shown);
+                        newShown.add('low_credits');
+                        messages.update(msgs => [...msgs, {
+                            role: 'system',
+                            type: 'costWarning',
+                            content: `Your cloud credits are running low (${currentCredits.total_credits.toFixed(0)} remaining).`
+                        }]);
+                        return newShown;
+                    });
+                }
             }
             if (currentAiMode === 'cloud') {
                 loadCredits();
@@ -253,20 +312,37 @@ export function subscribeToChatEvents() {
         if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
         contextMemory.set(memory || null);
     });
+
+    unsubToolApproval = window.api.chat.onToolApproval?.(({ projectPath, toolUseId, tool, label, input, filePath }) => {
+        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        pendingApprovals.update(list => [...list, { toolUseId, tool, label, input, filePath }]);
+    });
 }
 
 export function unsubscribeFromChatEvents() {
     unsubStream?.();
     unsubToolUse?.();
+    unsubToolArgsDelta?.();
     unsubScreenshot?.();
     unsubError?.();
     unsubDone?.();
     unsubChangeSummary?.();
     unsubPlan?.();
     unsubMemoryUpdated?.();
+    unsubToolApproval?.();
 }
 
 // --- Actions ---
+
+export async function approveToolCall(projectPath, toolUseId) {
+    pendingApprovals.update(list => list.filter(a => a.toolUseId !== toolUseId));
+    await window.api.chat.approveToolCall(projectPath, toolUseId, true);
+}
+
+export async function rejectToolCall(projectPath, toolUseId) {
+    pendingApprovals.update(list => list.filter(a => a.toolUseId !== toolUseId));
+    await window.api.chat.approveToolCall(projectPath, toolUseId, false);
+}
 
 export async function sendMessage(projectPath, text, mentions = []) {
     activeProjectPath = projectPath;

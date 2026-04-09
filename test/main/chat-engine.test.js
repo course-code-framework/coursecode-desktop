@@ -62,6 +62,16 @@ vi.mock('../../main/errors.js', () => ({
 }));
 
 const { sendMessage } = await import('../../main/chat-engine.js');
+const settingsModule = await import('../../main/settings.js');
+const getSettingMock = settingsModule.getSetting;
+
+function defaultSettingValue(key) {
+    if (key === 'aiProvider') return 'anthropic';
+    if (key === 'aiModel') return null;
+    if (key === 'cloudAiModel') return null;
+    if (key === 'strictEditExecution') return false;
+    return null;
+}
 
 function createWebContentsMock() {
     return {
@@ -91,6 +101,7 @@ describe('chat-engine storage and safety', () => {
     let userDataDir;
 
     beforeEach(() => {
+        getSettingMock.mockImplementation(defaultSettingValue);
         projectDir = mkdtempSync(join(tmpdir(), 'cc-chat-engine-test-'));
         userDataDir = createTempUserData();
         setUserDataDir(userDataDir);
@@ -277,5 +288,55 @@ describe('chat-engine storage and safety', () => {
         expect(names).not.toContain('.DS_Store');
         expect(names).toContain('course');
         expect(names).toContain('package.json');
+    });
+
+    it('strict edit mode fail-closes edit-intent turns without verified edits', async () => {
+        getSettingMock.mockImplementation((key) => {
+            if (key === 'strictEditExecution') return true;
+            return defaultSettingValue(key);
+        });
+
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                yield { type: 'text', text: 'I fixed one lint issue.' };
+                yield { type: 'done', stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 20 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'fix one lint error', [], webContents, 'byok');
+
+        const doneCall = webContents.send.mock.calls.find(([channel]) => channel === 'chat:done');
+        expect(doneCall).toBeTruthy();
+
+        const donePayload = doneCall[1];
+        expect(donePayload.execution.strictPolicyTriggered).toBe(true);
+        expect(donePayload.execution.outcomeClass).toBe('strict_policy_blocked');
+        expect(donePayload.message).toContain('No verified file edits were applied');
+    });
+
+    it('strict edit mode does not block non-edit explanatory turns', async () => {
+        getSettingMock.mockImplementation((key) => {
+            if (key === 'strictEditExecution') return true;
+            return defaultSettingValue(key);
+        });
+
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                yield { type: 'text', text: 'The lint error happens because the class is undefined.' };
+                yield { type: 'done', stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 20 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'why is this lint error happening?', [], webContents, 'byok');
+
+        const doneCall = webContents.send.mock.calls.find(([channel]) => channel === 'chat:done');
+        expect(doneCall).toBeTruthy();
+
+        const donePayload = doneCall[1];
+        expect(donePayload.execution.editIntent).toBe(false);
+        expect(donePayload.execution.strictPolicyTriggered).toBe(false);
+        expect(donePayload.execution.outcomeClass).toBe('model_text_only');
     });
 });

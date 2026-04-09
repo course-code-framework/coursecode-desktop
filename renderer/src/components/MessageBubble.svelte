@@ -14,7 +14,16 @@
 
   function renderMarkdown(text) {
     if (!text) return '';
-    return sanitizeRenderedHtml(marked.parse(text));
+    let html = sanitizeRenderedHtml(marked.parse(text));
+    // Wrap code blocks with a container that includes a copy button
+    html = html.replace(
+      /<pre><code(?:\s+class="language-(\w+)")?>([\s\S]*?)<\/code><\/pre>/g,
+      (_, lang, code) => {
+        const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
+        return `<div class="code-block-wrapper">${langLabel}<button class="code-copy-btn" title="Copy code">Copy</button><pre><code${lang ? ` class="language-${lang}"` : ''}>${code}</code></pre></div>`;
+      }
+    );
+    return html;
   }
 
   function sanitizeRenderedHtml(html) {
@@ -62,6 +71,21 @@
   }
 
   function handleMarkdownClick(event) {
+    // Handle copy button clicks on code blocks
+    const copyBtn = event.target?.closest('.code-copy-btn');
+    if (copyBtn) {
+      event.preventDefault();
+      const wrapper = copyBtn.closest('.code-block-wrapper');
+      const codeEl = wrapper?.querySelector('code');
+      if (codeEl) {
+        navigator.clipboard.writeText(codeEl.textContent || '').then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+        });
+      }
+      return;
+    }
+
     const anchor = event.target?.closest('a');
     if (!anchor) return;
 
@@ -287,6 +311,84 @@
   .markdown-body :global(h1) { font-size: var(--text-lg); }
   .markdown-body :global(h2) { font-size: var(--text-base); }
   .markdown-body :global(h3) { font-size: var(--text-sm); }
+
+  /* Code block wrapper with copy button */
+  .markdown-body :global(.code-block-wrapper) {
+    position: relative;
+    margin: var(--sp-sm) 0;
+  }
+
+  .markdown-body :global(.code-block-wrapper pre) {
+    margin: 0;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    padding: var(--sp-md);
+    overflow-x: auto;
+    font-size: var(--text-sm);
+  }
+
+  .markdown-body :global(.code-block-wrapper code) {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+
+  .markdown-body :global(.code-copy-btn) {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    padding: 2px 8px;
+    font-size: var(--text-xs);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--duration-fast) var(--ease);
+    z-index: 1;
+  }
+
+  .markdown-body :global(.code-block-wrapper:hover .code-copy-btn) {
+    opacity: 1;
+  }
+
+  .markdown-body :global(.code-copy-btn:hover) {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+  }
+
+  .markdown-body :global(.code-lang) {
+    position: absolute;
+    top: 6px;
+    left: 10px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    pointer-events: none;
+  }
+
+  .markdown-body :global(pre) {
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    padding: var(--sp-sm) var(--sp-md);
+    overflow-x: auto;
+    font-size: var(--text-sm);
+  }
+
+  .markdown-body :global(code) {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.9em;
+    background: var(--bg-secondary);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  .markdown-body :global(pre code) {
+    background: none;
+    padding: 0;
+  }
 
   /* Mention chips in user messages */
   .mention-chips {

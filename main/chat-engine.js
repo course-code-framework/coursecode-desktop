@@ -15,7 +15,9 @@ import { translateChatError } from './errors.js';
 import {
     TOOL_LABELS, PREVIEW_TOOLS, DEFAULT_PROVIDER, DEFAULT_MODEL, DEFAULT_CLOUD_MODEL,
     TOOL_RESULT_MAX_CHARS, TOOL_RESULT_TRUNCATION_NOTE,
-    MAX_CONTEXT_CHARS, OLDER_MESSAGE_MAX_CHARS, FALLBACK_MODELS
+    OLDER_MESSAGE_MAX_CHARS, FALLBACK_MODELS,
+    SAFE_TOOLS, MUTATION_TOOLS, PARALLELIZABLE_TOOLS,
+    getMaxContextChars, COST_WARNING_THRESHOLDS, CREDIT_LOW_THRESHOLD
 } from './ai-config.js';
 
 const log = createLogger('chat');
@@ -27,7 +29,10 @@ const MENTION_INTERACTION_MAX_CHARS = 4500;
 const CHAT_TRACE_PREVIEW_CHARS = 280;
 const MAX_AGENTIC_LOOP_ITERATIONS = 12;
 const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file']);
-const EDIT_INTENT_PATTERN = /\b(fix|edit|update|change|modify|rewrite|refactor|remove|create|add|rename|lint|bug|issue|error)\b/i;
+const EDIT_ACTION_PATTERN = /\b(fix|edit|update|change|modify|rewrite|refactor|remove|create|add|rename)\b/i;
+const EDIT_TARGET_PATTERN = /\b(file|slide|component|css|class|lint|error|issue|bug|line|function|heading|text|copy)\b/i;
+const NON_ACTION_CHAT_PATTERN = /\b(explain|why|what|how|brainstorm|discuss|review|thoughts|help me understand|question)\b/i;
+const ACTION_DEFERRAL_PATTERN = /\b(i(?:'|’)ll|i will|going to|about to|thanks?\b|thank you|you(?:'|’)re right|you are right)\b/i;
 const verboseAiDiagnostics = !app.isPackaged && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '1'));
 const NOISY_CHAT_TRACE_STEPS = new Set([
     'stream-text-delta',
@@ -58,6 +63,9 @@ const conversationSessions = new Map();
 
 // --- Active abort controllers ---
 const abortControllers = new Map();
+
+// --- Pending tool approvals ---
+const pendingApprovals = new Map(); // key: `${projectPath}:${toolUseId}` → { resolve, reject }
 
 // --- Build API messages with truncation ---
 
@@ -114,7 +122,8 @@ function stripImageBlocks(contentBlocks) {
     });
 }
 
-function prepareApiMessages(messages) {
+function prepareApiMessages(messages, maxContextChars) {
+    const contextBudget = maxContextChars || getMaxContextChars();
     const apiMessages = [];
     const lastIndex = messages.length - 1;
     let contextChars = 0;
@@ -129,7 +138,7 @@ function prepareApiMessages(messages) {
             if (isEmpty) continue;
             const compacted = compactMessageContent(m.content, isRecent);
             const messageChars = estimateContentChars(compacted);
-            if (!isRecent && contextChars + messageChars > MAX_CONTEXT_CHARS) continue;
+            if (!isRecent && contextChars + messageChars > contextBudget) continue;
             contextChars += messageChars;
             apiMessages.push({ role: 'user', content: compacted });
         } else if (m.role === 'assistant') {
@@ -156,13 +165,13 @@ function prepareApiMessages(messages) {
                     }
                 }
                 const messageChars = estimateContentChars(raw.content);
-                if (!isRecent && contextChars + messageChars > MAX_CONTEXT_CHARS) continue;
+                if (!isRecent && contextChars + messageChars > contextBudget) continue;
                 contextChars += messageChars;
                 apiMessages.push(raw);
             } else if (m.content) {
                 const compacted = compactMessageContent(m.content, isRecent);
                 const messageChars = estimateContentChars(compacted);
-                if (!isRecent && contextChars + messageChars > MAX_CONTEXT_CHARS) continue;
+                if (!isRecent && contextChars + messageChars > contextBudget) continue;
                 contextChars += messageChars;
                 apiMessages.push({ role: 'assistant', content: compacted });
             }
@@ -192,8 +201,8 @@ function prepareApiMessages(messages) {
  * Translate internal Anthropic-format messages to OpenAI wire format.
  * Called only when the cloud model's upstream provider is OpenAI.
  */
-function prepareOpenAIMessages(messages) {
-    const anthropicMsgs = prepareApiMessages(messages);
+function prepareOpenAIMessages(messages, maxContextChars) {
+    const anthropicMsgs = prepareApiMessages(messages, maxContextChars);
     const out = [];
 
     for (const m of anthropicMsgs) {
@@ -272,8 +281,8 @@ function resolveToolName(apiMessages, toolUseId) {
  * Translate internal Anthropic-format messages to Gemini wire format.
  * Called only when the cloud model's upstream provider is Google.
  */
-function prepareGoogleMessages(messages) {
-    const anthropicMsgs = prepareApiMessages(messages);
+function prepareGoogleMessages(messages, maxContextChars) {
+    const anthropicMsgs = prepareApiMessages(messages, maxContextChars);
     const contents = [];
 
     for (const m of anthropicMsgs) {
@@ -347,8 +356,8 @@ function prepareGoogleMessages(messages) {
  * - { type: "function_call", call_id: "...", name: "...", arguments: "..." }
  * - { type: "function_call_output", call_id: "...", output: "..." }
  */
-function prepareOpenAIResponsesInput(messages) {
-    const anthropicMsgs = prepareApiMessages(messages);
+function prepareOpenAIResponsesInput(messages, maxContextChars) {
+    const anthropicMsgs = prepareApiMessages(messages, maxContextChars);
     const input = [];
 
     for (const m of anthropicMsgs) {
@@ -883,7 +892,64 @@ function createRequestId() {
     return `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function isExplicitEditIntent(text = '') {
+    const message = String(text || '').trim().toLowerCase();
+    if (!message) return false;
+
+    const hasAction = EDIT_ACTION_PATTERN.test(message);
+    const hasTarget = EDIT_TARGET_PATTERN.test(message);
+    const isQuestionLike = NON_ACTION_CHAT_PATTERN.test(message) || message.endsWith('?');
+    const startsWithAction = /^(fix|edit|update|change|modify|rewrite|refactor|remove|create|add|rename)\b/.test(message);
+
+    // Strict enforcement should apply only to clear action requests, not analysis/chat.
+    if (startsWithAction && hasTarget) return true;
+    if (hasAction && hasTarget && !isQuestionLike) return true;
+    return false;
+}
+
 // --- Tool execution ---
+
+/**
+ * Resolve a pending tool approval from the renderer.
+ */
+export function resolveToolApproval(projectPath, toolUseId, approved) {
+    const key = `${projectPath}:${toolUseId}`;
+    const pending = pendingApprovals.get(key);
+    if (pending) {
+        pendingApprovals.delete(key);
+        pending.resolve(approved);
+    }
+}
+
+/**
+ * Wait for user approval of a tool call. Returns true if approved, false if rejected.
+ */
+function waitForToolApproval(projectPath, toolUseId, webContents, tc) {
+    return new Promise((resolve) => {
+        const key = `${projectPath}:${toolUseId}`;
+        pendingApprovals.set(key, { resolve });
+
+        webContents?.send('chat:toolApproval', {
+            projectPath,
+            toolUseId,
+            tool: tc.name,
+            label: TOOL_LABELS[tc.name] || tc.name,
+            input: tc.input,
+            filePath: tc.input?.path || undefined
+        });
+    });
+}
+
+/**
+ * Check if a tool call needs user approval based on the current toolApprovalMode setting.
+ */
+function needsApproval(toolName) {
+    const mode = getSetting('toolApprovalMode') || 'auto';
+    if (mode === 'auto') return false;
+    if (mode === 'all') return true;
+    if (mode === 'mutations') return MUTATION_TOOLS.has(toolName);
+    return false;
+}
 
 async function executeTool(toolName, toolInput, projectPath, webContents) {
     const resolveToolPath = (candidatePath) => {
@@ -1062,7 +1128,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     log.info(`sendMessage → ${providerId}/${modelId}`, { mode, hasMentions: mentions?.length > 0 });
     const strictEditExecution = Boolean(getSetting('strictEditExecution'));
-    const editIntent = EDIT_INTENT_PATTERN.test(String(userMessage || ''));
+    const editIntent = isExplicitEditIntent(userMessage);
+    const maxActionRecoveryAttempts = 1;
 
     let credential;
     let cloudProvider = null;
@@ -1233,15 +1300,16 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     // Build API messages with truncation for efficiency
     // For cloud models, translate to the upstream provider's wire format
+    const maxContextChars = getMaxContextChars(modelId);
     let apiMessages;
     if (cloudApiType === 'responses') {
-        apiMessages = prepareOpenAIResponsesInput(messages);
+        apiMessages = prepareOpenAIResponsesInput(messages, maxContextChars);
     } else if (cloudProvider === 'openai') {
-        apiMessages = prepareOpenAIMessages(messages);
+        apiMessages = prepareOpenAIMessages(messages, maxContextChars);
     } else if (cloudProvider === 'google') {
-        apiMessages = prepareGoogleMessages(messages);
+        apiMessages = prepareGoogleMessages(messages, maxContextChars);
     } else {
-        apiMessages = prepareApiMessages(messages);
+        apiMessages = prepareApiMessages(messages, maxContextChars);
     }
     trace('prepared-api-messages', {
         mode: sessionContext.mode,
@@ -1277,6 +1345,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         let continueLoop = true;
         let loopIteration = 0;
         let hadToolErrors = false;
+        let actionRecoveryAttempts = 0;
         let planSteps = executionPlan.map(s => ({ ...s }));
         const markPlanStep = (stepId, status, note) => {
             planSteps = planSteps.map(s => s.id === stepId ? { ...s, status } : s);
@@ -1370,6 +1439,12 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     });
                 } else if (event.type === 'tool_use_delta') {
                     toolInputJson += event.json;
+                    webContents?.send('chat:toolArgsDelta', {
+                        projectPath,
+                        toolUseId: currentToolId,
+                        delta: event.json,
+                        accumulated: toolInputJson
+                    });
                 } else if (event.type === 'content_block_stop') {
                     if (currentToolId && currentToolName) {
                         let toolInput = {};
@@ -1494,14 +1569,116 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     }
                     persistConversation(projectPath, messages, sessionContext);
 
-                    // Execute tool calls sequentially to preserve deterministic ordering.
+                    // Execute tool calls — parallel for safe tools, sequential for mutations.
                     if (currentToolCalls.length > 0) {
                         markPlanStep('inspect', 'completed', 'Context gathered');
                         markPlanStep('author', 'in_progress', 'Applying requested course updates');
                         const toolResults = [];
+
+                        // Partition into parallelizable (read-only) and sequential (mutation) groups
+                        const parallelBatch = [];
+                        const sequentialQueue = [];
                         for (const tc of currentToolCalls) {
+                            if (PARALLELIZABLE_TOOLS.has(tc.name) && !needsApproval(tc.name)) {
+                                parallelBatch.push(tc);
+                            } else {
+                                sequentialQueue.push(tc);
+                            }
+                        }
+
+                        // Execute parallel batch concurrently
+                        if (parallelBatch.length > 1) {
+                            const parallelResults = await Promise.all(parallelBatch.map(async (tc) => {
+                                executedToolCount += 1;
+                                trace('tool-execution-start', { toolUseId: tc.id, tool: tc.name, parallel: true });
+                                try {
+                                    const result = await executeTool(tc.name, tc.input, projectPath, webContents);
+                                    const finishedAt = Date.now();
+                                    const elapsedMs = Math.max(0, finishedAt - (tc.startedAt || finishedAt));
+
+                                    if (tc.name === 'coursecode_screenshot' && result?.content) {
+                                        const imageContent = Array.isArray(result.content)
+                                            ? result.content.find(c => c.type === 'image') : null;
+                                        if (imageContent) {
+                                            webContents?.send('chat:screenshot', {
+                                                projectPath,
+                                                imageData: imageContent.source?.data || imageContent.data
+                                            });
+                                        }
+                                    }
+
+                                    webContents?.send('chat:toolUse', {
+                                        projectPath, tool: tc.name, toolUseId: tc.id,
+                                        label: TOOL_LABELS[tc.name] || tc.name, status: 'done',
+                                        finishedAt, elapsedMs, reason: toolReason(tc.name),
+                                        filePath: tc.input?.path || undefined,
+                                        detail: tc.input?.path || tc.input?.slideId || undefined
+                                    });
+                                    successfulToolCount += 1;
+                                    return {
+                                        meta: { id: tc.id, name: tc.name, status: 'done', elapsedMs, filePath: tc.input?.path, detail: tc.input?.path || tc.input?.slideId, reason: toolReason(tc.name) },
+                                        type: 'tool_result', tool_use_id: tc.id,
+                                        content: sanitizeToolResultForModel(tc.name, result)
+                                    };
+                                } catch (err) {
+                                    hadToolErrors = true;
+                                    failedToolCount += 1;
+                                    const finishedAt = Date.now();
+                                    const elapsedMs = Math.max(0, finishedAt - (tc.startedAt || finishedAt));
+                                    webContents?.send('chat:toolUse', {
+                                        projectPath, tool: tc.name, toolUseId: tc.id,
+                                        label: TOOL_LABELS[tc.name] || tc.name, status: 'error',
+                                        finishedAt, elapsedMs, reason: toolReason(tc.name),
+                                        filePath: tc.input?.path || undefined
+                                    });
+                                    return {
+                                        meta: { id: tc.id, name: tc.name, status: 'error', elapsedMs, filePath: tc.input?.path, reason: toolReason(tc.name) },
+                                        type: 'tool_result', tool_use_id: tc.id,
+                                        content: JSON.stringify({ error: err.message }), is_error: true
+                                    };
+                                }
+                            }));
+                            toolResults.push(...parallelResults);
+                        } else if (parallelBatch.length === 1) {
+                            // Single item, just add to sequential queue
+                            sequentialQueue.unshift(parallelBatch[0]);
+                        }
+
+                        // Execute sequential tools one at a time (with approval if needed)
+                        for (const tc of sequentialQueue) {
                             executedToolCount += 1;
                             if (FILE_MUTATION_TOOLS.has(tc.name)) mutationToolAttempts += 1;
+
+                            // Check if this tool needs user approval
+                            if (needsApproval(tc.name)) {
+                                webContents?.send('chat:toolUse', {
+                                    projectPath, tool: tc.name, toolUseId: tc.id,
+                                    label: TOOL_LABELS[tc.name] || tc.name,
+                                    status: 'pending_approval',
+                                    startedAt: Date.now(),
+                                    reason: toolReason(tc.name),
+                                    filePath: tc.input?.path || undefined,
+                                    detail: tc.input?.path || tc.input?.slideId || undefined,
+                                    input: tc.input
+                                });
+
+                                const approved = await waitForToolApproval(projectPath, tc.id, webContents, tc);
+                                if (!approved) {
+                                    webContents?.send('chat:toolUse', {
+                                        projectPath, tool: tc.name, toolUseId: tc.id,
+                                        label: TOOL_LABELS[tc.name] || tc.name, status: 'skipped',
+                                        reason: 'User declined'
+                                    });
+                                    toolResults.push({
+                                        meta: { id: tc.id, name: tc.name, status: 'skipped', reason: 'User declined' },
+                                        type: 'tool_result', tool_use_id: tc.id,
+                                        content: JSON.stringify({ skipped: true, reason: 'User declined this tool call' }),
+                                        is_error: true
+                                    });
+                                    continue;
+                                }
+                            }
+
                             log.debug(`Executing tool: ${tc.name}`);
                             trace('tool-execution-start', {
                                 toolUseId: tc.id,
@@ -1689,6 +1866,33 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         });
                         currentText = '';
                         currentToolCalls = [];
+                    } else {
+                        const deferralText = String(currentText || '').trim();
+                        const looksLikeDeferral = deferralText.length > 0 && ACTION_DEFERRAL_PATTERN.test(deferralText.toLowerCase());
+
+                        if (editIntent && !strictEditExecution && looksLikeDeferral && actionRecoveryAttempts < maxActionRecoveryAttempts) {
+                            actionRecoveryAttempts += 1;
+
+                            const recoveryInstruction = 'Do the requested edits now using tools. Do not only acknowledge. Execute required tool calls, then provide a concrete summary of completed changes.';
+
+                            if (cloudApiType === 'responses' || cloudProvider === 'openai') {
+                                apiMessages.push({ role: 'user', content: recoveryInstruction });
+                            } else if (cloudProvider === 'google') {
+                                apiMessages.push({ role: 'user', parts: [{ text: recoveryInstruction }] });
+                            } else {
+                                apiMessages.push({ role: 'user', content: recoveryInstruction });
+                            }
+
+                            continueLoop = true;
+                            trace('llm-loop-continue', {
+                                reason: 'edit-intent-deferral-recovery',
+                                actionRecoveryAttempts,
+                                totalApiMessages: apiMessages.length,
+                                recoveryInstructionPreview: toPreviewText(recoveryInstruction)
+                            });
+                            currentText = '';
+                            currentToolCalls = [];
+                        }
                     }
                     // Done is terminal for this stream — break to prevent duplicate processing
                     break;
@@ -1754,15 +1958,34 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         );
 
         const hasVerifiedFileChanges = mutationToolSuccesses > 0 && typeof detectedChangedFiles === 'number' && detectedChangedFiles > 0;
-        const strictPolicyTriggered = strictEditExecution && editIntent && mutationToolSuccesses === 0;
+        const strictPolicyTriggered = strictEditExecution && editIntent && !hasVerifiedFileChanges;
 
         let outcomeClass = 'no_changes';
-        if (hasVerifiedFileChanges) {
+        if (strictPolicyTriggered) {
+            outcomeClass = 'strict_policy_blocked';
+        } else if (hasVerifiedFileChanges) {
             outcomeClass = 'verified_changes';
         } else if (failedToolCount > 0) {
             outcomeClass = 'tool_failures';
         } else if (executedToolCount === 0) {
             outcomeClass = 'model_text_only';
+        }
+
+        if (strictPolicyTriggered) {
+            hadToolErrors = true;
+            const strictMessage = 'No verified file edits were applied. Strict edit mode blocked completion for this edit request. Try again with a specific file target and expected change.';
+            const lastAssistant = messages.slice().reverse().find(m => m.role === 'assistant' && typeof m.content === 'string');
+            if (lastAssistant) {
+                lastAssistant.content = strictMessage;
+                if (lastAssistant._raw?.content && Array.isArray(lastAssistant._raw.content)) {
+                    const textBlock = lastAssistant._raw.content.find(block => block?.type === 'text');
+                    if (textBlock) textBlock.text = strictMessage;
+                }
+                persistConversation(projectPath, messages, sessionContext);
+            }
+            markPlanStep('author', 'error', 'Strict mode blocked completion without verified edits');
+            markPlanStep('verify', 'error', 'No verified file edits detected');
+            markPlanStep('summarize', 'completed', 'Strict-mode result finalized');
         }
 
         const execution = {

@@ -8,7 +8,7 @@ import { getSetupStatus, installCLI, getDownloadUrl } from './cli-installer.js';
 import {
     sendMessage, stopGeneration, clearConversation, loadHistory,
     buildMentionIndex, summarizeContext, getContextMemory,
-    getSessionContext, resetConversationCache
+    getSessionContext, resetConversationCache, resolveToolApproval
 } from './chat-engine.js';
 import { listRefs, readRef, convertRef } from './ref-manager.js';
 import { getProviders, saveApiKey, removeApiKey, hasApiKey, getCloudModels, getCloudUsage } from './llm-provider.js';
@@ -98,6 +98,7 @@ export function registerIpcHandlers() {
     });
     handle('chat:stop', (_e, projectPath) => stopGeneration(projectPath));
     handle('chat:clear', (_e, projectPath) => clearConversation(projectPath));
+    handle('chat:approveToolCall', (_e, projectPath, toolUseId, approved) => resolveToolApproval(projectPath, toolUseId, approved));
     handle('chat:loadHistory', (_e, projectPath) => loadHistory(projectPath));
     handle('chat:getMentions', (_e, projectPath) => buildMentionIndex(projectPath));
     handle('chat:summarizeContext', (_e, projectPath) => summarizeContext(projectPath));

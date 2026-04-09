@@ -47,8 +47,54 @@ export const COURSE_SPECIFIC_RULES = `COURSE-SPECIFIC OPTIMIZATION:
 // ---------------------------------------------------------------------------
 
 export const MAX_TOKENS = 8192;
-export const MAX_CONTEXT_CHARS = 120000;
+export const DEFAULT_MAX_CONTEXT_CHARS = 120000;
 export const OLDER_MESSAGE_MAX_CHARS = 1500;
+
+// ---------------------------------------------------------------------------
+// Model Context Windows (tokens) — used for dynamic context budgeting
+// ---------------------------------------------------------------------------
+
+export const MODEL_CONTEXT_WINDOWS = {
+    // Anthropic
+    'claude-3-5-sonnet-latest': 200000,
+    'claude-3-7-sonnet-latest': 200000,
+    'claude-sonnet-4-20250514': 200000,
+    'claude-4-sonnet': 200000,
+    // OpenAI
+    'gpt-4o': 128000,
+    'gpt-4o-mini': 128000,
+    'o3': 200000,
+    'o3-mini': 128000,
+    'o4-mini': 128000,
+    // Google
+    'gemini-2.5-pro': 1048576,
+    'gemini-2.5-flash': 1048576,
+};
+
+/** Approximate chars-per-token ratio for context budgeting */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Get the max context chars for a given model, using 75% of the model's
+ * context window to leave room for output tokens and system overhead.
+ */
+export function getMaxContextChars(modelId) {
+    const contextTokens = MODEL_CONTEXT_WINDOWS[modelId];
+    if (!contextTokens) return DEFAULT_MAX_CONTEXT_CHARS;
+    // Use 75% of context window, capped at a reasonable limit
+    const budgetTokens = Math.floor(contextTokens * 0.75);
+    return Math.min(budgetTokens * CHARS_PER_TOKEN, 600000);
+}
+
+// ---------------------------------------------------------------------------
+// Cost Warning Thresholds
+// ---------------------------------------------------------------------------
+
+/** BYOK cost thresholds (USD) — warn user when session cost exceeds these */
+export const COST_WARNING_THRESHOLDS = [2, 5, 10, 25];
+
+/** Cloud credit warning threshold — warn when balance drops below this */
+export const CREDIT_LOW_THRESHOLD = 50;
 
 export const DEFAULT_PROVIDER = 'anthropic';
 export const DEFAULT_MODEL = null;
@@ -247,6 +293,34 @@ export const TOOL_LABELS = {
 export const PREVIEW_TOOLS = new Set([
     'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
     'coursecode_interact', 'coursecode_reset'
+]);
+
+// ---------------------------------------------------------------------------
+// Tool Execution Classification
+// ---------------------------------------------------------------------------
+
+/** Tools that are safe to run without user approval (read-only) */
+export const SAFE_TOOLS = new Set([
+    'read_file', 'list_files',
+    'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
+    'coursecode_lint', 'coursecode_component_catalog', 'coursecode_css_catalog',
+    'coursecode_interaction_catalog', 'coursecode_icon_catalog',
+    'coursecode_workflow_status'
+]);
+
+/** Tools that mutate files or course state — may require approval */
+export const MUTATION_TOOLS = new Set([
+    'edit_file', 'create_file',
+    'coursecode_interact', 'coursecode_reset', 'coursecode_build'
+]);
+
+/** Tools that can run in parallel (no side effects, independent reads) */
+export const PARALLELIZABLE_TOOLS = new Set([
+    'read_file', 'list_files',
+    'coursecode_state', 'coursecode_screenshot',
+    'coursecode_lint', 'coursecode_component_catalog', 'coursecode_css_catalog',
+    'coursecode_interaction_catalog', 'coursecode_icon_catalog',
+    'coursecode_workflow_status'
 ]);
 
 // ---------------------------------------------------------------------------

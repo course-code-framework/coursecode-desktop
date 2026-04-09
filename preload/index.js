@@ -154,6 +154,7 @@ contextBridge.exposeInMainWorld('api', {
         send: (projectPath, message, mentions, mode) => ipcRenderer.invoke('chat:send', projectPath, message, mentions, mode),
         stop: (projectPath) => ipcRenderer.invoke('chat:stop', projectPath),
         clear: (projectPath) => ipcRenderer.invoke('chat:clear', projectPath),
+        approveToolCall: (projectPath, toolUseId, approved) => ipcRenderer.invoke('chat:approveToolCall', projectPath, toolUseId, approved),
         loadHistory: (projectPath) => ipcRenderer.invoke('chat:loadHistory', projectPath),
         getMentions: (projectPath) => ipcRenderer.invoke('chat:getMentions', projectPath),
         summarizeContext: (projectPath) => ipcRenderer.invoke('chat:summarizeContext', projectPath),
@@ -168,6 +169,11 @@ contextBridge.exposeInMainWorld('api', {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('chat:toolUse', handler);
             return () => ipcRenderer.removeListener('chat:toolUse', handler);
+        },
+        onToolArgsDelta: (callback) => {
+            const handler = (_event, data) => callback(data);
+            ipcRenderer.on('chat:toolArgsDelta', handler);
+            return () => ipcRenderer.removeListener('chat:toolArgsDelta', handler);
         },
         onScreenshot: (callback) => {
             const handler = (_event, data) => callback(data);
@@ -198,6 +204,11 @@ contextBridge.exposeInMainWorld('api', {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('chat:memoryUpdated', handler);
             return () => ipcRenderer.removeListener('chat:memoryUpdated', handler);
+        },
+        onToolApproval: (callback) => {
+            const handler = (_event, data) => callback(data);
+            ipcRenderer.on('chat:toolApproval', handler);
+            return () => ipcRenderer.removeListener('chat:toolApproval', handler);
         },
         onNewChat: (callback) => {
             const handler = () => callback();
