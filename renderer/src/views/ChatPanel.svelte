@@ -34,8 +34,6 @@
   let hasOutline = $state(false);
   let unsubWorkflow = null;
   let walkthroughDismissed = $state(false);
-  let restorePoints = $state([]);
-  let restorePointsCollapsed = $state(false);
   let expandedChanges = $state(new Set());
   let expandedDiffs = $state(new Set());
   let loadingDiffs = $state(new Set());
@@ -50,7 +48,6 @@
     subscribeToChatEvents();
     historyReady = false;
     await loadChatHistory(projectPath);
-    await loadRestorePoints();
     await refreshMentionIndex(projectPath);
     if ($aiMode === 'cloud') {
       await loadCredits();
@@ -76,7 +73,6 @@
         workflowId = null;
         checkOutline();
         refreshMentionIndex(projectPath);
-        loadRestorePoints();
       } else if (data.type === 'error') {
         workflowError = data.message;
         workflowActive = false;
@@ -361,27 +357,6 @@
     startBuildCourse();
   }
 
-  async function loadRestorePoints() {
-    try {
-      const list = await window.api.snapshots.list(projectPath);
-      restorePoints = (list || []).slice(0, 12);
-    } catch {
-      restorePoints = [];
-    }
-  }
-
-  function formatRestoreTime(iso) {
-    if (!iso) return '';
-    const date = new Date(iso);
-    const now = Date.now();
-    const diff = now - date.getTime();
-    if (diff < 60000) return 'Just now';
-    if (diff < 3600000) return `${Math.floor(diff / 60000)} min ago`;
-    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-    if (diff < 172800000) return 'Yesterday';
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  }
-
   function totalChanged(message) {
     return (message.added?.length || 0) + (message.modified?.length || 0) + (message.deleted?.length || 0);
   }
@@ -510,7 +485,6 @@
         openPath(filepath);
       }
 
-      await loadRestorePoints();
       await refreshMentionIndex(projectPath);
     } catch (err) {
       showToast({ type: 'error', message: `File update failed: ${err?.message || 'Unknown error'}` });
@@ -526,7 +500,6 @@
     restoringSnapshotId = snapshotId;
     try {
       const result = await window.api.snapshots.restore(projectPath, snapshotId);
-      await loadRestorePoints();
       await loadChatHistory(projectPath);
       onSnapshotRestored?.(result);
     } catch (err) {
@@ -568,30 +541,6 @@
         <span class="text-tertiary">Loading conversation…</span>
       </div>
     {:else}
-    {#if restorePoints.length > 0}
-      <div class="restore-points-card">
-        <button class="restore-points-header" onclick={() => restorePointsCollapsed = !restorePointsCollapsed}>
-          <span>Restore Points</span>
-          <span class="restore-points-count">{restorePoints.length}</span>
-        </button>
-        {#if !restorePointsCollapsed}
-          <div class="restore-points-list">
-            {#each restorePoints as snap}
-              <div class="restore-point-row">
-                <div class="restore-point-meta">
-                  <span class="restore-point-label">{snap.label}</span>
-                  <span class="restore-point-time">{formatRestoreTime(snap.timestamp)}</span>
-                </div>
-                <button class="btn-ghost btn-sm" disabled={restoringSnapshotId === snap.id} onclick={() => restoreSnapshot(snap.id)}>
-                  {restoringSnapshotId === snap.id ? 'Restoring…' : 'Restore'}
-                </button>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
-
     {#if showWalkthrough}
       <div class="course-walkthrough">
         <div class="walkthrough-head">
@@ -1374,77 +1323,6 @@
     background: var(--bg-elevated);
     border-color: var(--border);
     color: var(--text-secondary);
-  }
-
-  .restore-points-card {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--bg-elevated);
-    margin-bottom: var(--sp-sm);
-    overflow: hidden;
-  }
-
-  .restore-points-header {
-    width: 100%;
-    border: none;
-    background: none;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-sm) var(--sp-md);
-    cursor: pointer;
-    color: var(--text-primary);
-    font-weight: 600;
-  }
-
-  .restore-points-header:hover {
-    background: var(--bg-secondary);
-  }
-
-  .restore-points-count {
-    font-size: var(--text-xs);
-    color: var(--text-tertiary);
-    font-weight: 500;
-  }
-
-  .restore-points-list {
-    border-top: 1px solid var(--border);
-    padding: var(--sp-xs) var(--sp-sm);
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .restore-point-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--sp-sm);
-    padding: 4px 6px;
-    border-radius: var(--radius-sm);
-  }
-
-  .restore-point-row:hover {
-    background: var(--bg-secondary);
-  }
-
-  .restore-point-meta {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  .restore-point-label {
-    font-size: var(--text-xs);
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .restore-point-time {
-    font-size: 11px;
-    color: var(--text-tertiary);
   }
 
   .quick-btn.workflow {
