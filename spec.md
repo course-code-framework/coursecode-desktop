@@ -864,6 +864,36 @@ Content-Type: application/json
 }
 ```
 
+##### Strict Request Contract (Server Validation)
+
+To avoid client/server drift and opaque `400 Invalid request body` failures, the cloud API should validate `/api/ai/chat` requests against a strict schema and return actionable validation details.
+
+**Allowed JSON body keys (exact allow-list):**
+- `model`
+- `messages`
+- `tools` (optional)
+- `system` (optional)
+- `max_tokens` (optional)
+
+Unknown top-level keys should be rejected with HTTP `400` and a validation detail message that identifies the offending key(s).
+
+**Routing hints (optional headers, not body keys):**
+- `X-CourseCode-Cloud-Provider: anthropic | openai | google`
+- `X-CourseCode-Cloud-Api-Type: chat | responses`
+
+These headers are advisory and may be used for routing, diagnostics, or consistency checks, but they must not be required when `model` metadata already resolves provider/api type.
+
+**Validation expectations by provider format:**
+- Anthropic: content-block tool loop shape (`tool_use`, `tool_result`)
+- OpenAI Chat: `tool_calls` + `role: tool` messages
+- OpenAI Responses: flat `function_call` / `function_call_output` items
+- Gemini: `parts` array with `functionCall` / `functionResponse` and preserved `thoughtSignature` where required
+
+When validation fails, the server should return:
+- `error`: stable short message (`Invalid request body`)
+- `detail`: specific rule violation (`Unknown key: cloud_provider`, `messages[2] missing call_id`, etc.)
+- `errorCode`: optional machine code for client classification
+
 > System prompts are sent via the top-level `system` field, **not** as a role message. The proxy maps it to each provider's convention: Anthropic `system` parameter, OpenAI Chat Completions system-role message, OpenAI Responses API `instructions`, Gemini `systemInstruction`.
 
 ##### Response — Unified SSE Stream
@@ -943,7 +973,7 @@ async function* streamChat(
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `400` | `{"error": "Invalid request body"}` | Malformed JSON or missing required fields |
+| `400` | `{"error": "Invalid request body", "detail": "...", "errorCode": "..."}` | Malformed JSON, unknown keys, or schema mismatch |
 | `400` | `{"error": "Unknown model: xyz"}` | Model ID not recognized or disabled |
 | `401` | `{"error": "Unauthorized"}` | Missing/invalid Bearer token |
 | `402` | `{"error": "Insufficient credits", "credits_required": N}` | Not enough credits — desktop shows "out of credits" with top-up link |
@@ -1285,6 +1315,14 @@ interface ChatRequest {
   tools?: Record<string, unknown>[]
   system?: string
   max_tokens?: number
+}
+
+/** Optional cloud routing hint headers (never included in JSON body) */
+interface ChatRequestHeaders {
+  Authorization: `Bearer ${string}`
+  'Content-Type': 'application/json'
+  'X-CourseCode-Cloud-Provider'?: 'anthropic' | 'openai' | 'google'
+  'X-CourseCode-Cloud-Api-Type'?: 'chat' | 'responses'
 }
 
 /** Unified SSE events (same shape regardless of upstream provider) */

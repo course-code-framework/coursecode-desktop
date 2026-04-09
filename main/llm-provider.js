@@ -1030,9 +1030,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                 messages: outboundMessages,
                 tools: formattedTools,
                 system,
-                max_tokens: MAX_TOKENS,
-                cloud_provider: cloudProvider || null,
-                cloud_api_type: cloudApiType || null
+                max_tokens: MAX_TOKENS
             };
             assertCloudProxyBodyValid(body, cloudProvider, cloudApiType, requestId, 'initial');
             if (verboseAiDiagnostics) {
@@ -1074,12 +1072,17 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                         bodyKeys: Object.keys(body)
                     });
                 }
+
+                const requestHeaders = {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                };
+                if (cloudProvider) requestHeaders['X-CourseCode-Cloud-Provider'] = cloudProvider;
+                if (cloudApiType) requestHeaders['X-CourseCode-Cloud-Api-Type'] = cloudApiType;
+
                 res = await net.fetch(`${baseUrl}/api/ai/chat`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: requestHeaders,
                     body: JSON.stringify(body),
                     signal: fetchController.signal
                 });
@@ -1123,10 +1126,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
 
                     const retryRes = await net.fetch(`${baseUrl}/api/ai/chat`, {
                         method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
-                        },
+                        headers: requestHeaders,
                         body: JSON.stringify(retryBody),
                         signal: fetchController.signal
                     });
@@ -1170,10 +1170,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
 
                             const retry2Res = await net.fetch(`${baseUrl}/api/ai/chat`, {
                                 method: 'POST',
-                                headers: {
-                                    'Authorization': `Bearer ${token}`,
-                                    'Content-Type': 'application/json'
-                                },
+                                headers: requestHeaders,
                                 body: JSON.stringify(compactedBody),
                                 signal: fetchController.signal
                             });
