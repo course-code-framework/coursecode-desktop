@@ -226,6 +226,22 @@ function prepareOpenAIMessages(messages) {
 }
 
 /**
+ * Resolve a tool name from the preceding assistant message's tool_use blocks.
+ * tool_result blocks only carry tool_use_id — the actual name lives on the
+ * assistant message that triggered the call.
+ */
+function resolveToolName(apiMessages, toolUseId) {
+    for (let i = apiMessages.length - 1; i >= 0; i--) {
+        const m = apiMessages[i];
+        if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+        for (const block of m.content) {
+            if (block.type === 'tool_use' && block.id === toolUseId) return block.name;
+        }
+    }
+    return null;
+}
+
+/**
  * Translate internal Anthropic-format messages to Gemini wire format.
  * Called only when the cloud model's upstream provider is Google.
  */
@@ -247,7 +263,7 @@ function prepareGoogleMessages(messages) {
                         try { responseData = JSON.parse(raw); } catch { responseData = { result: raw }; }
                         parts.push({
                             functionResponse: {
-                                name: block._toolName || block.tool_use_id,
+                                name: resolveToolName(anthropicMsgs, block.tool_use_id) || block.tool_use_id,
                                 response: responseData
                             }
                         });
@@ -1088,7 +1104,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             const textParts = assistantContent.filter(b => b.type === 'text').map(b => b.text);
                             const openaiMsg = {
                                 role: 'assistant',
-                                content: textParts.length > 0 ? textParts.join('\n\n') : ''
+                                content: textParts.length > 0 ? textParts.join('\n\n') : null
                             };
                             if (toolUses.length > 0) {
                                 openaiMsg.tool_calls = toolUses.map(tc => ({
@@ -1231,9 +1247,10 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     const raw = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});
                                     let responseData;
                                     try { responseData = JSON.parse(raw); } catch { responseData = { result: raw }; }
+                                    const toolName = currentToolCalls.find(tc => tc.id === tr.tool_use_id)?.name || tr.tool_use_id;
                                     return {
                                         functionResponse: {
-                                            name: tr._toolName || tr.tool_use_id,
+                                            name: toolName,
                                             response: responseData
                                         }
                                     };

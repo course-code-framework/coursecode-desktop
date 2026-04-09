@@ -493,6 +493,18 @@ async function createOpenAIProvider(apiKey) {
 function toGeminiMessages(messages, system) {
     const contents = [];
 
+    // Helper: find the tool name from a preceding assistant message
+    function findToolName(toolUseId) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const m = messages[i];
+            if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+            for (const block of m.content) {
+                if (block.type === 'tool_use' && block.id === toolUseId) return block.name;
+            }
+        }
+        return null;
+    }
+
     for (const msg of messages) {
         if (msg.role === 'user') {
             if (Array.isArray(msg.content)) {
@@ -510,7 +522,7 @@ function toGeminiMessages(messages, system) {
                         try { responseData = JSON.parse(resultContent); } catch { responseData = { result: resultContent }; }
                         parts.push({
                             functionResponse: {
-                                name: block._toolName || block.tool_use_id,
+                                name: findToolName(block.tool_use_id) || block.tool_use_id,
                                 response: responseData
                             }
                         });
@@ -770,14 +782,20 @@ async function createCloudProxyProvider(token, cloudProvider) {
             }
 
             if (!res.ok) {
-                const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-                const { message, errorCode } = extractCloudErrorDetails(err, res.status);
+                const errBody = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+                const { message, errorCode } = extractCloudErrorDetails(errBody, res.status);
+                const detail = errBody?.detail;
                 if (res.status === 401) throw Object.assign(new Error('Not signed in to CourseCode Cloud'), { status: 401 });
                 if (res.status === 402) {
                     if (looksLikeNoCreditsError(errorCode, message)) {
                         throw Object.assign(new Error(message || 'Insufficient credits'), { status: 402, code: 'NO_CREDITS', errorCode });
                     }
                     throw Object.assign(new Error(message || 'Cloud AI request requires billing action.'), { status: 402, code: errorCode || 'BILLING_REQUIRED', errorCode });
+                }
+                if (res.status === 502) {
+                    const fullMessage = detail ? `${message}: ${detail}` : message;
+                    log.error('Cloud proxy upstream error', { status: 502, message, detail });
+                    throw Object.assign(new Error(fullMessage || 'The AI provider rejected the request. Try a different model.'), { status: 502, code: 'PROVIDER_ERROR', errorCode });
                 }
                 if (res.status === 503) throw Object.assign(new Error('This AI model is temporarily unavailable. Try a different model.'), { status: 503 });
                 if (res.status === 504) throw Object.assign(new Error('The AI service took too long to respond. Try again in a moment.'), { status: 504 });

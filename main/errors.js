@@ -24,6 +24,8 @@ const ERROR_MAP = [
         message: "You're out of credits. Top up at coursecodecloud.com"
     },
     { match: (e) => e.status === 429, code: 'RATE_LIMITED', message: 'The service is busy. Try again in a moment.' },
+    { match: (e) => e.status === 502, code: 'PROVIDER_ERROR', message: 'The AI provider rejected the request. Try a different model or check if the service is available.' },
+    { match: (e) => e.status === 503, code: 'PROVIDER_UNAVAILABLE', message: 'This AI model is temporarily unavailable. Try a different model.' },
     { match: (e) => e.code === 'CLI_NOT_READY', code: 'CLI_NOT_READY', message: 'CourseCode tools are not installed or not working yet. Open Setup Assistant to install or repair them.' },
     { match: (e) => e.message?.includes('safeStorage') || e.message?.includes('encryption'), code: 'ENCRYPTION_UNAVAILABLE', message: 'System encryption is not available. Cannot securely store API key.' },
     { match: (e) => e.message?.includes('fetch') && (e.cause?.code === 'ENOTFOUND' || e.cause?.code === 'ETIMEDOUT'), code: 'NETWORK_ERROR', message: "Couldn't reach the server. Check your internet connection." },
