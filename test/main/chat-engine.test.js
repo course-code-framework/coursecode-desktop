@@ -25,8 +25,7 @@ vi.mock('../../main/cloud-client.js', () => ({
 }));
 
 vi.mock('../../main/system-prompts.js', () => ({
-    buildSystemPrompt: vi.fn(() => 'system prompt'),
-    getToolDefinitions: vi.fn(() => [])
+    buildSystemPrompt: vi.fn(() => 'system prompt')
 }));
 
 vi.mock('../../main/settings.js', () => ({
@@ -170,7 +169,7 @@ describe('chat-engine storage and safety', () => {
                 callCount += 1;
                 if (callCount === 1) {
                     yield { type: 'tool_use_start', id: 'tool-1', name: 'edit_file' };
-                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'course/test.js', old_string: 'NONEXISTENT', new_string: 'replaced' }) };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'test.js', old_string: 'NONEXISTENT', new_string: 'replaced' }) };
                     yield { type: 'content_block_stop', index: 0 };
                     yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
                     return;
@@ -199,7 +198,7 @@ describe('chat-engine storage and safety', () => {
                 callCount += 1;
                 if (callCount === 1) {
                     yield { type: 'tool_use_start', id: 'tool-1', name: 'edit_file' };
-                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'course/dup.js', old_string: 'aaa', new_string: 'bbb' }) };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'dup.js', old_string: 'aaa', new_string: 'bbb' }) };
                     yield { type: 'content_block_stop', index: 0 };
                     yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
                     return;
@@ -227,7 +226,7 @@ describe('chat-engine storage and safety', () => {
                 callCount += 1;
                 if (callCount === 1) {
                     yield { type: 'tool_use_start', id: 'tool-1', name: 'create_file' };
-                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'course/existing.js', content: 'overwritten!' }) };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'existing.js', content: 'overwritten!' }) };
                     yield { type: 'content_block_stop', index: 0 };
                     yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
                     return;
@@ -244,13 +243,12 @@ describe('chat-engine storage and safety', () => {
         expect(readFileSync(join(projectDir, 'course', 'existing.js'), 'utf-8')).toBe('original');
     });
 
-    it('list_files filters hidden and system directories', async () => {
+    it('list_files lists course directory contents', async () => {
         const { mkdirSync } = await import('fs');
-        mkdirSync(join(projectDir, 'course'), { recursive: true });
-        mkdirSync(join(projectDir, 'node_modules'), { recursive: true });
-        mkdirSync(join(projectDir, '.git'), { recursive: true });
-        writeFileSync(join(projectDir, '.DS_Store'), '');
-        writeFileSync(join(projectDir, 'package.json'), '{}');
+        mkdirSync(join(projectDir, 'course', 'slides'), { recursive: true });
+        mkdirSync(join(projectDir, 'course', 'assessments'), { recursive: true });
+        writeFileSync(join(projectDir, 'course', 'course-config.js'), '{}');
+        writeFileSync(join(projectDir, 'course', '.DS_Store'), '');
 
         let toolResult = null;
         let callCount = 0;
@@ -282,11 +280,10 @@ describe('chat-engine storage and safety', () => {
         expect(toolResult).toBeTruthy();
         const parsed = JSON.parse(toolResult);
         const names = parsed.files.map(f => f.name);
-        expect(names).not.toContain('node_modules');
-        expect(names).not.toContain('.git');
         expect(names).not.toContain('.DS_Store');
-        expect(names).toContain('course');
-        expect(names).toContain('package.json');
+        expect(names).toContain('slides');
+        expect(names).toContain('assessments');
+        expect(names).toContain('course-config.js');
     });
 
 });

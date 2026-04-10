@@ -11,8 +11,8 @@ vi.mock('../../main/settings.js', () => ({
     }),
 }));
 
-const { buildSystemPrompt, getToolDefinitions } = await import('../../main/system-prompts.js');
-const { TOOL_DEFINITIONS, TOOL_LABELS, PREVIEW_TOOLS, BASE_PERSONA } = await import('../../main/ai-config.js');
+const { buildSystemPrompt } = await import('../../main/system-prompts.js');
+const { FILE_TOOL_DEFINITIONS, TOOL_LABELS, PREVIEW_TOOLS, BASE_PERSONA } = await import('../../main/ai-config.js');
 const settingsMock = await import('../../main/settings.js');
 
 describe('buildSystemPrompt', () => {
@@ -41,13 +41,15 @@ describe('buildSystemPrompt', () => {
     it('includes slide list when slides are provided', () => {
         const prompt = buildSystemPrompt({
             slides: [
-                { title: 'Welcome', type: 'content' },
-                { title: 'Quiz', type: 'assessment' }
+                { id: 'welcome', title: 'Welcome', type: 'content' },
+                { id: 'quiz-1', title: 'Quiz', type: 'assessment' }
             ]
         });
         expect(prompt).toContain('## Course Structure');
-        expect(prompt).toContain('- Welcome (content)');
-        expect(prompt).toContain('- Quiz (assessment)');
+        expect(prompt).toContain('- welcome: Welcome');
+        expect(prompt).toContain('slides/welcome.js');
+        expect(prompt).toContain('- quiz-1: Quiz');
+        expect(prompt).toContain('slides/quiz-1.js');
     });
 
     it('omits slide list when slides array is empty', () => {
@@ -115,7 +117,7 @@ describe('buildSystemPrompt', () => {
         const prompt = buildSystemPrompt(
             {
                 title: 'Intro to Safety',
-                slides: [{ title: 'Welcome', type: 'content' }],
+                slides: [{ id: 'welcome', title: 'Welcome', type: 'content' }],
                 refs: ['manual.md']
             },
             {
@@ -128,7 +130,7 @@ describe('buildSystemPrompt', () => {
         // All sections should be present
         expect(prompt).toContain('CourseCode course designer');
         expect(prompt).toContain('Intro to Safety');
-        expect(prompt).toContain('Welcome (content)');
+        expect(prompt).toContain('welcome: Welcome');
         expect(prompt).toContain('manual.md');
         expect(prompt).toContain('Safety intro course');
         expect(prompt).toContain('Max 10 slides');
@@ -138,20 +140,22 @@ describe('buildSystemPrompt', () => {
     });
 });
 
-describe('getToolDefinitions', () => {
+describe('FILE_TOOL_DEFINITIONS', () => {
 
-    it('returns the TOOL_DEFINITIONS array', () => {
-        const tools = getToolDefinitions();
-        expect(tools).toBe(TOOL_DEFINITIONS);
-        expect(Array.isArray(tools)).toBe(true);
-        expect(tools.length).toBeGreaterThan(0);
+    it('contains only file I/O tools', () => {
+        const names = FILE_TOOL_DEFINITIONS.map(t => t.name);
+        expect(names).toContain('read_file');
+        expect(names).toContain('edit_file');
+        expect(names).toContain('create_file');
+        expect(names).toContain('list_files');
+        expect(names.length).toBe(4);
     });
 });
 
 describe('ai-config consistency', () => {
 
-    it('every tool definition has name, description, and input_schema', () => {
-        for (const tool of TOOL_DEFINITIONS) {
+    it('every file tool definition has name, description, and input_schema', () => {
+        for (const tool of FILE_TOOL_DEFINITIONS) {
             expect(tool.name, `tool missing name`).toBeTruthy();
             expect(tool.description, `${tool.name} missing description`).toBeTruthy();
             expect(tool.input_schema, `${tool.name} missing input_schema`).toBeTruthy();
@@ -159,32 +163,26 @@ describe('ai-config consistency', () => {
         }
     });
 
-    it('every tool in TOOL_LABELS has a matching TOOL_DEFINITION', () => {
-        const definedNames = new Set(TOOL_DEFINITIONS.map(t => t.name));
-        for (const labelName of Object.keys(TOOL_LABELS)) {
-            expect(definedNames.has(labelName), `TOOL_LABELS has "${labelName}" but no matching TOOL_DEFINITION`).toBe(true);
-        }
-    });
-
-    it('every tool in PREVIEW_TOOLS has a matching TOOL_DEFINITION', () => {
-        const definedNames = new Set(TOOL_DEFINITIONS.map(t => t.name));
-        for (const previewTool of PREVIEW_TOOLS) {
-            expect(definedNames.has(previewTool), `PREVIEW_TOOLS has "${previewTool}" but no matching TOOL_DEFINITION`).toBe(true);
-        }
-    });
-
-    it('every TOOL_DEFINITION has a label in TOOL_LABELS', () => {
-        for (const tool of TOOL_DEFINITIONS) {
+    it('every file tool has a label in TOOL_LABELS', () => {
+        for (const tool of FILE_TOOL_DEFINITIONS) {
             expect(TOOL_LABELS[tool.name], `${tool.name} has no label in TOOL_LABELS`).toBeTruthy();
         }
     });
 
+    it('coursecode_* tools in TOOL_LABELS are not in FILE_TOOL_DEFINITIONS', () => {
+        const fileToolNames = new Set(FILE_TOOL_DEFINITIONS.map(t => t.name));
+        for (const labelName of Object.keys(TOOL_LABELS)) {
+            if (labelName.startsWith('coursecode_')) {
+                expect(fileToolNames.has(labelName), `${labelName} should not be in FILE_TOOL_DEFINITIONS`).toBe(false);
+            }
+        }
+    });
+
     it('required fields are actually array type', () => {
-        for (const tool of TOOL_DEFINITIONS) {
+        for (const tool of FILE_TOOL_DEFINITIONS) {
             if (tool.input_schema.required) {
                 expect(Array.isArray(tool.input_schema.required),
                     `${tool.name}: required should be array`).toBe(true);
-                // Every required field should exist in properties
                 for (const req of tool.input_schema.required) {
                     expect(tool.input_schema.properties?.[req],
                         `${tool.name}: required field "${req}" not in properties`).toBeDefined();

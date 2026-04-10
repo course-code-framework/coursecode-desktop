@@ -4,7 +4,7 @@ import { app } from 'electron';
 import { join, resolve, dirname } from 'path';
 import { createProvider, loadApiKey, estimateCost, getCloudModels, getProviderModels } from './llm-provider.js';
 import { loadToken } from './cloud-client.js';
-import { buildSystemPrompt, getToolDefinitions } from './system-prompts.js';
+import { buildSystemPrompt } from './system-prompts.js';
 import { getSetting } from './settings.js';
 import { startPreview, getPreviewStatus } from './preview-manager.js';
 import { getMcpClient, getMcpTools } from './mcp-client.js';
@@ -13,7 +13,7 @@ import { createSnapshot, getChanges } from './snapshot-manager.js';
 import { createLogger } from './logger.js';
 import { translateChatError } from './errors.js';
 import {
-    TOOL_LABELS, PREVIEW_TOOLS, DEFAULT_PROVIDER,
+    FILE_TOOL_DEFINITIONS, TOOL_LABELS, PREVIEW_TOOLS, DEFAULT_PROVIDER,
     TOOL_RESULT_MAX_CHARS, TOOL_RESULT_TRUNCATION_NOTE,
     OLDER_MESSAGE_MAX_CHARS,
     SAFE_TOOLS, MUTATION_TOOLS, PARALLELIZABLE_TOOLS,
@@ -29,7 +29,7 @@ const MENTION_INTERACTION_MAX_CHARS = 4500;
 const CHAT_TRACE_PREVIEW_CHARS = 280;
 const MAX_AGENTIC_LOOP_ITERATIONS = 25;
 const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file']);
-const verboseAiDiagnostics = !app.isPackaged && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '1'));
+const verboseAiDiagnostics = !app.isPackaged && /^(1|true|yes)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '0'));
 const NOISY_CHAT_TRACE_STEPS = new Set([
     'stream-text-delta',
     'prepared-api-messages',
@@ -686,34 +686,28 @@ function resolveMentions(projectPath, message, mentions = []) {
     return message;
 }
 
-function mergeToolDefinitions(staticTools = [], discoveredTools = []) {
-    const merged = [];
-    const byName = new Map();
+/** Names of the desktop-managed file tools — MCP versions are ignored. */
+const LOCAL_FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'list_files', 'list_directory', 'write_file']);
 
-    for (const tool of staticTools) {
-        if (!tool?.name) continue;
-        byName.set(tool.name, tool);
-        merged.push(tool);
-    }
+function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
+    // Start with the desktop's file tools (always present, execute locally).
+    const merged = [...fileTools];
+    const byName = new Map(merged.map(t => [t.name, t]));
 
+    // Add MCP-discovered tools, skipping any that collide with local file tools.
     for (const tool of discoveredTools) {
         const name = tool?.name;
         if (!name) continue;
+        if (LOCAL_FILE_TOOLS.has(name)) continue; // desktop handles file I/O
 
         const normalized = {
             name,
-            description: tool.description || byName.get(name)?.description || `CourseCode tool: ${name}`,
-            input_schema: tool.inputSchema || tool.input_schema || byName.get(name)?.input_schema || { type: 'object', properties: {} }
+            description: tool.description || `CourseCode tool: ${name}`,
+            input_schema: tool.inputSchema || tool.input_schema || { type: 'object', properties: {} }
         };
 
-        if (byName.has(name)) {
-            const idx = merged.findIndex(t => t.name === name);
-            if (idx >= 0) merged[idx] = { ...merged[idx], ...normalized };
-            byName.set(name, merged[idx]);
-        } else {
-            byName.set(name, normalized);
-            merged.push(normalized);
-        }
+        byName.set(name, normalized);
+        merged.push(normalized);
     }
 
     return merged;
@@ -884,28 +878,40 @@ function needsApproval(toolName) {
 }
 
 async function executeTool(toolName, toolInput, projectPath, webContents) {
+    // File tools resolve paths relative to the course/ directory, not the project root.
+    // The AI only works with course content — it never needs to touch package.json, node_modules, etc.
+    const courseRoot = resolve(projectPath, 'course');
     const resolveToolPath = (candidatePath) => {
         if (typeof candidatePath !== 'string' || !candidatePath.trim()) {
             throw new Error('Tool path must be a non-empty string');
         }
-        const root = resolve(projectPath);
-        const target = resolve(root, candidatePath);
-        if (target !== root && !target.startsWith(`${root}\\`) && !target.startsWith(`${root}/`)) {
-            throw new Error(`Path escapes project root: ${candidatePath}`);
+        const target = resolve(courseRoot, candidatePath);
+        if (target !== courseRoot && !target.startsWith(`${courseRoot}\\`) && !target.startsWith(`${courseRoot}/`)) {
+            throw new Error(`Path must be inside the course directory: ${candidatePath}`);
         }
         return target;
     };
 
-    // File operations
+    // File operations (paths relative to course/)
     if (toolName === 'read_file') {
         const filePath = resolveToolPath(toolInput.path);
-        if (!existsSync(filePath)) return { error: `File not found: ${toolInput.path}` };
+        if (!existsSync(filePath)) {
+            let hint = '';
+            const baseName = toolInput.path.replace(/.*[\/\\]/, '').replace(/\.js$/, '');
+            const slidePath = resolve(courseRoot, 'slides', `${baseName}.js`);
+            if (existsSync(slidePath)) {
+                hint = ` Did you mean slides/${baseName}.js?`;
+            } else {
+                hint = ' Use list_files to discover the correct path.';
+            }
+            return { error: `File not found: ${toolInput.path}.${hint}` };
+        }
         return { content: readFileSync(filePath, 'utf-8') };
     }
 
     if (toolName === 'edit_file') {
         const filePath = resolveToolPath(toolInput.path);
-        if (!existsSync(filePath)) return { error: `File not found: ${toolInput.path}` };
+        if (!existsSync(filePath)) return { error: `File not found: ${toolInput.path}. Use list_files to discover the correct path.` };
         const content = readFileSync(filePath, 'utf-8');
         const occurrences = content.split(toolInput.old_string).length - 1;
         if (occurrences === 0) return { error: `old_string not found in ${toolInput.path}. Read the file first to see current content.` };
@@ -926,9 +932,9 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
 
     if (toolName === 'list_files') {
         const dirPath = resolveToolPath(toolInput.path || '.');
-        if (!existsSync(dirPath)) return { error: `Directory not found: ${toolInput.path}` };
+        if (!existsSync(dirPath)) return { error: `Directory not found: ${toolInput.path || '.'}` };
         const entries = readdirSync(dirPath, { withFileTypes: true });
-        const HIDDEN = new Set(['node_modules', '.git', 'dist', 'out', '.cache', '.DS_Store', 'thumbs.db']);
+        const HIDDEN = new Set(['.DS_Store', 'thumbs.db']);
         return {
             files: entries
                 .filter(e => !HIDDEN.has(e.name) && !e.name.startsWith('.'))
@@ -1244,10 +1250,10 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     try {
         const provider = await createProvider(providerId, credential, { cloudProvider, cloudApiType });
-        let runtimeTools = getToolDefinitions();
+        let runtimeTools = [...FILE_TOOL_DEFINITIONS];
         if (getPreviewStatus(projectPath) === 'running') {
             const discoveredTools = await getMcpTools(projectPath);
-            runtimeTools = mergeToolDefinitions(runtimeTools, discoveredTools);
+            runtimeTools = mergeToolDefinitions(FILE_TOOL_DEFINITIONS, discoveredTools);
         }
         log.debug('Provider created, starting agentic loop');
         let sessionInputTokens = 0;
@@ -1316,6 +1322,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 if (event.type === 'text') {
                     currentText += event.text;
                     webContents?.send('chat:stream', { projectPath, text: currentText, delta: event.text });
+                    // Per-token deltas only logged when COURSECODE_VERBOSE_AI_DIAGNOSTICS=1
                     trace('stream-text-delta', {
                         deltaChars: event.text?.length || 0,
                         totalChars: currentText.length,
@@ -1386,6 +1393,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     trace('llm-response-complete', {
                         stopReason: event.stopReason,
                         timedOut: Boolean(event.timedOut),
+                        streamedChars: currentText.length,
                         usage: event.usage,
                         creditsCharged: event.creditsCharged || 0,
                         assistantPreview: toPreviewText(currentText),

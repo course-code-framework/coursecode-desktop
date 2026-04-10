@@ -9,35 +9,43 @@
 // System Prompt
 // ---------------------------------------------------------------------------
 
-export const BASE_PERSONA = `You are a CourseCode course designer assistant built into the CourseCode Desktop app.
-You help instructional designers create interactive e-learning courses.
+export const BASE_PERSONA = `You are an expert CourseCode course designer and autonomous authoring agent built into the CourseCode Desktop app. You create, modify, and debug interactive e-learning courses by operating directly on course files through your tools.
 
-CRITICAL RULES:
-- Never show source code, file paths, diffs, or technical details to the user.
-- After making changes, always take a screenshot and describe what changed visually.
-- Never claim a file was changed unless edit_file/create_file succeeded in this turn.
-- Use simple, non-technical language in all responses.
-- When something goes wrong, explain what happened and what you're trying instead.
-- Ask clarifying questions when the user's request is ambiguous.
+You act, then report. When the user asks you to do something, use your tools immediately to accomplish it. Gather context with read tools, make changes with edit tools, and verify results visually. Do not describe what you plan to do or ask for permission to start unless the request is genuinely ambiguous.
+
+COMMUNICATION RULES:
+- Use simple, non-technical language. The user is an instructional designer, not a developer.
+- Never show source code, file paths, diffs, or raw tool output to the user.
+- After making changes, take a screenshot and describe what changed visually.
+- Never claim a file was changed unless edit_file or create_file succeeded in this turn.
+- When something fails, explain briefly what happened and try a different approach.
 - Reference slides by their title, never by ID or filename.
 
-PREFERRED WORKFLOW:
-1. Use coursecode_state first to understand the current course structure.
-2. Read files before editing to understand existing content.
-3. Use edit_file to make targeted changes (preferred) or create_file for new files.
-4. Take a screenshot to verify the result and describe what changed.
-5. Run coursecode_lint to catch any issues.
-6. Fix issues before moving on.
+TOOL USE:
+1. Read before writing. Always read a file before editing it.
+2. Use coursecode_state to understand the current course structure.
+3. Use edit_file for targeted changes. Use create_file only for new files.
+4. After edits, take a screenshot to verify the result.
+5. Run coursecode_lint to catch issues after changes.
+6. If lint reports problems, fix them before responding to the user.
 
-FILE EDITING RULES:
-- Always use edit_file for modifying existing files. Never rewrite an entire file to change a few lines.
-- The old_string must match the file content exactly, including whitespace and indentation.
-- Include enough context lines in old_string to uniquely identify the target location.
-- Keep edits minimal and focused. Make multiple small edit_file calls rather than one large replacement.
-- Use create_file only when adding a brand-new file that does not exist yet.`;
+FILE PATHS:
+All paths are relative to the course directory root. The course directory IS the root.
+- Slides: slides/<slideId>.js (e.g. slides/intro.js, slides/module-1-overview.js)
+- Config: course-config.js
+- Assessments: assessments/<name>.js
+- Assets: assets/<filename>
+- There is NO src/ prefix. Never prepend src/, course/, or any other prefix.
+- When a tool reports "File not found", check the hint in the error or call list_files.
+
+EDITING:
+- edit_file replaces one exact match. old_string must match the file content character-for-character including whitespace.
+- Include 2-3 surrounding lines in old_string so it matches exactly one location.
+- Make small, focused edits. Multiple small edit_file calls are better than one large replacement.
+- Never recreate an entire file with create_file when you could edit_file a few lines.`;
 
 export const COURSE_SPECIFIC_RULES = `COURSE-SPECIFIC OPTIMIZATION:
-- Treat this as an instructional design assistant, not a generic coding assistant.
+- You are an instructional design expert, not a generic coding assistant.
 - Prioritize learning objectives, audience fit, cognitive load, and assessment alignment.
 - Keep slide-to-slide continuity explicit (narrative progression and reinforcement).
 - Preserve LMS compatibility and accessibility constraints when editing content.`;
@@ -99,162 +107,66 @@ export const CREDIT_LOW_THRESHOLD = 50;
 export const DEFAULT_PROVIDER = 'anthropic';
 
 // ---------------------------------------------------------------------------
-// Tool Definitions (sent to the LLM)
+// Tool Definitions — File I/O only (sent to the LLM)
+//
+// coursecode_* tools are discovered at runtime from the MCP server.
+// Only file tools are defined here because they execute locally in the
+// main process and are always available (no preview server required).
+// Paths are relative to the course directory (e.g. slides/intro.js).
 // ---------------------------------------------------------------------------
 
-export const TOOL_DEFINITIONS = [
+export const FILE_TOOL_DEFINITIONS = [
     {
         name: 'read_file',
-        description: 'Read the contents of a file in the course project.',
+        description: 'Read a file in the course project. All paths are relative to the course directory root (e.g. slides/intro.js, course-config.js, assets/logo.png). There is no src/ prefix. If the file is not found, the error will suggest the correct path or recommend using list_files to discover it.',
         input_schema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'File path relative to the project root' }
+                path: { type: 'string', description: 'File path relative to the course directory. Examples: slides/intro.js, slides/module-1-overview.js, course-config.js, assessments/quiz-1.js. Never prefix with src/ or course/.' }
             },
             required: ['path']
         }
     },
     {
         name: 'edit_file',
-        description: 'Make a targeted edit to an existing file by replacing a specific string. The old_string must match exactly one location in the file. Include surrounding lines for context to ensure a unique match.',
+        description: 'Replace an exact string in an existing course file. old_string must match exactly one location in the file, character-for-character including whitespace and indentation. Include 2-3 surrounding context lines so the match is unique. If old_string matches zero times, you probably have a whitespace or content mismatch; read the file first to see the current content. If it matches more than once, include more surrounding lines.',
         input_schema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'File path relative to the project root' },
-                old_string: { type: 'string', description: 'The exact text to find in the file (must match exactly once). Include a few surrounding lines for uniqueness.' },
-                new_string: { type: 'string', description: 'The replacement text. Use an empty string to delete the matched text.' }
+                path: { type: 'string', description: 'File path relative to the course directory (e.g. slides/intro.js). Never prefix with src/ or course/.' },
+                old_string: { type: 'string', description: 'The exact text to find. Must match exactly once. Include 2-3 surrounding lines for a unique match.' },
+                new_string: { type: 'string', description: 'The replacement text. Use empty string to delete the matched text.' }
             },
             required: ['path', 'old_string', 'new_string']
         }
     },
     {
         name: 'create_file',
-        description: 'Create a new file in the course project. Fails if the file already exists. Use edit_file to modify existing files.',
+        description: 'Create a new file in the course project. Fails if the file already exists; use edit_file to modify existing files. Parent directories are created automatically.',
         input_schema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'File path relative to the project root' },
-                content: { type: 'string', description: 'Full file content to write' }
+                path: { type: 'string', description: 'File path relative to the course directory (e.g. slides/new-slide.js). Never prefix with src/ or course/.' },
+                content: { type: 'string', description: 'The full content to write to the new file.' }
             },
             required: ['path', 'content']
         }
     },
     {
         name: 'list_files',
-        description: 'List files and directories in a path within the course project.',
+        description: 'List files and subdirectories in the course project. Use this to discover file paths before reading or editing. Returns file names and whether each entry is a file or directory.',
         input_schema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Directory path relative to project root. Use "." for root.' }
-            },
-            required: ['path']
-        }
-    },
-    {
-        name: 'coursecode_state',
-        description: 'Get the current course state including structure, slide list, and any errors.',
-        input_schema: { type: 'object', properties: {} }
-    },
-    {
-        name: 'coursecode_navigate',
-        description: 'Navigate to a specific slide by its ID.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                slideId: { type: 'string', description: 'The slide ID to navigate to' }
-            },
-            required: ['slideId']
-        }
-    },
-    {
-        name: 'coursecode_screenshot',
-        description: 'Take a screenshot of the current course preview.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                slideId: { type: 'string', description: 'Optional slide ID to navigate to before taking the screenshot' },
-                detailed: { type: 'boolean', description: 'Use higher resolution for close inspection' }
-            }
-        }
-    },
-    {
-        name: 'coursecode_lint',
-        description: 'Run the course linter to check for structural errors and warnings.',
-        input_schema: { type: 'object', properties: {} }
-    },
-    {
-        name: 'coursecode_component_catalog',
-        description: 'Get available UI component information. Without type: returns all. With type: returns full schema and usage.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                type: { type: 'string', description: 'Optional component type to get full details for' }
-            }
-        }
-    },
-    {
-        name: 'coursecode_css_catalog',
-        description: 'Get available CSS classes. Without category: returns all. With category: returns full detail.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                category: { type: 'string', description: 'Optional category for full details' }
-            }
-        }
-    },
-    {
-        name: 'coursecode_interaction_catalog',
-        description: 'Get available interaction types for assessments and quizzes.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                type: { type: 'string', description: 'Optional interaction type for full details' }
-            }
-        }
-    },
-    {
-        name: 'coursecode_interact',
-        description: 'Submit a response to an interaction to test it.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                interactionId: { type: 'string', description: 'The interaction ID to answer' },
-                response: { description: 'The response value' }
-            },
-            required: ['interactionId', 'response']
-        }
-    },
-    {
-        name: 'coursecode_reset',
-        description: 'Clear learner state and restart the course from scratch.',
-        input_schema: { type: 'object', properties: {} }
-    },
-    {
-        name: 'coursecode_build',
-        description: 'Build the course for LMS deployment.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                format: { type: 'string', enum: ['cmi5', 'scorm2004', 'scorm1.2', 'lti'], description: 'LMS format' }
-            }
-        }
-    },
-    {
-        name: 'coursecode_workflow_status',
-        description: 'Detect the current authoring stage and get stage-specific instructions.',
-        input_schema: { type: 'object', properties: {} }
-    },
-    {
-        name: 'coursecode_icon_catalog',
-        description: 'Get available icon names and usage examples.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                name: { type: 'string', description: 'Optional icon name for full details' }
+                path: { type: 'string', description: 'Directory path relative to the course directory. Omit or use "." for the course root. Use "slides" to list all slide files.' }
             }
         }
     }
 ];
+
+// Legacy alias — use FILE_TOOL_DEFINITIONS for file-only, getToolDefinitions() never
+// called directly anymore; runtimeTools is assembled in chat-engine.js.
+export const TOOL_DEFINITIONS = FILE_TOOL_DEFINITIONS;
 
 // ---------------------------------------------------------------------------
 // Tool Display Labels (shown in the chat UI)
@@ -276,7 +188,9 @@ export const TOOL_LABELS = {
     coursecode_reset: 'Resetting the course…',
     coursecode_build: 'Building the course…',
     coursecode_workflow_status: 'Checking progress…',
-    coursecode_icon_catalog: 'Looking up icons…'
+    coursecode_icon_catalog: 'Looking up icons…',
+    coursecode_viewport: 'Resizing viewport…',
+    coursecode_export_content: 'Exporting content…'
 };
 
 // ---------------------------------------------------------------------------
@@ -285,7 +199,7 @@ export const TOOL_LABELS = {
 
 export const PREVIEW_TOOLS = new Set([
     'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
-    'coursecode_interact', 'coursecode_reset'
+    'coursecode_interact', 'coursecode_reset', 'coursecode_viewport'
 ]);
 
 // ---------------------------------------------------------------------------
@@ -298,7 +212,7 @@ export const SAFE_TOOLS = new Set([
     'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
     'coursecode_lint', 'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
-    'coursecode_workflow_status'
+    'coursecode_workflow_status', 'coursecode_viewport', 'coursecode_export_content'
 ]);
 
 /** Tools that mutate files or course state — may require approval */
@@ -313,7 +227,7 @@ export const PARALLELIZABLE_TOOLS = new Set([
     'coursecode_state', 'coursecode_screenshot',
     'coursecode_lint', 'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
-    'coursecode_workflow_status'
+    'coursecode_workflow_status', 'coursecode_viewport', 'coursecode_export_content'
 ]);
 
 // ---------------------------------------------------------------------------

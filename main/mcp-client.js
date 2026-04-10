@@ -23,13 +23,9 @@ const HEALTH_CHECK_INTERVAL = 30000;
 /** Tool-specific timeouts (ms) */
 const TOOL_TIMEOUTS = {
     coursecode_build:    120000,
-    coursecode_deploy:   120000,
-    coursecode_publish:  120000,
     coursecode_lint:     30000,
     coursecode_state:    15000,
-    screenshot:          20000,
-    read_file:           10000,
-    list_directory:      10000,
+    coursecode_screenshot: 20000,
 };
 const DEFAULT_TOOL_TIMEOUT = 60000;
 

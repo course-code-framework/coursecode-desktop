@@ -162,9 +162,10 @@ coursecode-desktop/
 │   ├── preview-manager.js        ← Spawn/kill preview servers
 │   ├── build-manager.js          ← Build/export orchestration
 │   ├── cloud-client.js           ← Cloud operations via CLI (auth, deploy, status)
+│   ├── ai-config.js              ← AI constants: file tool definitions, labels, safety sets
 │   ├── chat-engine.js            ← AI chat orchestration, agentic tool loop
 │   ├── llm-provider.js           ← LLM API abstraction (Anthropic, OpenAI, Cloud proxy)
-│   ├── mcp-client.js             ← MCP tool discovery and invocation via CLI
+│   ├── mcp-client.js             ← MCP tool discovery and invocation via stdio JSON-RPC
 │   ├── system-prompts.js         ← Dynamic system prompt assembly
 │   ├── ref-manager.js            ← Reference document ingestion and conversion
 │   ├── settings.js               ← Persistent settings (JSON)
@@ -756,6 +757,20 @@ When a course is deployed to CourseCode Cloud via GitHub (GitHub Actions integra
 
 A built-in AI assistant that can create, modify, and debug courses through natural language conversation. Supports two modes: **BYOK** (Bring Your Own Key) for direct provider access, and **Cloud** for credit-based access through the CourseCode Cloud AI proxy.
 
+### Design Philosophy: Set the AI Up for Success
+
+The desktop app treats the LLM as a capable collaborator, not a subordinate to be corrected at runtime. When the AI underperforms (fails to use tools, hallucinates paths, gives vague responses), the fix belongs in the **context the app provides**, not in post-hoc manipulation of the conversation.
+
+**Principles:**
+
+- **Rich, unambiguous context over runtime correction.** System prompts, tool descriptions, and project context should give the model everything it needs to act correctly on the first try. If the model consistently fails at something, improve the prompt or tool schema rather than injecting corrective messages.
+- **No synthetic conversation messages.** The app must not inject fake user messages, nudges, or scolding into the conversation to steer model behavior. Every message in the conversation history should represent genuine user input or authentic model output.
+- **Clear tool descriptions with examples.** Tool schemas should include concrete path examples, boundary descriptions, and failure guidance so the model can self-correct from tool error responses.
+- **Trust tool error messages as teaching signals.** When a tool call fails (e.g., file not found), the error response should include actionable hints ("Did you mean slides/intro.js?" or "Use list_files to discover paths"). The model learns from these within the same agentic loop without external intervention.
+- **Diagnose root causes, not symptoms.** If the model repeatedly makes the same mistake, trace it back to a gap in the system prompt, a misleading tool description, or missing project context. Fix the source.
+
+This philosophy aligns with how production AI IDEs (VS Code + Copilot, Cursor, Windsurf) integrate LLMs: they invest in context quality, tool design, and prompt engineering rather than runtime workarounds.
+
 ### Architecture
 
 **Main process modules**:
@@ -764,24 +779,64 @@ A built-in AI assistant that can create, modify, and debug courses through natur
 
 **`llm-provider.js`** — Abstracts LLM API calls across providers. Supports Anthropic (Claude), OpenAI (GPT), Google (Gemini), and CourseCode Cloud (proxy). The cloud proxy provider uses the cloud auth token (from `~/.coursecode/credentials.json`) to call the proxy's SSE endpoint, yielding the same event types as direct providers so the agentic loop works identically. Handles API key storage using Electron's `safeStorage` for BYOK keys. Also provides `getCloudModels(token)` and `getCloudUsage(token)` for fetching available cloud models and credit balances.
 
+**`ai-config.js`** — Centralized AI constants. Exports `FILE_TOOL_DEFINITIONS` (the four local file tools: `read_file`, `edit_file`, `create_file`, `list_files`), `TOOL_LABELS` (human-readable progress labels for all tools), and safety/classification sets (`SAFE_TOOLS`, `MUTATION_TOOLS`, `PREVIEW_TOOLS`, `PARALLELIZABLE_TOOLS`). Does **not** define MCP tool schemas; those are discovered at runtime from the framework's MCP server.
+
 **`system-prompts.js`** — Dynamically assembles the system prompt sent to the LLM. Combines:
 - A base persona (CourseCode authoring expert)
-- Tool definitions from the CourseCode MCP server
-- Project context (current project path, config, structure)
+- Project context (slide list with course-relative paths, config, structure)
+- Course memory (accumulated project knowledge)
 - User custom instructions from settings
 
 **`ref-manager.js`** — Manages reference documents. Lists, reads, and converts files (PDF, DOCX, PPTX, etc.) to markdown using the `coursecode convert` CLI command. Supports drag-and-drop conversion from the RefsPanel UI.
 
 ### Tool Use
 
-The AI has access to the full CourseCode MCP tool set, enabling it to:
-- Navigate and inspect course slides
-- Take screenshots of the live preview
-- Create and edit slide HTML files
-- Modify `course-config.js`
-- Run the linter and fix issues
-- Create and test interactions (quizzes, drag-drop, etc.)
-- Read reference documents for context
+The AI operates with two layers of tools that are merged at runtime into a single flat list sent to the LLM.
+
+#### File Tools (desktop-only, 4 tools)
+
+Defined in `ai-config.js` as `FILE_TOOL_DEFINITIONS`. These execute locally via Node.js file operations in `chat-engine.js`. All paths are resolved relative to the project's `course/` subdirectory, so from the AI's perspective the root is `course/` and it cannot access files outside that boundary.
+
+| Tool | Purpose |
+|---|---|
+| `read_file` | Read a file's contents (course-relative path) |
+| `edit_file` | Apply a search-and-replace edit to an existing file |
+| `create_file` | Create a new file with specified contents |
+| `list_files` | List directory contents (defaults to course root) |
+
+#### MCP Tools (framework-provided, 14 tools)
+
+Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-RPC (`coursecode mcp --port <port>`). The MCP connection is managed by `mcp-client.js`. The desktop app assumes the MCP server is **always available** when a preview is running; MCP tools are only included in the tool list when a preview server is active.
+
+| Tool | Purpose |
+|---|---|
+| `coursecode_state` | Get current course state (config, slide list, active slide, stage) |
+| `coursecode_navigate` | Navigate to a specific slide by index |
+| `coursecode_interact` | Simulate user interactions (click, type, drag) on the live preview |
+| `coursecode_reset` | Reset the course to its initial state |
+| `coursecode_screenshot` | Capture a screenshot of the current slide |
+| `coursecode_viewport` | Resize the preview viewport |
+| `coursecode_build` | Trigger a course build |
+| `coursecode_lint` | Run the linter and return errors/warnings |
+| `coursecode_workflow_status` | Check progress against the active workflow |
+| `coursecode_css_catalog` | Look up available CSS utility classes |
+| `coursecode_component_catalog` | Look up available slide components |
+| `coursecode_interaction_catalog` | Look up interaction types and configuration |
+| `coursecode_icon_catalog` | Look up available icon names |
+| `coursecode_export_content` | Export slide content as plain text |
+
+#### Tool Merging
+
+`chat-engine.js` calls `mergeToolDefinitions(fileTools, mcpTools)` to combine both sets. If an MCP tool name collides with a file tool name, the file tool wins (MCP's version is skipped). This prevents the MCP server from overriding the desktop's sandboxed file operations.
+
+#### Tool Classification
+
+`ai-config.js` exports several sets used by the agentic loop:
+- **`SAFE_TOOLS`** — Read-only tools that do not mutate project state (used for auto-approval)
+- **`MUTATION_TOOLS`** — Tools that modify files (triggers snapshot creation before execution)
+- **`PREVIEW_TOOLS`** — Tools requiring an active preview server (gated on preview availability)
+- **`PARALLELIZABLE_TOOLS`** — Tools that can run concurrently in a single agentic step
+- **`TOOL_LABELS`** — Human-readable progress strings shown in the chat UI during execution
 
 Tool invocations are displayed as interactive pills in the chat UI showing the tool name and status (running/complete/error).
 
@@ -1598,7 +1653,7 @@ Unit tests use [Vitest](https://vitest.dev/) with v8 coverage to test main proce
 - `cloud-client.js` — token loading null path, `getCloudUser` short-circuit
 - `file-manager.js` — path traversal security (`../../` escape, absolute path injection), language detection for all extensions, directory listing filtering (hidden files, ignored dirs, editable-only types), `course/` subdirectory auto-resolution
 - `system-prompts.js` — prompt assembly with all context permutations (title, slides, refs, memory, custom instructions), whitespace-only handling
-- `ai-config.js` (via system-prompts tests) — schema validation of `TOOL_DEFINITIONS` (name, description, input_schema, required fields), cross-referencing `TOOL_LABELS` and `PREVIEW_TOOLS` against `TOOL_DEFINITIONS` for consistency
+- `ai-config.js` (via system-prompts tests) — schema validation of `FILE_TOOL_DEFINITIONS` (name, description, input_schema, required fields), cross-referencing `TOOL_LABELS` and `PREVIEW_TOOLS` against tool definitions for consistency
 - `snapshot-manager.js` — real `isomorphic-git` operations: init, commit, log, diff, change detection. Includes a regression test for the stat-cache staging fix (same-length same-second writes)
 - `ref-manager.js` — reference file listing, reading, `formatSize` at all scales (B, KB, MB), missing file errors
 - `workflow-runner.js` — outline parsing regex (ID generation, special chars, numeric prefixes, trailing hyphen stripping), config generation with single-quote escaping

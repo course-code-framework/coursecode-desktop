@@ -1,14 +1,14 @@
 import { app } from 'electron';
-import { join, dirname } from 'path';
-import { writeFileSync, renameSync, statSync, mkdirSync, existsSync, appendFileSync } from 'fs';
+import { join } from 'path';
+import { renameSync, statSync, mkdirSync, existsSync, appendFileSync, readdirSync, unlinkSync } from 'fs';
 
 // --- Configuration ---
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
 const MAX_ROTATED = 3;
+const MAX_TOTAL_LOG_SIZE = 20 * 1024 * 1024; // 20 MB total across all log files
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const isDev = !app.isPackaged;
-const devFileLoggingEnabled = isDev && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_DEV_FILE_LOGS || ''));
 
 // --- ANSI colors for dev console ---
 
@@ -22,18 +22,23 @@ const COLORS = {
     bold: '\x1b[1m',
 };
 
-// --- File logging (production only) ---
+// --- File logging ---
 
 let logFilePath = null;
 let logDirReady = false;
 
 function getLogDir() {
+    if (isDev) {
+        // Dev: write to <project-root>/logs/ (gitignored)
+        // __dirname is out/main/ in electron-vite dev builds
+        return join(__dirname, '..', '..', 'logs');
+    }
     return join(app.getPath('userData'), 'logs');
 }
 
 function getLogFilePath() {
     if (!logFilePath) {
-        logFilePath = join(getLogDir(), devFileLoggingEnabled ? 'dev-main.log' : 'main.log');
+        logFilePath = join(getLogDir(), isDev ? 'dev-main.log' : 'main.log');
     }
     return logFilePath;
 }
@@ -43,6 +48,20 @@ function ensureLogDir() {
     const dir = getLogDir();
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     logDirReady = true;
+}
+
+// In dev mode, truncate the log file on startup so each session starts clean.
+let devLogTruncated = false;
+function truncateDevLogOnStartup() {
+    if (devLogTruncated || !isDev) return;
+    devLogTruncated = true;
+    const filePath = getLogFilePath();
+    try {
+        if (existsSync(filePath)) {
+            const { writeFileSync } = require('fs');
+            writeFileSync(filePath, '');
+        }
+    } catch { /* best effort */ }
 }
 
 function rotateIfNeeded() {
@@ -69,6 +88,7 @@ function rotateIfNeeded() {
 function writeToFile(jsonLine) {
     try {
         ensureLogDir();
+        truncateDevLogOnStartup();
         appendFileSync(getLogFilePath(), jsonLine + '\n');
     } catch {
         // Last resort — if we can't write to the log file, we truly can't do anything.
@@ -77,14 +97,53 @@ function writeToFile(jsonLine) {
     }
 }
 
-// --- Rotate on startup (production only) ---
+// --- Rotate on startup + cleanup ---
 
 let startupRotationDone = false;
 
 function rotateOnStartup() {
-    if (startupRotationDone || (isDev && !devFileLoggingEnabled)) return;
+    if (startupRotationDone) return;
     startupRotationDone = true;
     rotateIfNeeded();
+    cleanupOldLogs();
+}
+
+/**
+ * Remove excess log files if total size exceeds MAX_TOTAL_LOG_SIZE.
+ * Deletes oldest rotated files first.
+ */
+function cleanupOldLogs() {
+    try {
+        const dir = getLogDir();
+        if (!existsSync(dir)) return;
+
+        const files = readdirSync(dir)
+            .filter(f => f.endsWith('.log') || /\.log\.\d+$/.test(f))
+            .map(f => {
+                const full = join(dir, f);
+                try {
+                    const s = statSync(full);
+                    return { name: f, path: full, size: s.size, mtime: s.mtimeMs };
+                } catch { return null; }
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.mtime - b.mtime); // oldest first
+
+        let totalSize = files.reduce((sum, f) => sum + f.size, 0);
+
+        // Delete oldest files until under budget (but keep the current log file)
+        const currentLog = getLogFilePath();
+        for (const f of files) {
+            if (totalSize <= MAX_TOTAL_LOG_SIZE) break;
+            if (f.path === currentLog) continue;
+            try {
+                unlinkSync(f.path);
+                totalSize -= f.size;
+            } catch { /* best effort */ }
+        }
+    } catch {
+        // Cleanup is best-effort
+    }
 }
 
 // --- Console formatters ---
@@ -157,11 +216,9 @@ export function createLogger(module) {
         const levelValue = LEVELS[level];
 
         if (isDev) {
-            // Dev: all levels to console. Optional file logging when enabled via env.
+            // Dev: all levels to console + file (logs/ in project root)
             devConsole(level, module, message, extra);
-            if (devFileLoggingEnabled) {
-                fileWrite(level, module, message, extra);
-            }
+            fileWrite(level, module, message, extra);
         } else {
             // Prod: warn+ to console, all levels to file
             if (levelValue >= LEVELS.warn) {
