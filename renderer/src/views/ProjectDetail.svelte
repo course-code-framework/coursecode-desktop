@@ -899,7 +899,8 @@
               src={`http://127.0.0.1:${previewPort}`}
               title="Course Preview"
               class="preview-frame"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-clipboard-write"
+              allow="clipboard-write"
             ></iframe>
           {/key}
         {:else}
