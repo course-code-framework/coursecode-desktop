@@ -7,7 +7,7 @@ import { getSetting } from './settings.js';
 import { getChildEnv, getCLISpawnArgs } from './node-env.js';
 import { initRepo, createSnapshot } from './snapshot-manager.js';
 import { stopPreview } from './preview-manager.js';
-import { stopGeneration } from './chat-engine.js';
+import { stopGeneration, deleteChatHistory } from './chat-engine.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('project');
@@ -283,6 +283,13 @@ export async function deleteProject(projectPath, options = {}) {
     if (options.deleteFromCloud) {
         const { cloudDelete } = await import('./cloud-client.js');
         await cloudDelete(projectPath);
+    }
+
+    // Clean up chat history stored in userData
+    try {
+        deleteChatHistory(projectPath);
+    } catch (err) {
+        log.warn('Failed to clean up chat history', err);
     }
 
     try {

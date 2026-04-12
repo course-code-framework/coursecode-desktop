@@ -663,7 +663,7 @@
             <p class="device-step mt-md"><span class="device-step-num">2</span> Enter this code when prompted:</p>
             <div class="device-code-row">
               <span class="device-code">{deviceUserCode}</span>
-              <button class="btn-secondary btn-sm" onclick={() => navigator.clipboard.writeText(deviceUserCode)}>Copy</button>
+              <button class="btn-secondary btn-sm" onclick={() => window.api.clipboard.writeText(deviceUserCode)}>Copy</button>
             </div>
             <p class="text-secondary text-sm mt-md">⏳ Waiting for you to approve in the browser…</p>
           </div>

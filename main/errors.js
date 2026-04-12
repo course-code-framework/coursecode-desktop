@@ -7,7 +7,13 @@ const log = createLogger('ipc');
 const ERROR_MAP = [
     { match: (e) => e.code === 'EADDRINUSE', code: 'PORT_IN_USE', message: 'Another app is using that port. Try stopping other preview servers first.' },
     { match: (e) => e.code === 'EACCES', code: 'PERMISSION_DENIED', message: 'Permission denied. Try moving your project to a different folder.' },
-    { match: (e) => e.code === 'ENOENT', code: 'FILE_MISSING', message: 'A required file is missing. The project may be incomplete.' },
+    { match: (e) => e.code === 'ENOENT', code: 'FILE_MISSING', message: (e) => {
+        const pathMatch = e.message?.match(/open '([^']+)'/);
+        const filePath = pathMatch ? pathMatch[1].replace(/.*[/\\]course[/\\]/, '') : null;
+        return filePath
+            ? `File not found: ${filePath}`
+            : 'A required file is missing. The project may be incomplete.';
+    }},
     { match: (e) => e.code === 'ECONNREFUSED' || e.cause?.code === 'ECONNREFUSED', code: 'NETWORK_ERROR', message: "Couldn't reach the server. Check your internet connection." },
     { match: (e) => e.message?.includes('npm ERR!'), code: 'NPM_ERROR', message: 'Something went wrong installing dependencies. Click "Retry" to try again.' },
     { match: (e) => e.status === 401, code: 'AUTH_EXPIRED', message: 'Your session has expired. Sign in again.' },
@@ -56,7 +62,7 @@ export function translateError(err) {
     for (const entry of ERROR_MAP) {
         if (entry.match(err)) {
             return {
-                message: entry.message,
+                message: typeof entry.message === 'function' ? entry.message(err) : entry.message,
                 detail: err.message || '',
                 code: entry.code,
             };

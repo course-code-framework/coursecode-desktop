@@ -23,11 +23,20 @@ describe('translateError', () => {
         expect(result.message).toContain('Permission');
     });
 
-    it('returns FILE_MISSING for ENOENT', () => {
+    it('returns FILE_MISSING for ENOENT with path extracted from message', () => {
+        const err = new Error("ENOENT: no such file or directory, open '/projects/course/slides/terms-roles.js'");
+        err.code = 'ENOENT';
+        const result = translateError(err);
+        expect(result.code).toBe('FILE_MISSING');
+        expect(result.message).toBe('File not found: slides/terms-roles.js');
+    });
+
+    it('returns FILE_MISSING with generic message when path cannot be extracted', () => {
         const err = new Error('no such file');
         err.code = 'ENOENT';
         const result = translateError(err);
         expect(result.code).toBe('FILE_MISSING');
+        expect(result.message).toContain('missing');
     });
 
     it('returns NETWORK_ERROR for ECONNREFUSED', () => {

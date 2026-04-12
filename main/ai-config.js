@@ -23,11 +23,12 @@ COMMUNICATION RULES:
 
 TOOL USE:
 1. Read before writing. Always read a file before editing it.
-2. Use coursecode_state to understand the current course structure.
-3. Use edit_file for targeted changes. Use create_file only for new files.
-4. After edits, take a screenshot to verify the result.
-5. Run coursecode_lint to catch issues after changes.
-6. If lint reports problems, fix them before responding to the user.
+2. Use search_files to locate specific text, then read_file with start_line/end_line around those line numbers to get context.
+3. Use coursecode_state to understand the current course structure.
+4. Use edit_file for targeted changes. Use create_file only for new files.
+5. After edits, take a screenshot to verify the result.
+6. Run coursecode_lint to catch issues after changes.
+7. If lint reports problems, fix them before responding to the user.
 
 FILE PATHS:
 All paths are relative to the course directory root. The course directory IS the root.
@@ -118,11 +119,13 @@ export const DEFAULT_PROVIDER = 'anthropic';
 export const FILE_TOOL_DEFINITIONS = [
     {
         name: 'read_file',
-        description: 'Read a file in the course project. All paths are relative to the course directory root (e.g. slides/intro.js, course-config.js, assets/logo.png). There is no src/ prefix. If the file is not found, the error will suggest the correct path or recommend using list_files to discover it.',
+        description: 'Read a file in the course project. All paths are relative to the course directory root (e.g. slides/intro.js, course-config.js, assets/logo.png). There is no src/ prefix. If the file is not found, the error will suggest the correct path or recommend using list_files to discover it. Returns totalLines so you can request additional ranges if the file was truncated.',
         input_schema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'File path relative to the course directory. Examples: slides/intro.js, slides/module-1-overview.js, course-config.js, assessments/quiz-1.js. Never prefix with src/ or course/.' }
+                path: { type: 'string', description: 'File path relative to the course directory. Examples: slides/intro.js, slides/module-1-overview.js, course-config.js, assessments/quiz-1.js. Never prefix with src/ or course/.' },
+                start_line: { type: 'integer', description: 'First line to read (1-based, inclusive). Omit to start from the beginning.' },
+                end_line: { type: 'integer', description: 'Last line to read (1-based, inclusive). Omit to read to the end. Use with start_line to read a specific range of a large file.' }
             },
             required: ['path']
         }
@@ -153,8 +156,21 @@ export const FILE_TOOL_DEFINITIONS = [
         }
     },
     {
+        name: 'search_files',
+        description: 'Search for text across course project files. Returns matching lines with line numbers and file paths. Use this to locate code before editing: find the line numbers, then use read_file with start_line/end_line to get surrounding context. Searches all text files under the course directory recursively.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'Text or regex pattern to search for. Case-insensitive. Examples: "callout-compact", "export default", "TODO".' },
+                path: { type: 'string', description: 'Optional. Limit search to a specific file or directory relative to the course root. Examples: "slides/intro.js", "slides". Omit to search all files.' },
+                is_regex: { type: 'boolean', description: 'If true, treat pattern as a regular expression. Default: false (literal string match).' }
+            },
+            required: ['pattern']
+        }
+    },
+    {
         name: 'list_files',
-        description: 'List files and subdirectories in the course project. Use this to discover file paths before reading or editing. Returns file names and whether each entry is a file or directory.',
+        description: 'List files and subdirectories in the course project. Use this to discover file paths before reading or editing. Returns file names, type (file/directory), and line counts for text files so you can plan read_file ranges.',
         input_schema: {
             type: 'object',
             properties: {
@@ -176,6 +192,7 @@ export const TOOL_LABELS = {
     edit_file: 'Making changes…',
     create_file: 'Creating file…',
     read_file: 'Reading file…',
+    search_files: 'Searching files…',
     list_files: 'Browsing files…',
     coursecode_screenshot: 'Looking at the result…',
     coursecode_lint: 'Checking for errors…',
@@ -208,7 +225,7 @@ export const PREVIEW_TOOLS = new Set([
 
 /** Tools that are safe to run without user approval (read-only) */
 export const SAFE_TOOLS = new Set([
-    'read_file', 'list_files',
+    'read_file', 'list_files', 'search_files',
     'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
     'coursecode_lint', 'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
@@ -235,10 +252,10 @@ export const PARALLELIZABLE_TOOLS = new Set([
 // ---------------------------------------------------------------------------
 
 /** Max size (chars) for a single tool result before truncation */
-export const TOOL_RESULT_MAX_CHARS = 4000;
+export const TOOL_RESULT_MAX_CHARS = 16_000;
 
 /** Truncation notice appended when a tool result is trimmed */
-export const TOOL_RESULT_TRUNCATION_NOTE = '… (truncated — use tool again for full output)';
+export const TOOL_RESULT_TRUNCATION_NOTE = '… (truncated — use read_file with start_line/end_line to read remaining lines)';
 
 // ---------------------------------------------------------------------------
 // Guided Workflow Configurations

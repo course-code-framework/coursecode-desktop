@@ -57,6 +57,7 @@ let unsubToolArgsDelta = null;
 let currentAiMode = 'byok';
 let activeProjectPath = null;
 let pendingScreenshots = [];
+let pendingChangeSummary = null;
 aiMode.subscribe((mode) => {
     currentAiMode = mode;
 });
@@ -157,6 +158,7 @@ export function subscribeToChatEvents() {
         streamingText.set('');
         activeTools.set([]);
         pendingScreenshots = [];
+        pendingChangeSummary = null;
         messages.update(msgs => [
             ...msgs,
             { role: 'assistant', content: message, isError: true }
@@ -175,44 +177,23 @@ export function subscribeToChatEvents() {
 
         const normalizedText = (finalText || '').trim();
         if (normalizedText || tools.length > 0 || pendingScreenshots.length > 0) {
-            messages.update(msgs => [
-                ...msgs,
-                {
-                    role: 'assistant',
-                    content: normalizedText || 'Completed.',
-                    toolCalls: tools.filter(t => t.status === 'done' || t.status === 'error'),
-                    screenshots: [...pendingScreenshots],
-                    usage
-                }
-            ]);
-        }
-
-        if (execution && typeof execution === 'object') {
-            const changedFiles = Number.isFinite(Number(execution.changedFiles)) ? Number(execution.changedFiles) : null;
-            const hasVerifiedFileChanges = Boolean(execution.hasVerifiedFileChanges);
-            const hasUnverifiedMutationOutcome = Boolean(execution.hasUnverifiedMutationOutcome);
-
-            messages.update(msgs => [
-                ...msgs,
-                {
-                    role: 'system',
-                    type: 'executionReceipt',
-                    totalToolCalls: execution.totalToolCalls || 0,
-                    succeededToolCalls: execution.succeededToolCalls || 0,
-                    failedToolCalls: execution.failedToolCalls || 0,
-                    mutationToolAttempts: execution.mutationToolAttempts || 0,
-                    mutationToolSuccesses: execution.mutationToolSuccesses || 0,
-                    changedFiles,
-                    hasVerifiedFileChanges,
-                    hasUnverifiedMutationOutcome,
-                    outcomeClass: execution.outcomeClass || 'no_changes'
-                }
-            ]);
+            const assistantMsg = {
+                role: 'assistant',
+                content: normalizedText || 'Completed.',
+                toolCalls: tools.filter(t => t.status === 'done' || t.status === 'error'),
+                screenshots: [...pendingScreenshots],
+                usage
+            };
+            if (pendingChangeSummary) {
+                assistantMsg.changeSummary = pendingChangeSummary;
+            }
+            messages.update(msgs => [...msgs, assistantMsg]);
         }
 
         streaming.set(false);
         streamingText.set('');
         activeTools.set([]);
+        pendingChangeSummary = null;
         pendingScreenshots = [];
 
         // Update session usage
@@ -229,15 +210,20 @@ export function subscribeToChatEvents() {
                 sessionUsage.subscribe(s => totalCost = s.estimatedCost)();
                 costWarningsShown.update(shown => {
                     const newShown = new Set(shown);
+                    // Find the highest threshold crossed that hasn't been shown yet
+                    let highestNewThreshold = null;
                     for (const threshold of COST_WARNING_THRESHOLDS) {
                         if (totalCost >= threshold && !shown.has(threshold)) {
                             newShown.add(threshold);
-                            messages.update(msgs => [...msgs, {
-                                role: 'system',
-                                type: 'costWarning',
-                                content: `Session cost has reached $${threshold}. Total so far: $${totalCost.toFixed(2)}.`
-                            }]);
+                            highestNewThreshold = threshold;
                         }
+                    }
+                    if (highestNewThreshold !== null) {
+                        messages.update(msgs => [...msgs, {
+                            role: 'system',
+                            type: 'costWarning',
+                            content: `Session cost has reached $${highestNewThreshold}. Total so far: $${totalCost.toFixed(2)}.`
+                        }]);
                     }
                     return newShown;
                 });
@@ -278,19 +264,7 @@ export function subscribeToChatEvents() {
 
     unsubChangeSummary = window.api.chat.onChangeSummary?.(({ projectPath, label, timestamp, added, modified, deleted, snapshotId }) => {
         if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
-        messages.update(msgs => [
-            ...msgs,
-            {
-                role: 'system',
-                type: 'changeSummary',
-                label,
-                timestamp,
-                added: added || [],
-                modified: modified || [],
-                deleted: deleted || [],
-                snapshotId
-            }
-        ]);
+        pendingChangeSummary = { label, timestamp, added: added || [], modified: modified || [], deleted: deleted || [], snapshotId };
     });
 
     unsubToolApproval = window.api.chat.onToolApproval?.(({ projectPath, toolUseId, tool, label, input, filePath }) => {
@@ -340,6 +314,7 @@ export async function sendMessage(projectPath, text, mentions = []) {
         streamingText.set('');
         activeTools.set([]);
         pendingScreenshots = [];
+        pendingChangeSummary = null;
         messages.update(msgs => [
             ...msgs,
             { role: 'assistant', content: err?.message || 'Failed to send message.', isError: true }
@@ -353,6 +328,7 @@ export async function stopGeneration(projectPath) {
     streamingText.set('');
     activeTools.set([]);
     pendingScreenshots = [];
+    pendingChangeSummary = null;
 }
 
 export async function clearChat(projectPath) {
@@ -383,7 +359,7 @@ export async function loadChatHistory(projectPath) {
     activeProjectPath = projectPath;
     pendingScreenshots = [];
     const history = await window.api.chat.loadHistory(projectPath);
-    messages.set(history || []);
+    messages.set(mergeToolMessages(history || []));
     activeConversationId.set(null);
     refreshConversationList(projectPath);
 
@@ -431,7 +407,7 @@ export async function refreshConversationList(projectPath) {
 
 export async function loadPastConversation(projectPath, conversationId) {
     const history = await window.api.chat.loadConversation(projectPath, conversationId);
-    messages.set(history || []);
+    messages.set(mergeToolMessages(history || []));
     activeConversationId.set(null); // now the active conversation, no longer archived
     sessionUsage.set({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
     sessionCredits.set(0);
@@ -461,6 +437,14 @@ export async function deletePastConversation(projectPath, conversationId) {
     await refreshConversationList(projectPath);
 }
 
+export async function deleteAllPastConversations(projectPath) {
+    await window.api.chat.deleteAllConversations(projectPath);
+    messages.set([]);
+    activeConversationId.set(null);
+    sessionUsage.set({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
+    conversationList.set([]);
+}
+
 /** Format token count for display */
 export function formatTokens(count) {
     if (count < 1000) return `${count}`;
@@ -471,4 +455,88 @@ export function formatTokens(count) {
 export function formatCost(cost) {
     if (!cost || cost < 0.01) return '<$0.01';
     return `$${cost.toFixed(2)}`;
+}
+
+/**
+ * Merge adjacent assistant messages from agentic tool loops on history load.
+ * Tool-only assistant messages (those with toolCalls but no meaningful text content)
+ * are folded into the next assistant message that has text content, so the conversation
+ * renders the same way it did during the live streaming session.
+ */
+function mergeToolMessages(msgs) {
+    if (!msgs || msgs.length === 0) return msgs;
+    const merged = [];
+    let pendingTools = [];
+    let pendingScreenshots = [];
+
+    for (const msg of msgs) {
+        if (msg.role === 'assistant' && !msg.isError) {
+            const hasText = msg.content && msg.content.trim() && msg.content.trim() !== 'Completed.';
+            const hasTools = msg.toolCalls?.length > 0;
+
+            if (hasTools && !hasText) {
+                // Tool-only message: accumulate its tools and screenshots
+                pendingTools.push(...msg.toolCalls);
+                if (msg.screenshots?.length) pendingScreenshots.push(...msg.screenshots);
+                continue;
+            }
+
+            if (hasText && pendingTools.length > 0) {
+                // Text message following tool-only messages: merge everything
+                merged.push({
+                    ...msg,
+                    toolCalls: [...pendingTools, ...(msg.toolCalls || [])],
+                    screenshots: [...pendingScreenshots, ...(msg.screenshots || [])]
+                });
+                pendingTools = [];
+                pendingScreenshots = [];
+                continue;
+            }
+        }
+
+        // Flush any pending tool-only messages that weren't followed by a text assistant message
+        if (pendingTools.length > 0) {
+            merged.push({
+                role: 'assistant',
+                content: '',
+                toolCalls: pendingTools,
+                screenshots: pendingScreenshots
+            });
+            pendingTools = [];
+            pendingScreenshots = [];
+        }
+
+        // Fold changeSummary and executionReceipt into the preceding assistant message
+        if (msg.role === 'system' && (msg.type === 'changeSummary' || msg.type === 'executionReceipt')) {
+            const lastMsg = merged[merged.length - 1];
+            if (lastMsg?.role === 'assistant' && !lastMsg.isError) {
+                if (msg.type === 'changeSummary') {
+                    lastMsg.changeSummary = {
+                        label: msg.label,
+                        timestamp: msg.timestamp,
+                        added: msg.added || [],
+                        modified: msg.modified || [],
+                        deleted: msg.deleted || [],
+                        snapshotId: msg.snapshotId
+                    };
+                }
+                // executionReceipt is dropped entirely
+                continue;
+            }
+        }
+
+        merged.push(msg);
+    }
+
+    // Flush remaining
+    if (pendingTools.length > 0) {
+        merged.push({
+            role: 'assistant',
+            content: '',
+            toolCalls: pendingTools,
+            screenshots: pendingScreenshots
+        });
+    }
+
+    return merged;
 }

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, unlinkSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync, unlinkSync, renameSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { app } from 'electron';
 import { join, resolve, dirname } from 'path';
@@ -64,6 +64,10 @@ const abortControllers = new Map();
 const pendingApprovals = new Map(); // key: `${projectPath}:${toolUseId}` → { resolve, reject }
 
 // --- Build API messages with truncation ---
+
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function truncateContent(content) {
     if (typeof content !== 'string') content = JSON.stringify(content);
@@ -713,6 +717,8 @@ function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
     return merged;
 }
 
+const FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'list_files', 'search_files']);
+
 function sanitizeToolResultForModel(toolName, result) {
     if (toolName === 'coursecode_screenshot' && result?.content && Array.isArray(result.content)) {
         // Pass the full content (including image blocks) to the model so it can
@@ -727,6 +733,9 @@ function sanitizeToolResultForModel(toolName, result) {
         return value;
     });
 
+    // File tools return small, predictable results — no truncation needed.
+    // MCP tools can return unpredictable output, so keep a generous limit.
+    if (FILE_TOOLS.has(toolName)) return safeJson;
     return truncateContent(safeJson);
 }
 
@@ -906,12 +915,25 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
             }
             return { error: `File not found: ${toolInput.path}.${hint}` };
         }
-        return { content: readFileSync(filePath, 'utf-8') };
+        const fullContent = readFileSync(filePath, 'utf-8');
+        const lines = fullContent.split('\n');
+        const totalLines = lines.length;
+        const startLine = Math.max(1, Math.min(toolInput.start_line || 1, totalLines));
+        const endLine = Math.min(toolInput.end_line || totalLines, totalLines);
+        const selected = lines.slice(startLine - 1, endLine);
+        const content = selected.join('\n');
+        const result = { content, totalLines };
+        if (startLine > 1 || endLine < totalLines) {
+            result.range = { start: startLine, end: endLine };
+            if (endLine < totalLines) result.truncatedAfterLine = endLine;
+        }
+        return result;
     }
 
     if (toolName === 'edit_file') {
         const filePath = resolveToolPath(toolInput.path);
         if (!existsSync(filePath)) return { error: `File not found: ${toolInput.path}. Use list_files to discover the correct path.` };
+        if (toolInput.old_string === toolInput.new_string) return { error: `old_string and new_string are identical — no change would be made. Check that you are replacing the correct text.` };
         const content = readFileSync(filePath, 'utf-8');
         const occurrences = content.split(toolInput.old_string).length - 1;
         if (occurrences === 0) return { error: `old_string not found in ${toolInput.path}. Read the file first to see current content.` };
@@ -930,18 +952,84 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         return { success: true, path: toolInput.path };
     }
 
+    if (toolName === 'search_files') {
+        const MAX_MATCHES = 50;
+        const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.mp4', '.mp3', '.wav', '.ogg', '.zip', '.tar', '.gz', '.woff', '.woff2', '.ttf', '.eot', '.pdf']);
+        const searchRoot = resolveToolPath(toolInput.path || '.');
+        if (!existsSync(searchRoot)) return { error: `Path not found: ${toolInput.path || '.'}` };
+
+        let regex;
+        try {
+            regex = new RegExp(toolInput.is_regex ? toolInput.pattern : escapeRegExp(toolInput.pattern), 'i');
+        } catch (e) {
+            return { error: `Invalid regex pattern: ${e.message}` };
+        }
+
+        const matches = [];
+        const stat = statSync(searchRoot);
+        const filesToSearch = [];
+
+        if (stat.isFile()) {
+            filesToSearch.push(searchRoot);
+        } else {
+            const walk = (dir) => {
+                for (const entry of readdirSync(dir, { withFileTypes: true })) {
+                    if (entry.name.startsWith('.')) continue;
+                    const full = resolve(dir, entry.name);
+                    if (entry.isDirectory()) {
+                        if (entry.name === 'node_modules') continue;
+                        walk(full);
+                    } else {
+                        const ext = entry.name.includes('.') ? '.' + entry.name.split('.').pop().toLowerCase() : '';
+                        if (!BINARY_EXT.has(ext)) filesToSearch.push(full);
+                    }
+                }
+            };
+            walk(searchRoot);
+        }
+
+        for (const file of filesToSearch) {
+            if (matches.length >= MAX_MATCHES) break;
+            try {
+                const content = readFileSync(file, 'utf-8');
+                const lines = content.split('\n');
+                const relPath = file.substring(courseRoot.length + 1).replace(/\\/g, '/');
+                for (let i = 0; i < lines.length && matches.length < MAX_MATCHES; i++) {
+                    if (regex.test(lines[i])) {
+                        matches.push({ file: relPath, line: i + 1, text: lines[i].trim() });
+                    }
+                }
+            } catch { /* skip unreadable files */ }
+        }
+
+        if (matches.length === 0) return { matches: [], message: `No matches found for "${toolInput.pattern}".` };
+        const result = { matches };
+        if (matches.length >= MAX_MATCHES) result.truncated = true;
+        return result;
+    }
+
     if (toolName === 'list_files') {
         const dirPath = resolveToolPath(toolInput.path || '.');
         if (!existsSync(dirPath)) return { error: `Directory not found: ${toolInput.path || '.'}` };
         const entries = readdirSync(dirPath, { withFileTypes: true });
         const HIDDEN = new Set(['.DS_Store', 'thumbs.db']);
+        const BINARY_LIST_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.mp4', '.mp3', '.wav', '.ogg', '.zip', '.tar', '.gz', '.woff', '.woff2', '.ttf', '.eot', '.pdf']);
         return {
             files: entries
                 .filter(e => !HIDDEN.has(e.name) && !e.name.startsWith('.'))
-                .map(e => ({
-                    name: e.name,
-                    type: e.isDirectory() ? 'directory' : 'file'
-                }))
+                .map(e => {
+                    const info = { name: e.name, type: e.isDirectory() ? 'directory' : 'file' };
+                    if (!e.isDirectory()) {
+                        const ext = e.name.includes('.') ? '.' + e.name.split('.').pop().toLowerCase() : '';
+                        if (!BINARY_LIST_EXT.has(ext)) {
+                            try {
+                                const content = readFileSync(resolve(dirPath, e.name), 'utf-8');
+                                info.lines = content.split('\n').length;
+                            } catch { /* skip unreadable */ }
+                        }
+                    }
+                    return info;
+                })
         };
     }
 
@@ -1982,6 +2070,32 @@ export function deleteConversation(projectPath, conversationId) {
     const index = loadConversationsIndex(projectPath);
     const filtered = index.filter(entry => entry.id !== conversationId);
     saveConversationsIndex(projectPath, filtered);
+}
+
+export function deleteAllConversations(projectPath) {
+    // Delete all archived conversations and clear the index
+    const dir = getConversationsDir(projectPath);
+    if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+    }
+
+    // Clear the active conversation
+    const convPath = getConversationPath(projectPath);
+    if (existsSync(convPath)) {
+        unlinkSync(convPath);
+    }
+
+    conversations.delete(projectPath);
+    conversationSessions.delete(projectPath);
+}
+
+export function deleteChatHistory(projectPath) {
+    const chatDir = getChatDir(projectPath);
+    if (existsSync(chatDir)) {
+        rmSync(chatDir, { recursive: true, force: true });
+    }
+    conversations.delete(projectPath);
+    conversationSessions.delete(projectPath);
 }
 
 export function loadHistory(projectPath) {

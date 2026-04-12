@@ -6,6 +6,48 @@
   let isUser = $derived(message.role === 'user');
   let isError = $derived(message.isError);
 
+  // Tool activity disclosure state
+  let toolsExpanded = $state(false);
+  let filesExpanded = $state(false);
+  let toolCount = $derived(message.toolCalls?.length || 0);
+  let toolsAllDone = $derived(message.toolCalls?.every(tc => tc.status === 'done') ?? true);
+  let toolErrors = $derived(message.toolCalls?.filter(tc => tc.status === 'error').length || 0);
+  let totalToolTime = $derived.by(() => {
+    const total = (message.toolCalls || []).reduce((sum, tc) => sum + (tc.elapsedMs || 0), 0);
+    if (total < 1000) return total > 0 ? `${total}ms` : '';
+    return `${(total / 1000).toFixed(1)}s`;
+  });
+  let filesChanged = $derived.by(() => {
+    const paths = new Set();
+    for (const tc of message.toolCalls || []) {
+      if (tc.filePath) paths.add(tc.filePath);
+    }
+    return paths.size;
+  });
+
+  // Extract file mutations for the prominent file changes list
+  let fileChanges = $derived.by(() => {
+    const map = new Map();
+    for (const tc of message.toolCalls || []) {
+      if (!tc.filePath) continue;
+      const isMutation = tc.tool === 'edit_file' || tc.tool === 'create_file';
+      if (!isMutation) continue;
+      const existing = map.get(tc.filePath);
+      if (existing) {
+        existing.editCount += 1;
+        if (tc.status === 'error') existing.hasError = true;
+      } else {
+        map.set(tc.filePath, {
+          path: tc.filePath,
+          type: tc.tool === 'create_file' ? 'created' : 'edited',
+          editCount: 1,
+          hasError: tc.status === 'error'
+        });
+      }
+    }
+    return [...map.values()];
+  });
+
   // Configure marked for safe rendering (no code blocks for user-facing AI)
   marked.setOptions({
     breaks: true,
@@ -78,10 +120,14 @@
       const wrapper = copyBtn.closest('.code-block-wrapper');
       const codeEl = wrapper?.querySelector('code');
       if (codeEl) {
-        navigator.clipboard.writeText(codeEl.textContent || '').then(() => {
+        try {
+          window.api.clipboard.writeText(codeEl.textContent || '');
           copyBtn.textContent = 'Copied!';
           setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
-        });
+        } catch {
+          copyBtn.textContent = 'Failed';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+        }
       }
       return;
     }
@@ -127,6 +173,20 @@
     if (ms < 1000) return `${ms}ms`;
     return `${(ms / 1000).toFixed(1)}s`;
   }
+
+  function fileName(path) {
+    return path?.split('/').pop() || path;
+  }
+
+  function dirPath(path) {
+    const parts = (path || '').split('/');
+    return parts.length > 1 ? parts.slice(0, -1).join('/') + '/' : '';
+  }
+
+  function openFileInEditor(path) {
+    const event = new CustomEvent('openfile', { detail: { path }, bubbles: true });
+    document.dispatchEvent(event);
+  }
 </script>
 
 <div class="message" class:message-user={isUser} class:message-assistant={!isUser} class:message-error={isError}>
@@ -144,53 +204,81 @@
   {:else}
     <div class="message-content assistant-content" class:error-content={isError}>
       {#if message.toolCalls?.length}
-        <div class="tool-pills">
-          {#each message.toolCalls as tc}
-            {#if tc.filePath}
-              <button
-                class="tool-pill tool-pill-clickable"
-                class:tool-done={tc.status === 'done'}
-                class:tool-error={tc.status === 'error'}
-                onclick={() => {
-                  const event = new CustomEvent('openfile', { detail: { path: tc.filePath }, bubbles: true });
-                  document.dispatchEvent(event);
-                }}
-                title={`Open ${tc.filePath}`}
-              >
-                {#if tc.status === 'done'}
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                {/if}
-                <span>{tc.label}</span>
-                {#if tc.elapsedMs}
-                  <span class="tool-meta">{formatElapsed(tc.elapsedMs)}</span>
-                {/if}
-              </button>
-            {:else}
-              <span class="tool-pill" class:tool-done={tc.status === 'done'} class:tool-error={tc.status === 'error'}>
-                {#if tc.status === 'done'}
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                {/if}
-                <span>{tc.label}</span>
-                {#if tc.elapsedMs}
-                  <span class="tool-meta">{formatElapsed(tc.elapsedMs)}</span>
-                {/if}
+        <div class="tool-activity">
+          <button class="tool-activity-summary" onclick={() => toolsExpanded = !toolsExpanded}>
+            <span class="tool-activity-chevron" class:expanded={toolsExpanded}>
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M3.5 2L6.5 5L3.5 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            {#if toolErrors > 0}
+              <span class="tool-activity-icon tool-activity-error">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2"/>
+                  <path d="M4 4l4 4M8 4l-4 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                </svg>
+              </span>
+            {:else if toolsAllDone}
+              <span class="tool-activity-icon tool-activity-done">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
               </span>
             {/if}
-          {/each}
-        </div>
-        {#if message.toolCalls.some(tc => tc.reason)}
-          <div class="tool-reasons">
-            {#each message.toolCalls as tc}
-              {#if tc.reason}
-                <span class="tool-reason">• {tc.reason}</span>
+            <span class="tool-activity-label">
+              Used {toolCount} tool{toolCount !== 1 ? 's' : ''}
+              {#if filesChanged > 0}
+                · {filesChanged} file{filesChanged !== 1 ? 's' : ''}
               {/if}
-            {/each}
-          </div>
-        {/if}
+              {#if totalToolTime}
+                · {totalToolTime}
+              {/if}
+              {#if toolErrors > 0}
+                · {toolErrors} error{toolErrors !== 1 ? 's' : ''}
+              {/if}
+            </span>
+          </button>
+          {#if toolsExpanded}
+            <div class="tool-activity-details">
+              {#each message.toolCalls as tc}
+                {#if tc.filePath}
+                  <button
+                    class="tool-detail-row tool-detail-clickable"
+                    class:tool-done={tc.status === 'done'}
+                    class:tool-error={tc.status === 'error'}
+                    onclick={() => openFileInEditor(tc.filePath)}
+                    title={`Open ${tc.filePath}`}
+                  >
+                    <span class="tool-detail-status">
+                      {#if tc.status === 'done'}
+                        <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      {:else if tc.status === 'error'}
+                        <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                      {/if}
+                    </span>
+                    <span class="tool-detail-label">{tc.label}</span>
+                    {#if tc.elapsedMs}<span class="tool-detail-time">{formatElapsed(tc.elapsedMs)}</span>{/if}
+                  </button>
+                {:else}
+                  <div class="tool-detail-row" class:tool-done={tc.status === 'done'} class:tool-error={tc.status === 'error'}>
+                    <span class="tool-detail-status">
+                      {#if tc.status === 'done'}
+                        <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      {:else if tc.status === 'error'}
+                        <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                      {/if}
+                    </span>
+                    <span class="tool-detail-label">{tc.label}</span>
+                    {#if tc.elapsedMs}<span class="tool-detail-time">{formatElapsed(tc.elapsedMs)}</span>{/if}
+                  </div>
+                {/if}
+                {#if tc.reason}
+                  <div class="tool-detail-reason">{tc.reason}</div>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        </div>
       {/if}
 
       {#if isError}
@@ -212,6 +300,59 @@
               />
             </button>
           {/each}
+        </div>
+      {/if}
+
+      {#if fileChanges.length > 0}
+        <div class="file-changes-footer">
+          <button class="file-changes-summary" onclick={() => filesExpanded = !filesExpanded}>
+            <span class="file-changes-chevron" class:expanded={filesExpanded}>
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M3.5 2L6.5 5L3.5 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span class="file-changes-icon">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <path d="M4 20h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-9l-5 5v9a2 2 0 0 0 2 2Z" stroke="currentColor" stroke-width="1.3"/>
+                <path d="M14 4v5h-5" stroke="currentColor" stroke-width="1.3"/>
+              </svg>
+            </span>
+            <span class="file-changes-label">
+              {fileChanges.length} file{fileChanges.length !== 1 ? 's' : ''} changed
+            </span>
+
+          </button>
+          {#if filesExpanded}
+            <div class="file-changes-details">
+              {#each fileChanges as fc}
+                <button class="file-change-row" onclick={() => openFileInEditor(fc.path)} title={fc.path}>
+                  <span class="file-change-icon" class:created={fc.type === 'created'} class:edited={fc.type === 'edited'} class:errored={fc.hasError}>
+                    {#if fc.type === 'created'}
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                      </svg>
+                    {:else}
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                        <path d="M11.5 1.5l3 3-9 9H2.5v-3l9-9z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {/if}
+                  </span>
+                  <span class="file-change-name">{fileName(fc.path)}</span>
+                  <span class="file-change-dir">{dirPath(fc.path)}</span>
+                  {#if fc.editCount > 1}
+                    <span class="file-change-badge">{fc.editCount} edits</span>
+                  {/if}
+                  {#if fc.type === 'created'}
+                    <span class="file-change-badge created">new</span>
+                  {/if}
+                  {#if fc.hasError}
+                    <span class="file-change-badge errored">error</span>
+                  {/if}
+                </button>
+              {/each}
+
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -408,63 +549,263 @@
     font-weight: 500;
   }
 
-  /* Tool use pills */
-  .tool-pills {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--sp-xs);
+  /* Tool activity disclosure */
+  .tool-activity {
     margin-bottom: var(--sp-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-secondary);
   }
 
-  .tool-pill {
-    display: inline-flex;
+  .tool-activity-summary {
+    display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px 10px;
-    border-radius: var(--radius-pill);
-    background: var(--bg-secondary);
-    color: var(--text-secondary);
+    gap: 6px;
+    width: 100%;
+    padding: 6px 10px;
+    background: none;
+    border: none;
+    cursor: pointer;
     font-size: var(--text-xs);
     font-weight: 500;
+    color: var(--text-secondary);
+    transition: background var(--duration-fast) var(--ease);
   }
 
-  .tool-meta {
-    opacity: 0.75;
-    font-weight: 500;
+  .tool-activity-summary:hover {
+    background: var(--bg-tertiary);
   }
 
-  .tool-done {
-    background: var(--success-subtle);
+  .tool-activity-chevron {
+    display: flex;
+    align-items: center;
+    transition: transform var(--duration-fast) var(--ease);
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  .tool-activity-chevron.expanded {
+    transform: rotate(90deg);
+  }
+
+  .tool-activity-icon {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .tool-activity-done {
     color: var(--success);
   }
 
-  .tool-error {
-    background: var(--error-subtle);
+  .tool-activity-error {
     color: var(--error);
   }
 
-  .tool-pill-clickable {
-    cursor: pointer;
-    transition: all var(--duration-fast) var(--ease);
+  .tool-activity-label {
+    color: var(--text-secondary);
   }
 
-  .tool-pill-clickable:hover {
-    text-decoration: underline;
-    filter: brightness(0.9);
+  .tool-activity-details {
+    border-top: 1px solid var(--border);
+    padding: 4px 0;
+    max-height: 240px;
+    overflow-y: auto;
   }
 
-  .tool-reasons {
-    margin-top: 2px;
-    margin-bottom: var(--sp-sm);
+  .tool-detail-row {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px 3px 28px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
   }
 
-  .tool-reason {
-    font-size: var(--text-xs);
+  .tool-detail-clickable {
+    width: 100%;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .tool-detail-clickable:hover {
+    background: var(--bg-tertiary);
+    text-decoration: underline;
+  }
+
+  .tool-detail-status {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    width: 12px;
+  }
+
+  .tool-detail-row.tool-done .tool-detail-status {
+    color: var(--success);
+  }
+
+  .tool-detail-row.tool-error .tool-detail-status {
+    color: var(--error);
+  }
+
+  .tool-detail-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tool-detail-time {
+    font-size: 10px;
     color: var(--text-tertiary);
-    line-height: 1.4;
+    flex-shrink: 0;
+  }
+
+  .tool-detail-reason {
+    padding: 0 10px 2px 46px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    line-height: 1.3;
+  }
+
+  /* File changes footer — collapsible, after markdown */
+  .file-changes-footer {
+    margin-top: var(--sp-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-secondary);
+  }
+
+  .file-changes-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 10px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: background var(--duration-fast) var(--ease);
+  }
+
+  .file-changes-summary:hover {
+    background: var(--bg-tertiary);
+  }
+
+  .file-changes-chevron {
+    display: flex;
+    align-items: center;
+    transition: transform var(--duration-fast) var(--ease);
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  .file-changes-chevron.expanded {
+    transform: rotate(90deg);
+  }
+
+  .file-changes-icon {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--success);
+  }
+
+  .file-changes-label {
+    color: var(--text-secondary);
+  }
+
+  .file-changes-details {
+    border-top: 1px solid var(--border);
+    padding: 4px 0;
+  }
+
+  .file-change-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border: none;
+    cursor: pointer;
+    font-size: var(--text-xs);
+    color: var(--text-primary);
+    text-align: left;
+    width: 100%;
+    transition: background var(--duration-fast) var(--ease);
+  }
+
+  .file-change-row:hover {
+    background: var(--bg-tertiary);
+  }
+
+  .file-change-icon {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    justify-content: center;
+    border-radius: 3px;
+  }
+
+  .file-change-icon.edited {
+    color: var(--warning, #e5a100);
+  }
+
+  .file-change-icon.created {
+    color: var(--success);
+  }
+
+  .file-change-icon.errored {
+    color: var(--error);
+  }
+
+  .file-change-name {
+    font-weight: 600;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .file-change-dir {
+    color: var(--text-tertiary);
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .file-change-badge {
+    font-size: 10px;
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: var(--radius-pill);
+    background: var(--bg-primary);
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  .file-change-badge.created {
+    color: var(--success);
+    background: var(--success-subtle);
+  }
+
+  .file-change-badge.errored {
+    color: var(--error);
+    background: var(--error-subtle);
   }
 
   /* Screenshots */

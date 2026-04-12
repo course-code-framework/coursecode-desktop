@@ -174,7 +174,7 @@
   }
 
   function copyLoginCode() {
-    if (loginUserCode) navigator.clipboard.writeText(loginUserCode);
+    if (loginUserCode) window.api.clipboard.writeText(loginUserCode);
   }
 
   function openActivationPage() {

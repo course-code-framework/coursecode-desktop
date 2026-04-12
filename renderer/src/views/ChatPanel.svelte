@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
+  import { marked } from 'marked';
   import MessageBubble from '../components/MessageBubble.svelte';
   import MentionDropdown from '../components/MentionDropdown.svelte';
   import ModelPicker from '../components/ModelPicker.svelte';
@@ -12,11 +13,14 @@
     subscribeToChatEvents, unsubscribeFromChatEvents,
     sendMessage, stopGeneration, clearChat, loadChatHistory, loadCredits,
     refreshMentionIndex, formatTokens, formatCost,
-    loadPastConversation, deletePastConversation
+    loadPastConversation, deletePastConversation, deleteAllPastConversations
   } from '../stores/chat.js';
 
   let { projectPath, refCount = 0, onOpenRefs, onOpenOutline, onSnapshotRestored } = $props();
   const isMac = navigator.platform.includes('Mac');
+
+  // Configure marked for streaming markdown rendering
+  marked.setOptions({ breaks: true, gfm: true });
 
   let inputText = $state('');
   let inputEl = $state(null);
@@ -32,6 +36,7 @@
   // History panel state
   let showHistory = $state(false);
   let confirmDeleteId = $state(null);
+  let confirmDeleteAll = $state(false);
 
   // Workflow state
   let workflowActive = $state(false);
@@ -48,6 +53,9 @@
   let diffCache = $state({});
   let restoringSnapshotId = $state(null);
   let historyReady = $state(false);
+
+  // Streaming tool activity disclosure state
+  let streamToolsExpanded = $state(false);
 
   // --- Lifecycle ---
 
@@ -87,7 +95,7 @@
       } else if (data.type === 'cancelled') {
         workflowActive = false;
         workflowId = null;
-        workflowSteps = [...workflowSteps, '— Cancelled'];
+        workflowSteps = [...workflowSteps, 'Cancelled'];
       }
     });
   });
@@ -247,7 +255,7 @@
 
   function handleMentionSelect(item) {
     // Replace the @query with the mention
-    const cursorPos = inputEl?.selectionStart || inputText.length;
+    const cursorPos = inputEl?.selectionStart ?? inputText.length;
     const textBefore = inputText.substring(0, cursorPos);
     const textAfter = inputText.substring(cursorPos);
     const atMatch = textBefore.match(/@([^\s@]*)$/);
@@ -311,6 +319,7 @@
     selectedMentions = [];
     showMentions = false;
     showHistory = false;
+    streamToolsExpanded = false;
 
     await sendMessage(projectPath, text, deduped);
   }
@@ -322,6 +331,9 @@
   async function handleClear() {
     await clearChat(projectPath);
     showHistory = false;
+    expandedChanges = new Set();
+    expandedDiffs = new Set();
+    diffCache = {};
     inputEl?.focus();
   }
 
@@ -338,6 +350,12 @@
   async function handleDeleteConversation(conversationId) {
     await deletePastConversation(projectPath, conversationId);
     confirmDeleteId = null;
+  }
+
+  async function handleDeleteAllConversations() {
+    await deleteAllPastConversations(projectPath);
+    confirmDeleteAll = false;
+    showHistory = false;
   }
 
   function formatRelativeTime(dateStr) {
@@ -549,11 +567,50 @@
   }
 
   function formatStreamingHtml(text) {
-    const escaped = String(text || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    return escaped.replace(/\n/g, '<br>');
+    if (!text) return '';
+    // Close any unclosed code fences so marked doesn't break mid-stream
+    let adjusted = String(text);
+    const fenceCount = (adjusted.match(/^```/gm) || []).length;
+    if (fenceCount % 2 !== 0) {
+      adjusted += '\n```';
+    }
+    return renderStreamingMarkdown(adjusted);
+  }
+
+  function renderStreamingMarkdown(text) {
+    if (!text) return '';
+    let html = sanitizeStreamingHtml(marked.parse(text));
+    // Wrap code blocks with a container that includes a copy button
+    html = html.replace(
+      /<pre><code(?:\s+class="language-(\w+)")?>([\s\S]*?)<\/code><\/pre>/g,
+      (_, lang, code) => {
+        const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
+        return `<div class="code-block-wrapper">${langLabel}<pre><code${lang ? ` class="language-${lang}"` : ''}>${code}</code></pre></div>`;
+      }
+    );
+    return html;
+  }
+
+  function sanitizeStreamingHtml(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    template.content.querySelectorAll('script,style,iframe,object,embed,link,meta,img').forEach(node => node.remove());
+    const allowedTags = new Set(['p', 'br', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li', 'blockquote', 'h1', 'h2', 'h3', 'a']);
+    for (const el of template.content.querySelectorAll('*')) {
+      const tag = el.tagName.toLowerCase();
+      if (!allowedTags.has(tag)) {
+        const textNode = document.createTextNode(el.textContent || '');
+        el.replaceWith(textNode);
+        continue;
+      }
+      for (const attr of [...el.attributes]) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('on') || name === 'style' || name === 'srcset') {
+          el.removeAttribute(attr.name);
+        }
+      }
+    }
+    return template.innerHTML;
   }
 
   function formatStreamingArgs(json) {
@@ -625,6 +682,22 @@
             {/if}
           </div>
         {/each}
+      </div>
+      <div class="history-footer">
+        {#if confirmDeleteAll}
+          <div class="history-confirm-delete">
+            <span class="history-confirm-text">Delete all conversations?</span>
+            <button class="history-confirm-btn destructive" onclick={handleDeleteAllConversations}>Delete All</button>
+            <button class="history-confirm-btn" onclick={() => confirmDeleteAll = false}>Cancel</button>
+          </div>
+        {:else}
+          <button class="history-clear-all-btn" onclick={() => confirmDeleteAll = true}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v5M10 7v5M4.5 4l.5 9a1 1 0 001 1h4a1 1 0 001-1l.5-9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Clear All History
+          </button>
+        {/if}
       </div>
     </div>
   {/if}
@@ -942,34 +1015,7 @@
             </div>
           </div>
         {:else if message.type === 'executionReceipt'}
-          <div class="change-summary-card execution-receipt-card">
-            <div class="change-summary-icon">
-              <Icon size={14}>
-                <path d="M4 12h16M4 7h16M4 17h10"/>
-              </Icon>
-            </div>
-            <div class="change-summary-body">
-              <span class="change-summary-title">Execution Receipt</span>
-              <span class="change-summary-detail">Outcome: {message.outcomeClass}</span>
-              <span class="change-summary-detail">
-                {message.totalToolCalls} tool call{message.totalToolCalls !== 1 ? 's' : ''}
-                {' · '}{message.succeededToolCalls} succeeded
-                {#if message.failedToolCalls > 0}{' · '}{message.failedToolCalls} failed{/if}
-              </span>
-              {#if message.mutationToolAttempts > 0}
-                <span class="change-summary-detail">
-                  Mutation tools: {message.mutationToolSuccesses}/{message.mutationToolAttempts} succeeded
-                  {#if message.changedFiles != null}{' · '}Detected file changes: {message.changedFiles}{/if}
-                </span>
-              {:else if message.changedFiles != null}
-                <span class="change-summary-detail">Detected file changes: {message.changedFiles}</span>
-              {/if}
-              {#if message.hasUnverifiedMutationOutcome}
-                <span class="change-summary-detail">Warning: mutation tools ran but no verified file changes were detected.</span>
-              {/if}
-
-            </div>
-          </div>
+          <!-- Execution receipts are now folded into assistant message bubbles -->
         {:else if message.type === 'costWarning'}
           <div class="change-summary-card cost-warning-card">
             <div class="change-summary-icon cost-warning-icon">
@@ -983,51 +1029,100 @@
           </div>
         {:else}
           <MessageBubble {message} />
+          {#if message.changeSummary?.snapshotId}
+            <div class="restore-marker">
+              <div class="restore-marker-line"></div>
+              <button
+                class="restore-marker-btn"
+                disabled={restoringSnapshotId === message.changeSummary.snapshotId}
+                onclick={() => restoreSnapshot(message.changeSummary.snapshotId)}
+                title="Revert all files to this point"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <path d="M2 8a6 6 0 1 1 1.8 4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                  <path d="M2 12.3V8h4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M8 5v3.5L10 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                {restoringSnapshotId === message.changeSummary.snapshotId ? 'Restoring…' : 'Restore'}
+              </button>
+              <div class="restore-marker-line"></div>
+            </div>
+          {/if}
         {/if}
       {/each}
 
       <!-- Streaming indicator -->
       {#if $streaming}
-        {#if $activeTools.length > 0}
-          <div class="message message-assistant">
-            <div class="message-content assistant-content">
-              <div class="tool-pills">
-                {#each $activeTools as tool}
-                  <span class="tool-pill" class:tool-running={tool.status === 'running'}>
-                    {#if tool.status === 'running'}
-                      <span class="spinner"></span>
-                    {:else}
+        <div class="message message-assistant">
+          <div class="message-content assistant-content">
+            {#if $activeTools.length > 0}
+              <div class="stream-activity">
+                <button class="stream-activity-summary" onclick={() => streamToolsExpanded = !streamToolsExpanded}>
+                  <span class="stream-activity-chevron" class:expanded={streamToolsExpanded}>
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                      <path d="M3.5 2L6.5 5L3.5 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </span>
+                  {#if $activeTools.some(t => t.status === 'running')}
+                    <span class="spinner"></span>
+                  {:else}
+                    <span class="stream-activity-icon-done">
                       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                         <path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                       </svg>
-                    {/if}
-                    {tool.label}
-                    {#if tool.elapsedMs}
-                      <span class="tool-pill-time">{Math.max(0, Math.round(tool.elapsedMs / 100) / 10)}s</span>
-                    {/if}
-                    {#if tool.status === 'running' && tool.streamingArgs}
-                      <span class="tool-pill-args">{formatStreamingArgs(tool.streamingArgs)}</span>
+                    </span>
+                  {/if}
+                  <span class="stream-activity-label">
+                    {#if $activeTools.some(t => t.status === 'running')}
+                      {@const running = $activeTools.find(t => t.status === 'running')}
+                      {running.label}
+                      {#if running.streamingArgs}
+                        <span class="stream-activity-args">{formatStreamingArgs(running.streamingArgs)}</span>
+                      {/if}
+                    {:else}
+                      Used {$activeTools.length} tool{$activeTools.length !== 1 ? 's' : ''}
                     {/if}
                   </span>
-                {/each}
+                  {#if $activeTools.filter(t => t.status !== 'running').length > 0}
+                    <span class="stream-activity-count">{$activeTools.filter(t => t.status !== 'running').length}/{$activeTools.length}</span>
+                  {/if}
+                </button>
+                {#if streamToolsExpanded}
+                  <div class="stream-activity-details">
+                    {#each $activeTools as tool}
+                      <div class="stream-detail-row" class:stream-running={tool.status === 'running'} class:stream-done={tool.status === 'done'} class:stream-error={tool.status === 'error'}>
+                        <span class="stream-detail-status">
+                          {#if tool.status === 'running'}
+                            <span class="spinner-sm"></span>
+                          {:else if tool.status === 'done'}
+                            <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                          {:else}
+                            <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                          {/if}
+                        </span>
+                        <span class="stream-detail-label">{tool.label}</span>
+                        {#if tool.status === 'running' && tool.streamingArgs}
+                          <span class="stream-detail-args">{formatStreamingArgs(tool.streamingArgs)}</span>
+                        {/if}
+                        {#if tool.elapsedMs}
+                          <span class="stream-detail-time">{Math.max(0, Math.round(tool.elapsedMs / 100) / 10)}s</span>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
               </div>
-              {#if $streamingText}
-                <div class="streaming-text">{@html formatStreamingHtml($streamingText)}</div>
-              {/if}
-            </div>
-          </div>
-        {:else if $streamingText}
-          <div class="message message-assistant">
-            <div class="message-content assistant-content">
-              <div class="streaming-text">{@html formatStreamingHtml($streamingText)}</div>
+            {/if}
+            {#if $streamingText}
+              <div class="streaming-text markdown-body">{@html formatStreamingHtml($streamingText)}</div>
               <span class="cursor-blink">▎</span>
-            </div>
+            {:else if $activeTools.length === 0}
+              <div class="typing-indicator-inline">
+                <span></span><span></span><span></span>
+              </div>
+            {/if}
           </div>
-        {:else}
-          <div class="typing-indicator">
-            <span></span><span></span><span></span>
-          </div>
-        {/if}
+        </div>
       {/if}
     {/if}
     {/if}
@@ -1294,6 +1389,30 @@
     background: var(--danger);
     color: white;
     border-color: var(--danger);
+  }
+
+  .history-footer {
+    border-top: 1px solid var(--border);
+    padding: var(--sp-xs);
+  }
+
+  .history-clear-all-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-xs);
+    width: 100%;
+    padding: var(--sp-xs) var(--sp-sm);
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    background: none;
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+  }
+
+  .history-clear-all-btn:hover {
+    color: var(--danger);
+    background: var(--bg-tertiary);
   }
 
   .usage-badge {
@@ -1655,8 +1774,88 @@
   }
 
   .streaming-text {
-    white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .streaming-text :global(p) {
+    margin: 0 0 var(--sp-sm);
+  }
+
+  .streaming-text :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .streaming-text :global(pre) {
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    padding: var(--sp-sm) var(--sp-md);
+    overflow-x: auto;
+    font-size: var(--text-sm);
+  }
+
+  .streaming-text :global(code) {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.9em;
+    background: var(--bg-secondary);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  .streaming-text :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+
+  .streaming-text :global(.code-block-wrapper) {
+    position: relative;
+    margin: var(--sp-sm) 0;
+  }
+
+  .streaming-text :global(.code-block-wrapper pre) {
+    margin: 0;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    padding: var(--sp-md);
+    overflow-x: auto;
+    font-size: var(--text-sm);
+  }
+
+  .streaming-text :global(.code-block-wrapper code) {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+
+  .streaming-text :global(.code-lang) {
+    position: absolute;
+    top: 6px;
+    left: 10px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    pointer-events: none;
+  }
+
+  .streaming-text :global(ul),
+  .streaming-text :global(ol) {
+    margin: var(--sp-sm) 0;
+    padding-left: var(--sp-lg);
+  }
+
+  .streaming-text :global(li) {
+    margin-bottom: var(--sp-xs);
+  }
+
+  .streaming-text :global(strong) {
+    font-weight: 600;
+  }
+
+  .streaming-text :global(h1),
+  .streaming-text :global(h2),
+  .streaming-text :global(h3) {
+    margin: var(--sp-md) 0 var(--sp-sm);
+    font-weight: 600;
   }
 
   .cursor-blink {
@@ -1669,31 +1868,122 @@
     51%, 100% { opacity: 0; }
   }
 
-  .tool-pills {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--sp-xs);
+  /* Streaming tool activity disclosure */
+  .stream-activity {
     margin-bottom: var(--sp-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-secondary);
   }
 
-  .tool-pill {
-    display: inline-flex;
+  .stream-activity-summary {
+    display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px 10px;
-    border-radius: var(--radius-pill);
-    background: var(--bg-secondary);
-    color: var(--text-secondary);
+    gap: 6px;
+    width: 100%;
+    padding: 6px 10px;
+    background: none;
+    border: none;
+    cursor: pointer;
     font-size: var(--text-xs);
     font-weight: 500;
+    color: var(--text-secondary);
+    transition: background var(--duration-fast) var(--ease);
   }
 
-  .tool-pill-time {
-    opacity: 0.72;
+  .stream-activity-summary:hover {
+    background: var(--bg-tertiary);
+  }
+
+  .stream-activity-chevron {
+    display: flex;
+    align-items: center;
+    transition: transform var(--duration-fast) var(--ease);
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  .stream-activity-chevron.expanded {
+    transform: rotate(90deg);
+  }
+
+  .stream-activity-icon-done {
+    display: flex;
+    align-items: center;
+    color: var(--success);
+    flex-shrink: 0;
+  }
+
+  .stream-activity-label {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stream-activity-args {
+    opacity: 0.6;
+    font-style: italic;
+    font-weight: 400;
+  }
+
+  .stream-activity-count {
     font-size: 10px;
+    color: var(--text-tertiary);
+    background: var(--bg-primary);
+    padding: 1px 6px;
+    border-radius: var(--radius-pill);
+    flex-shrink: 0;
   }
 
-  .tool-pill-args {
+  .stream-activity-details {
+    border-top: 1px solid var(--border);
+    padding: 4px 0;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .stream-detail-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px 3px 28px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
+  .stream-detail-status {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    width: 12px;
+  }
+
+  .stream-running .stream-detail-status {
+    color: var(--accent);
+  }
+
+  .stream-done .stream-detail-status {
+    color: var(--success);
+  }
+
+  .stream-error .stream-detail-status {
+    color: var(--error);
+  }
+
+  .stream-detail-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stream-detail-args {
     opacity: 0.6;
     font-size: 10px;
     font-style: italic;
@@ -1701,11 +1991,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
-  .tool-running {
-    background: var(--accent-subtle);
-    color: var(--accent);
+  .stream-detail-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  .spinner-sm {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
   }
 
   .spinner {
@@ -1717,28 +2018,23 @@
     animation: spin 0.6s linear infinite;
   }
 
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .typing-indicator {
+  .typing-indicator-inline {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: var(--sp-sm) var(--sp-md);
-    margin-bottom: var(--sp-md);
+    padding: 4px 0;
   }
 
-  .typing-indicator span {
-    width: 6px;
-    height: 6px;
+  .typing-indicator-inline span {
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
     background: var(--text-tertiary);
     animation: typing 1.2s infinite;
   }
 
-  .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
-  .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+  .typing-indicator-inline span:nth-child(2) { animation-delay: 0.2s; }
+  .typing-indicator-inline span:nth-child(3) { animation-delay: 0.4s; }
 
   .chat-loading-state {
     min-height: 88px;
@@ -1947,6 +2243,48 @@
 
   .cost-warning-icon {
     color: var(--warning, #e5a100);
+  }
+
+  /* Inline restore point marker between bubbles */
+  .restore-marker {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm);
+    margin: 2px 0;
+    padding: 0 var(--sp-sm);
+  }
+
+  .restore-marker-line {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .restore-marker-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: var(--bg-secondary);
+    color: var(--text-tertiary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+  }
+
+  .restore-marker-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-tertiary);
+    background: var(--bg-elevated);
+  }
+
+  .restore-marker-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .change-summary-actions {

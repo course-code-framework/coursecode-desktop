@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, clipboard } from 'electron';
 
 contextBridge.exposeInMainWorld('api', {
     getFilePath: (file) => webUtils.getPathForFile(file),
@@ -76,6 +76,10 @@ contextBridge.exposeInMainWorld('api', {
 
     shell: {
         openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
+    },
+
+    clipboard: {
+        writeText: (text) => clipboard.writeText(text)
     },
 
     tools: {
@@ -157,6 +161,7 @@ contextBridge.exposeInMainWorld('api', {
         listConversations: (projectPath) => ipcRenderer.invoke('chat:listConversations', projectPath),
         loadConversation: (projectPath, conversationId) => ipcRenderer.invoke('chat:loadConversation', projectPath, conversationId),
         deleteConversation: (projectPath, conversationId) => ipcRenderer.invoke('chat:deleteConversation', projectPath, conversationId),
+        deleteAllConversations: (projectPath) => ipcRenderer.invoke('chat:deleteAllConversations', projectPath),
         approveToolCall: (projectPath, toolUseId, approved) => ipcRenderer.invoke('chat:approveToolCall', projectPath, toolUseId, approved),
         loadHistory: (projectPath) => ipcRenderer.invoke('chat:loadHistory', projectPath),
         getMentions: (projectPath) => ipcRenderer.invoke('chat:getMentions', projectPath),

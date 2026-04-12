@@ -30,9 +30,9 @@
     }
   }
 
-  async function copyValue(value, field) {
+  function copyValue(value, field) {
     if (!value) return;
-    await navigator.clipboard.writeText(value);
+    window.api.clipboard.writeText(value);
     copiedField = field;
     setTimeout(() => {
       if (copiedField === field) copiedField = '';

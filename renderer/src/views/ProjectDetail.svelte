@@ -105,8 +105,13 @@
   });
 
   async function handleOpenFile(e) {
-    const filePath = e.detail?.path;
+    let filePath = e.detail?.path;
     if (filePath) {
+      // AI file tools use course-relative paths (e.g. "slides/foo.js").
+      // The editor expects project-relative paths (e.g. "course/slides/foo.js").
+      if (!filePath.startsWith('course/') && !filePath.startsWith('course\\')) {
+        filePath = `course/${filePath}`;
+      }
       rightTab = 'editor';
       try {
         await openFileInEditor(projectPath, filePath);
