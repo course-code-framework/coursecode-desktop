@@ -659,11 +659,12 @@ function resolveMentions(projectPath, message, mentions = []) {
     for (const mention of mentions) {
         try {
             if (mention.type === 'slide') {
-                const slidePath = join(projectPath, 'course', 'slides', `${mention.id}.js`);
+                const file = mention.file || `${mention.id}.js`;
+                const slidePath = join(projectPath, 'course', 'slides', file);
                 if (existsSync(slidePath)) {
                     const content = readFileSync(slidePath, 'utf-8');
                     appendMentionContext(
-                        `[Referenced slide: "${mention.title}"]`,
+                        `[Referenced slide: "${mention.title}" (${file})]`,
                         content,
                         MENTION_SLIDE_MAX_CHARS
                     );
@@ -1141,9 +1142,16 @@ export function buildMentionIndex(projectPath) {
         const configPath = join(projectPath, 'course', 'course-config.js');
         if (existsSync(configPath)) {
             const content = readFileSync(configPath, 'utf-8');
-            const matches = content.matchAll(/id:\s*['"]([^'"]+)['"].*?title:\s*['"]([^'"]+)['"]/gs);
-            for (const match of matches) {
-                index.slides.push({ id: match[1], title: match[2], type: 'slide' });
+            // Extract slide entries with id, component, and title (handles field ordering)
+            const slideBlocks = content.matchAll(/\{[^}]*?type:\s*['"](?:slide|assessment)['"][^}]*?\}/gs);
+            for (const block of slideBlocks) {
+                const idMatch = block[0].match(/id:\s*['"]([^'"]+)['"]/);
+                const titleMatch = block[0].match(/title:\s*['"]([^'"]+)['"]/);
+                const compMatch = block[0].match(/component:\s*['"]([^'"]+)['"]/);
+                if (idMatch && titleMatch) {
+                    const file = compMatch ? compMatch[1].replace(/^@slides\//, '') : `${idMatch[1]}.js`;
+                    index.slides.push({ id: idMatch[1], title: titleMatch[1], file, type: 'slide' });
+                }
             }
         }
     } catch (err) { log.debug('Failed to read course-config for mentions', err); }

@@ -19,7 +19,7 @@ COMMUNICATION RULES:
 - After making changes, take a screenshot and describe what changed visually.
 - Never claim a file was changed unless edit_file or create_file succeeded in this turn.
 - When something fails, explain briefly what happened and try a different approach.
-- Reference slides by their title, never by ID or filename.
+- Reference slides by their title in user-facing messages. Understand both titles and filenames (e.g., "Welcome" and "example-welcome.js" refer to the same slide).
 
 TOOL USE:
 1. Read before writing. Always read a file before editing it.
@@ -100,6 +100,15 @@ export const COURSE_SPECIFIC_RULES = `COURSE-SPECIFIC OPTIMIZATION:
 // ---------------------------------------------------------------------------
 
 export const FRAMEWORK_ESSENTIALS = `## Framework Essentials
+
+### Slide Naming Conventions
+- Each slide has three identifiers: **id** (e.g., \`example-welcome\`), **filename** (e.g., \`example-welcome.js\`), and **title** (e.g., \`Welcome\`)
+- Convention: slide id = filename without .js extension
+- In course-config.js: \`{ id: 'example-welcome', component: '@slides/example-welcome.js', title: 'Welcome' }\`
+- File path: \`course/slides/example-welcome.js\`
+- MCP tools use the slide **id** (e.g., \`coursecode_navigate({ slideId: 'example-welcome' })\`)
+- File tools use the relative path (e.g., \`slides/example-welcome.js\`)
+- When the user mentions a slide by filename or title, map it to the correct id/path
 
 ### Slide File Structure
 \`\`\`javascript

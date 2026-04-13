@@ -184,6 +184,17 @@
     let found = all.find(item => normalizeMentionToken(mentionLabel(item)) === normalized);
     if (found) return found;
 
+    // Filename match: allow @example-welcome.js or @example-welcome to match slides
+    found = all.find(item => {
+      if (!item.file) return false;
+      const cleanFile = normalizeMentionToken(item.file);
+      if (cleanFile === normalized) return true;
+      // Allow without .js extension
+      if (cleanFile.endsWith('.js') && cleanFile.slice(0, -3) === normalized) return true;
+      return false;
+    });
+    if (found) return found;
+
     // Ref convenience: allow matching without .md suffix.
     found = all.find(item => {
       const label = normalizeMentionToken(mentionLabel(item));
@@ -195,7 +206,11 @@
     if (found) return found;
 
     // Fallback: single contains match (avoid ambiguous injection).
-    const partial = all.filter(item => normalizeMentionToken(mentionLabel(item)).includes(normalized));
+    const partial = all.filter(item => {
+      const label = normalizeMentionToken(mentionLabel(item));
+      const file = normalizeMentionToken(item.file || '');
+      return label.includes(normalized) || file.includes(normalized);
+    });
     return partial.length === 1 ? partial[0] : null;
   }
 
@@ -226,7 +241,8 @@
     if (!q) return all.slice(0, 10);
     return all.filter(item => {
       const label = (item.title || item.filename || item.id || '').toLowerCase();
-      return label.includes(q);
+      const file = (item.file || '').toLowerCase();
+      return label.includes(q) || file.includes(q);
     }).slice(0, 10);
   }
 

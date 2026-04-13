@@ -19,6 +19,11 @@
     return item.title || item.id || item.filename;
   }
 
+  function getDetail(item) {
+    if (item.type === 'slide' && item.file) return item.file;
+    return item.type;
+  }
+
   function getCategory(type) {
     if (type === 'slide') return 'Slides';
     if (type === 'ref') return 'References';
@@ -56,7 +61,7 @@
           >
             <span class="mention-icon">{getIcon(item.type)}</span>
             <span class="mention-label">{getLabel(item)}</span>
-            <span class="mention-type">{item.type}</span>
+            <span class="mention-type">{getDetail(item)}</span>
           </button>
         {/each}
       </div>
