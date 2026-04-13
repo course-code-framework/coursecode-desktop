@@ -26,6 +26,7 @@
   let inputText = $state('');
   let inputEl = $state(null);
   let chatBodyEl = $state(null);
+  let mirrorEl = $state(null);
 
   // Mention state
   let showMentions = $state(false);
@@ -430,10 +431,32 @@
     }
   }
 
-  // Auto-resize textarea
+  // Auto-resize textarea + sync mirror
   function autoResize(el) {
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+    if (mirrorEl) {
+      mirrorEl.style.height = el.style.height;
+    }
+  }
+
+  function syncScroll(e) {
+    if (mirrorEl) {
+      mirrorEl.scrollTop = e.target.scrollTop;
+    }
+  }
+
+  // Build highlighted HTML for the mirror div
+  let highlightedHtml = $derived(buildHighlightHtml(inputText));
+
+  function buildHighlightHtml(text) {
+    if (!text) return '';
+    // Escape HTML, then wrap @mentions in <mark> tags
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return escaped.replace(/@[^\s@]+/g, '<mark class="mention-hl">$&</mark>') + '\n';
   }
 
   let walkthroughSteps = $derived(() => {
@@ -1243,15 +1266,23 @@
           </svg>
         </button>
 
-        <textarea
-          bind:this={inputEl}
-          bind:value={inputText}
-          oninput={(e) => { handleInput(e); autoResize(e.target); }}
-          onkeydown={handleKeydown}
-          placeholder="Describe what you want to create… (@ to mention)"
-          rows="1"
-          disabled={$streaming}
-        ></textarea>
+        <div class="textarea-highlight-wrap">
+          <div
+            class="textarea-mirror"
+            bind:this={mirrorEl}
+            aria-hidden="true"
+          >{@html highlightedHtml}</div>
+          <textarea
+            bind:this={inputEl}
+            bind:value={inputText}
+            oninput={(e) => { handleInput(e); autoResize(e.target); }}
+            onkeydown={handleKeydown}
+            onscroll={syncScroll}
+            placeholder="Describe what you want to create… (@ to mention)"
+            rows="1"
+            disabled={$streaming}
+          ></textarea>
+        </div>
       </div>
 
       <div class="input-actions">
@@ -2232,15 +2263,43 @@
     cursor: default;
   }
 
-  textarea {
+  .textarea-highlight-wrap {
+    position: relative;
     flex: 1;
     min-width: 0;
+  }
+
+  .textarea-mirror {
+    position: absolute;
+    inset: 0;
+    padding: var(--sp-sm) var(--sp-md) var(--sp-sm) var(--sp-xs);
+    font-family: inherit;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow: hidden;
+    pointer-events: none;
+    color: var(--text-primary);
+  }
+
+  .textarea-mirror :global(.mention-hl) {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-radius: 3px;
+    padding: 0 1px;
+  }
+
+  textarea {
+    position: relative;
+    width: 100%;
     padding: var(--sp-sm) var(--sp-md) var(--sp-sm) var(--sp-xs);
     background: transparent;
     border: none;
     box-shadow: none;
     outline: none;
-    color: var(--text-primary);
+    color: transparent;
+    caret-color: var(--text-primary);
     font-family: inherit;
     font-size: var(--text-sm);
     line-height: 1.5;
