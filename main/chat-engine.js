@@ -1058,6 +1058,14 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         }
     }
 
+    // Normalize css_catalog category: accept forward slashes from AI, convert to OS path sep for MCP
+    if (toolName === 'coursecode_css_catalog' && toolInput?.category) {
+        // The catalog uses OS path separators internally (path.relative output).
+        // Normalize forward slashes from the AI to the OS separator, and also
+        // accept backslashes — convert both to the platform separator.
+        toolInput = { ...toolInput, category: toolInput.category.replace(/[\\/]/g, require('path').sep) };
+    }
+
     // Delegate to the MCP server via stdio JSON-RPC
     try {
         const mcp = await getMcpClient(projectPath);

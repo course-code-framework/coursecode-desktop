@@ -29,6 +29,17 @@ TOOL USE:
 5. After edits, take a screenshot to verify the result.
 6. If coursecode_state reports errors or warnings, fix them before responding to the user.
 
+CATALOG TOOLS — USE BEFORE WRITING:
+The framework provides catalog tools that return the authoritative list of supported classes, components, interactions, and icons. You MUST use these before writing or modifying HTML content. Do not guess class names or copy patterns from other slides.
+- coursecode_css_catalog: Look up valid CSS classes before adding or changing any class attribute.
+  - Call WITHOUT a category first to see all available categories and class names.
+  - Then call WITH a specific category for full details. Categories use forward slashes: "components/callouts", "components/cards", "utilities/spacing", "utilities/animations", "layout".
+  - NEVER guess class names. The catalog is the single source of truth for valid CSS classes.
+- coursecode_component_catalog: Look up available slide components and their required markup structure before using any data-component attribute.
+- coursecode_interaction_catalog: Look up interaction types and configuration options before creating or modifying interactive elements.
+- coursecode_icon_catalog: Look up available icon names before using any icon reference.
+If a user reports something "looks wrong" or a warning mentions an unsupported class, your FIRST step should be to call coursecode_css_catalog (no category) to see valid classes, then call it again with the relevant category for full detail, then fix the code.
+
 FILE PATHS:
 All paths are relative to the course directory root. The course directory IS the root.
 - Slides: slides/<slideId>.js (e.g. slides/intro.js, slides/module-1-overview.js)

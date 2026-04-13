@@ -254,17 +254,22 @@
   }
 
   function handleMentionSelect(item) {
-    // Replace the @query with the mention
+    // Remove the @query text from the textarea; the chip above serves as the visual indicator
     const cursorPos = inputEl?.selectionStart ?? inputText.length;
     const textBefore = inputText.substring(0, cursorPos);
     const textAfter = inputText.substring(cursorPos);
     const atMatch = textBefore.match(/@([^\s@]*)$/);
 
     if (atMatch) {
-      const label = item.title || item.filename || item.id;
       const before = textBefore.substring(0, atMatch.index);
-      inputText = `${before}@${label} ${textAfter}`;
+      inputText = `${before}${textAfter}`;
       selectedMentions = [...selectedMentions, item];
+      // Restore cursor position after the removal
+      tick().then(() => {
+        if (inputEl) {
+          inputEl.selectionStart = inputEl.selectionEnd = before.length;
+        }
+      });
     }
 
     showMentions = false;
@@ -2077,7 +2082,7 @@
     background: var(--bg-primary);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    overflow: hidden;
+    overflow: visible;
     transition: border-color var(--duration-fast) var(--ease), box-shadow var(--duration-fast) var(--ease), transform var(--duration-fast) var(--ease);
   }
 
