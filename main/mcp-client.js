@@ -23,7 +23,6 @@ const HEALTH_CHECK_INTERVAL = 30000;
 /** Tool-specific timeouts (ms) */
 const TOOL_TIMEOUTS = {
     coursecode_build:    120000,
-    coursecode_lint:     30000,
     coursecode_state:    15000,
     coursecode_screenshot: 20000,
 };

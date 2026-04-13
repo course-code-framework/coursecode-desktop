@@ -793,7 +793,7 @@ This philosophy aligns with how production AI IDEs (VS Code + Copilot, Cursor, W
 
 The AI operates with two layers of tools that are merged at runtime into a single flat list sent to the LLM.
 
-#### File Tools (desktop-only, 4 tools)
+#### File Tools (desktop-only, 5 tools)
 
 Defined in `ai-config.js` as `FILE_TOOL_DEFINITIONS`. These execute locally via Node.js file operations in `chat-engine.js`. All paths are resolved relative to the project's `course/` subdirectory, so from the AI's perspective the root is `course/` and it cannot access files outside that boundary.
 
@@ -802,23 +802,25 @@ Defined in `ai-config.js` as `FILE_TOOL_DEFINITIONS`. These execute locally via 
 | `read_file` | Read a file's contents (course-relative path) |
 | `edit_file` | Apply a search-and-replace edit to an existing file |
 | `create_file` | Create a new file with specified contents |
+| `search_files` | Search for text across course project files |
 | `list_files` | List directory contents (defaults to course root) |
 
-#### MCP Tools (framework-provided, 14 tools)
+#### MCP Tools (framework-provided, 13 tools)
 
 Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-RPC (`coursecode mcp --port <port>`). The MCP connection is managed by `mcp-client.js`. The desktop app assumes the MCP server is **always available** when a preview is running; MCP tools are only included in the tool list when a preview server is active.
 
 | Tool | Purpose |
 |---|---|
-| `coursecode_state` | Get current course state (config, slide list, active slide, stage) |
+| `coursecode_state` | Get current course state (config, slide list, active slide, stage, errors/warnings) |
 | `coursecode_navigate` | Navigate to a specific slide by index |
 | `coursecode_interact` | Simulate user interactions (click, type, drag) on the live preview |
 | `coursecode_reset` | Reset the course to its initial state |
 | `coursecode_screenshot` | Capture a screenshot of the current slide |
 | `coursecode_viewport` | Resize the preview viewport |
 | `coursecode_build` | Trigger a course build |
-| `coursecode_lint` | Run the linter and return errors/warnings. When the preview server is running, includes runtime errors (DOM, visual) alongside static checks. |
 | `coursecode_workflow_status` | Check progress against the active workflow |
+
+> **Note:** The MCP server also exposes `coursecode_lint` (static build-time linting), but the desktop app excludes it from the AI tool surface. Since the preview is always running in the chat workspace, `coursecode_state` returns runtime errors and warnings, making the build-only linter redundant. `coursecode_lint` remains available for CI pipelines and CLI usage.
 | `coursecode_css_catalog` | Look up available CSS utility classes |
 | `coursecode_component_catalog` | Look up available slide components |
 | `coursecode_interaction_catalog` | Look up interaction types and configuration |
@@ -827,7 +829,7 @@ Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-
 
 #### Tool Merging
 
-`chat-engine.js` calls `mergeToolDefinitions(fileTools, mcpTools)` to combine both sets. If an MCP tool name collides with a file tool name, the file tool wins (MCP's version is skipped). This prevents the MCP server from overriding the desktop's sandboxed file operations.
+`chat-engine.js` calls `mergeToolDefinitions(fileTools, mcpTools)` to combine both sets. If an MCP tool name collides with a file tool name, the file tool wins (MCP's version is skipped). Tools in the `EXCLUDED_MCP_TOOLS` set (currently `coursecode_lint`) are also filtered out. This prevents the MCP server from overriding the desktop's sandboxed file operations or exposing redundant tools.
 
 #### Tool Classification
 

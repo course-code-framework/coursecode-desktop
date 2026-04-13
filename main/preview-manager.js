@@ -163,11 +163,31 @@ export async function startPreview(projectPath, webContents, { openBrowser = tru
         }
     });
 
+    // Track whether the initial build has completed so we don't resolve
+    // readiness before the file watcher's first rebuild finishes (which
+    // would cause the preview iframe to load, then immediately reload
+    // when live-reload fires after the build).
+    let sawBuilding = false;
+    let buildComplete = false;
+    let resolveBuildReady;
+    const buildReadyPromise = new Promise((resolve) => { resolveBuildReady = resolve; });
+
     // Stream stdout/stderr to renderer
     child.stdout.on('data', (data) => {
-        log.debug('stdout', { text: data.toString().trim() });
+        const text = data.toString();
+        log.debug('stdout', { text: text.trim() });
+
+        // Detect the initial build cycle so we can wait for it
+        if (!buildComplete && text.includes('Building')) {
+            sawBuilding = true;
+        }
+        if (sawBuilding && !buildComplete && text.includes('Build complete')) {
+            buildComplete = true;
+            resolveBuildReady();
+        }
+
         if (webContents && !webContents.isDestroyed()) {
-            webContents.send('preview:log', { projectPath, type: 'stdout', text: data.toString() });
+            webContents.send('preview:log', { projectPath, type: 'stdout', text });
         }
     });
 
@@ -181,6 +201,8 @@ export async function startPreview(projectPath, webContents, { openBrowser = tru
     child.on('exit', (code) => {
         log.info(`Exited with code: ${code}`, { projectPath });
         previews.delete(projectPath);
+        // Unblock build wait if the process exits before build completes
+        if (!buildComplete) resolveBuildReady();
         if (webContents && !webContents.isDestroyed()) {
             webContents.send('preview:log', { projectPath, type: 'exit', code });
         }
@@ -196,9 +218,17 @@ export async function startPreview(projectPath, webContents, { openBrowser = tru
     // Store immediately so subsequent calls find it
     previews.set(projectPath, { process: child, port, ready: readyPromise });
 
-    // Wait for server to be ready
+    // Wait for HTTP server to respond, then wait for the initial build
+    // to finish so the iframe loads the fully-built content and doesn't
+    // get reloaded by the live-reload triggered by the initial rebuild.
     try {
         await waitForServer(`http://127.0.0.1:${port}`);
+        // Wait up to 30s for the initial build, but don't block forever
+        // if the server doesn't trigger a build (e.g. no file changes).
+        await Promise.race([
+            buildReadyPromise,
+            new Promise(r => setTimeout(r, 30000))
+        ]);
         resolveReady();
         if (openBrowser) shell.openExternal(`http://127.0.0.1:${port}`);
     } catch (e) {

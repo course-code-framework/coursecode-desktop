@@ -14,7 +14,7 @@ import { createLogger } from './logger.js';
 import { translateChatError } from './errors.js';
 import {
     FILE_TOOL_DEFINITIONS, TOOL_LABELS, PREVIEW_TOOLS, DEFAULT_PROVIDER,
-    TOOL_RESULT_MAX_CHARS, TOOL_RESULT_TRUNCATION_NOTE,
+    TOOL_RESULT_MAX_CHARS, STATE_TOOL_MAX_CHARS, MCP_TOOL_TRUNCATION_NOTE,
     OLDER_MESSAGE_MAX_CHARS,
     SAFE_TOOLS, MUTATION_TOOLS, PARALLELIZABLE_TOOLS,
     getMaxContextChars, COST_WARNING_THRESHOLDS, CREDIT_LOW_THRESHOLD
@@ -72,7 +72,7 @@ function escapeRegExp(string) {
 function truncateContent(content) {
     if (typeof content !== 'string') content = JSON.stringify(content);
     if (content.length <= TOOL_RESULT_MAX_CHARS) return content;
-    return content.slice(0, TOOL_RESULT_MAX_CHARS) + TOOL_RESULT_TRUNCATION_NOTE;
+    return content.slice(0, TOOL_RESULT_MAX_CHARS) + MCP_TOOL_TRUNCATION_NOTE;
 }
 
 function truncateText(text, maxChars = OLDER_MESSAGE_MAX_CHARS) {
@@ -614,8 +614,7 @@ function toolReason(toolName) {
             return 'Create a new course file';
         case 'coursecode_screenshot':
             return 'Validate learner-facing visuals after edits';
-        case 'coursecode_lint':
-            return 'Check course structure and content integrity';
+
         case 'coursecode_navigate':
             return 'Open the affected slide for targeted validation';
         case 'coursecode_interact':
@@ -693,6 +692,9 @@ function resolveMentions(projectPath, message, mentions = []) {
 /** Names of the desktop-managed file tools — MCP versions are ignored. */
 const LOCAL_FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'list_files', 'list_directory', 'write_file']);
 
+/** MCP tools excluded from the AI tool surface (build-only lint is redundant when preview is always running). */
+const EXCLUDED_MCP_TOOLS = new Set(['coursecode_lint']);
+
 function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
     // Start with the desktop's file tools (always present, execute locally).
     const merged = [...fileTools];
@@ -703,6 +705,7 @@ function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
         const name = tool?.name;
         if (!name) continue;
         if (LOCAL_FILE_TOOLS.has(name)) continue; // desktop handles file I/O
+        if (EXCLUDED_MCP_TOOLS.has(name)) continue; // build-only lint redundant with preview running
 
         const normalized = {
             name,
@@ -734,9 +737,17 @@ function sanitizeToolResultForModel(toolName, result) {
     });
 
     // File tools return small, predictable results — no truncation needed.
-    // MCP tools can return unpredictable output, so keep a generous limit.
+    // MCP tools can return unpredictable output, so apply limits.
     if (FILE_TOOLS.has(toolName)) return safeJson;
-    return truncateContent(safeJson);
+
+    // coursecode_state is the AI's primary orientation tool — give it a higher limit
+    if (toolName === 'coursecode_state') {
+        if (safeJson.length <= STATE_TOOL_MAX_CHARS) return safeJson;
+        return safeJson.slice(0, STATE_TOOL_MAX_CHARS) + MCP_TOOL_TRUNCATION_NOTE;
+    }
+
+    if (safeJson.length <= TOOL_RESULT_MAX_CHARS) return safeJson;
+    return safeJson.slice(0, TOOL_RESULT_MAX_CHARS) + MCP_TOOL_TRUNCATION_NOTE;
 }
 
 function toPreviewText(value, maxChars = CHAT_TRACE_PREVIEW_CHARS) {
@@ -1377,7 +1388,15 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 throw new Error('The AI requested too many consecutive tool steps without finishing. Please try again with a more specific request.');
             }
 
-            log.debug('Calling LLM', { messageCount: apiMessages.length, model: modelId });
+            const MAX_TIMEOUT_RETRIES = 1;
+            let timeoutRetries = 0;
+            let didTimeout = false;
+
+            // Retry wrapper: re-issues the same LLM call on upstream timeout (once)
+            do {
+            didTimeout = false;
+
+            log.debug('Calling LLM', { messageCount: apiMessages.length, model: modelId, timeoutRetry: timeoutRetries > 0 ? timeoutRetries : undefined });
             trace('llm-request-start', {
                 loopIteration,
                 mode: sessionContext.mode,
@@ -1386,7 +1405,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 messageCount: apiMessages.length,
                 toolCount: runtimeTools.length,
                 tools: runtimeTools.map(t => t.name),
-                recentMessages: apiMessages.slice(-4).map(summarizeApiMessage)
+                recentMessages: apiMessages.slice(-4).map(summarizeApiMessage),
+                timeoutRetry: timeoutRetries > 0 ? timeoutRetries : undefined
             });
             const stream = provider.chat({
                 messages: apiMessages,
@@ -1472,10 +1492,19 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     sessionCacheCreation += event.usage?.cacheCreationInputTokens || 0;
                     sessionCacheRead += event.usage?.cacheReadInputTokens || 0;
 
-                    // Cloud stream timeout — the upstream provider stopped responding
-                    if (event.timedOut && !currentText && currentToolCalls.length === 0) {
-                        log.warn('Cloud stream timed out with no content');
-                        throw new Error('The AI service timed out before producing a response. Try again.');
+                    // Cloud stream timeout — the upstream provider stopped responding.
+                    // Any timeout is an error: partial text from a truncated stream is unreliable.
+                    if (event.timedOut) {
+                        if (timeoutRetries < MAX_TIMEOUT_RETRIES) {
+                            timeoutRetries += 1;
+                            didTimeout = true;
+                            log.warn('Cloud stream timed out, retrying', { streamedChars: currentText.length, toolCalls: currentToolCalls.length, retry: timeoutRetries });
+                            // Clear any partial streamed text from the UI before retry
+                            webContents?.send('chat:stream', { projectPath, text: '', delta: '', retry: true });
+                            break; // break out of the event loop to re-issue the LLM call
+                        }
+                        log.warn('Cloud stream timed out after retry', { streamedChars: currentText.length, toolCalls: currentToolCalls.length });
+                        throw new Error('The AI service timed out before finishing its response. Try again.');
                     }
 
                     trace('llm-response-complete', {
@@ -1891,6 +1920,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
                 if (controller.signal.aborted) break;
             }
+            } while (didTimeout && !controller.signal.aborted);
 
             if (controller.signal.aborted) break;
         }

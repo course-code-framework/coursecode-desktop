@@ -24,11 +24,10 @@ COMMUNICATION RULES:
 TOOL USE:
 1. Read before writing. Always read a file before editing it.
 2. Use search_files to locate specific text, then read_file with start_line/end_line around those line numbers to get context.
-3. Use coursecode_state to understand the current course structure.
+3. Use coursecode_state to understand the current course structure. This also returns any errors and warnings from the live preview, so use it to verify course health after changes.
 4. Use edit_file for targeted changes. Use create_file only for new files.
 5. After edits, take a screenshot to verify the result.
-6. Run coursecode_lint to catch issues after changes. It checks both static structure and live runtime errors.
-7. If lint reports problems, fix them before responding to the user.
+6. If coursecode_state reports errors or warnings, fix them before responding to the user.
 
 FILE PATHS:
 All paths are relative to the course directory root. The course directory IS the root.
@@ -195,7 +194,6 @@ export const TOOL_LABELS = {
     search_files: 'Searching files…',
     list_files: 'Browsing files…',
     coursecode_screenshot: 'Looking at the result…',
-    coursecode_lint: 'Checking for errors…',
     coursecode_navigate: 'Going to slide…',
     coursecode_state: 'Reviewing the course…',
     coursecode_component_catalog: 'Looking up components…',
@@ -227,7 +225,7 @@ export const PREVIEW_TOOLS = new Set([
 export const SAFE_TOOLS = new Set([
     'read_file', 'list_files', 'search_files',
     'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
-    'coursecode_lint', 'coursecode_component_catalog', 'coursecode_css_catalog',
+    'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
     'coursecode_workflow_status', 'coursecode_viewport', 'coursecode_export_content'
 ]);
@@ -242,7 +240,7 @@ export const MUTATION_TOOLS = new Set([
 export const PARALLELIZABLE_TOOLS = new Set([
     'read_file', 'list_files',
     'coursecode_state', 'coursecode_screenshot',
-    'coursecode_lint', 'coursecode_component_catalog', 'coursecode_css_catalog',
+    'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
     'coursecode_workflow_status', 'coursecode_viewport', 'coursecode_export_content'
 ]);
@@ -254,8 +252,14 @@ export const PARALLELIZABLE_TOOLS = new Set([
 /** Max size (chars) for a single tool result before truncation */
 export const TOOL_RESULT_MAX_CHARS = 16_000;
 
-/** Truncation notice appended when a tool result is trimmed */
+/** Higher limit for coursecode_state, the AI's primary orientation tool */
+export const STATE_TOOL_MAX_CHARS = 48_000;
+
+/** Truncation notice appended when a file tool result is trimmed */
 export const TOOL_RESULT_TRUNCATION_NOTE = '… (truncated — use read_file with start_line/end_line to read remaining lines)';
+
+/** Truncation notice appended when an MCP tool result is trimmed */
+export const MCP_TOOL_TRUNCATION_NOTE = '… (output truncated due to size — the complete result was too large to include)';
 
 // ---------------------------------------------------------------------------
 // Guided Workflow Configurations

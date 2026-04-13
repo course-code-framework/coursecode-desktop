@@ -45,13 +45,7 @@
       activeTabId.set('home');
       return;
     }
-    // Auto-start preview server when tab opens
-    try {
-      const status = await window.api.preview.status(path);
-      if (status !== 'running') {
-        await window.api.preview.start(path, { openBrowser: false });
-      }
-    } catch { /* ignore — ProjectDetail will handle retry */ }
+    // Preview auto-start is handled by ProjectDetail when chat workspace is active
   }
 
   /** Close a course tab, stopping its server. Called from Dashboard too. */
