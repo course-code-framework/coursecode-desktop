@@ -27,7 +27,7 @@ TOOL USE:
 3. Use coursecode_state to understand the current course structure.
 4. Use edit_file for targeted changes. Use create_file only for new files.
 5. After edits, take a screenshot to verify the result.
-6. Run coursecode_lint to catch issues after changes.
+6. Run coursecode_lint to catch issues after changes. It checks both static structure and live runtime errors.
 7. If lint reports problems, fix them before responding to the user.
 
 FILE PATHS:

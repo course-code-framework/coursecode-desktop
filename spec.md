@@ -817,7 +817,7 @@ Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-
 | `coursecode_screenshot` | Capture a screenshot of the current slide |
 | `coursecode_viewport` | Resize the preview viewport |
 | `coursecode_build` | Trigger a course build |
-| `coursecode_lint` | Run the linter and return errors/warnings |
+| `coursecode_lint` | Run the linter and return errors/warnings. When the preview server is running, includes runtime errors (DOM, visual) alongside static checks. |
 | `coursecode_workflow_status` | Check progress against the active workflow |
 | `coursecode_css_catalog` | Look up available CSS utility classes |
 | `coursecode_component_catalog` | Look up available slide components |
