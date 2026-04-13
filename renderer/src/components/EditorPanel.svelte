@@ -9,8 +9,8 @@
   let { projectPath } = $props();
 
   let editorContainer = $state(null);
-  let editor = null;
-  let monaco = null;
+  let editor = $state(null);
+  let monaco = $state(null);
   let resizeObserver = null;
 
   // File tree state
@@ -98,14 +98,18 @@
     resizeObserver?.disconnect();
   });
 
-  // React to openFile changes — load content into Monaco
+  // React to openFile changes — load content into Monaco.
+  // Both `editor` and `monaco` are reactive ($state) so this effect also
+  // fires when Monaco finishes initializing after a deferred first mount.
   $effect(() => {
     const file = $openFile;
-    if (editor && monaco && file) {
-      const model = monaco.editor.createModel(file.content, file.language);
-      editor.setModel(model);
-    } else if (editor && !file) {
-      editor.setModel(null);
+    const ed = editor;
+    const m = monaco;
+    if (ed && m && file) {
+      const model = m.editor.createModel(file.content, file.language);
+      ed.setModel(model);
+    } else if (ed && !file) {
+      ed.setModel(null);
     }
   });
 

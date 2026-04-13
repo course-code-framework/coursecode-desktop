@@ -500,17 +500,28 @@ function saveConversation(projectPath, messages, session) {
 }
 
 function serializeConversation(messages = []) {
-    return messages.map(m => ({
-        role: m.role,
-        content: m.content,
-        _display: m._display,
-        _mentions: m._mentions,
-        _toolCalls: m._toolCalls,
-        _usage: m._usage,
-        _raw: m._raw,
-        tool_use_id: m.tool_use_id,
-        is_error: m.is_error
-    }));
+    return messages.map(m => {
+        const base = {
+            role: m.role,
+            content: m.content,
+            _display: m._display,
+            _mentions: m._mentions,
+            _toolCalls: m._toolCalls,
+            _usage: m._usage,
+            _raw: m._raw,
+            tool_use_id: m.tool_use_id,
+            is_error: m.is_error
+        };
+        // Preserve change summary metadata for system messages
+        if (m.type) base.type = m.type;
+        if (m.label !== undefined) base.label = m.label;
+        if (m.timestamp !== undefined) base.timestamp = m.timestamp;
+        if (m.added) base.added = m.added;
+        if (m.modified) base.modified = m.modified;
+        if (m.deleted) base.deleted = m.deleted;
+        if (m.snapshotId) base.snapshotId = m.snapshotId;
+        return base;
+    });
 }
 
 function persistConversation(projectPath, messages, sessionOverride) {
@@ -1959,6 +1970,19 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 const summaryLabel = lastText.slice(0, 60).replace(/\n/g, ' ').trim() || 'Made changes';
                 const snap = await createSnapshot(projectPath, `AI: ${summaryLabel}`, { chatIndex, files: changes });
 
+                const changeSummaryMsg = {
+                    role: 'system',
+                    type: 'changeSummary',
+                    content: snap.label,
+                    label: snap.label,
+                    timestamp: snap.timestamp,
+                    added: changes.added,
+                    modified: changes.modified,
+                    deleted: changes.deleted,
+                    snapshotId: snap.id
+                };
+                messages.push(changeSummaryMsg);
+
                 webContents?.send('chat:changeSummary', {
                     projectPath,
                     label: snap.label,
@@ -2144,13 +2168,29 @@ export function loadHistory(projectPath) {
     conversations.set(projectPath, messages);
     if (session) conversationSessions.set(projectPath, session);
     else conversationSessions.delete(projectPath);
-    return messages.map(m => ({
-        role: m.role,
-        content: m._display || m.content,
-        toolCalls: m._toolCalls,
-        usage: m._usage,
-        mentions: m._mentions
-    })).filter(m => m.role === 'user' || m.role === 'assistant');
+    return messages.map(m => {
+        // Pass through system change summary messages for the renderer
+        if (m.role === 'system' && m.type === 'changeSummary') {
+            return {
+                role: m.role,
+                type: m.type,
+                content: m.content,
+                label: m.label,
+                timestamp: m.timestamp,
+                added: m.added || [],
+                modified: m.modified || [],
+                deleted: m.deleted || [],
+                snapshotId: m.snapshotId
+            };
+        }
+        return {
+            role: m.role,
+            content: m._display || m.content,
+            toolCalls: m._toolCalls?.map(tc => ({ ...tc, tool: tc.tool || tc.name })),
+            usage: m._usage,
+            mentions: m._mentions
+        };
+    }).filter(m => m.role === 'user' || m.role === 'assistant' || (m.role === 'system' && m.type === 'changeSummary'));
 }
 
 export function getSessionContext(projectPath) {
