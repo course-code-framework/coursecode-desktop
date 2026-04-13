@@ -433,12 +433,18 @@
 
   // Auto-resize textarea + sync mirror
   function autoResize(el) {
+    if (!el) return;
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 150) + 'px';
-    if (mirrorEl) {
-      mirrorEl.style.height = el.style.height;
-    }
   }
+
+  // Reactively resize when inputText changes (covers programmatic clears after send)
+  $effect(() => {
+    inputText;
+    tick().then(() => {
+      if (inputEl) autoResize(inputEl);
+    });
+  });
 
   function syncScroll(e) {
     if (mirrorEl) {
@@ -2278,16 +2284,19 @@
     line-height: 1.5;
     white-space: pre-wrap;
     word-wrap: break-word;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     pointer-events: none;
     color: var(--text-primary);
   }
 
   .textarea-mirror :global(.mention-hl) {
+    display: inline-block;
+    white-space: nowrap;
     background: var(--accent-subtle);
     color: var(--accent);
     border-radius: 3px;
-    padding: 0 1px;
+    padding: 0 2px;
   }
 
   textarea {
@@ -2304,6 +2313,7 @@
     font-size: var(--text-sm);
     line-height: 1.5;
     resize: none;
+    overflow-y: auto;
     min-height: 36px;
     max-height: 150px;
   }
