@@ -176,11 +176,21 @@ function prepareApiMessages(messages, maxContextChars) {
                 apiMessages.push({ role: 'assistant', content: compacted });
             }
         } else if (m.role === 'tool') {
-            const contentStr = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+            let toolContent;
+
+            if (Array.isArray(m.content)) {
+                // Legacy safety: strip any lingering image blocks from older conversations
+                toolContent = m.content
+                    .map(block => block.type === 'image' ? { type: 'text', text: '[screenshot — use coursecode_screenshot to view current state]' } : block);
+            } else {
+                const contentStr = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+                toolContent = isRecent ? contentStr : truncateContent(contentStr);
+            }
+
             const toolResult = {
                 type: 'tool_result',
                 tool_use_id: m.tool_use_id,
-                content: isRecent ? contentStr : truncateContent(contentStr)
+                content: toolContent
             };
             if (m.is_error) toolResult.is_error = true;
 
@@ -743,11 +753,39 @@ function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
 
 const FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'list_files', 'search_files']);
 
-function sanitizeToolResultForModel(toolName, result) {
+function sanitizeToolResultForModel(toolName, result, projectPath) {
     if (toolName === 'coursecode_screenshot' && result?.content && Array.isArray(result.content)) {
-        // Pass the full content (including image blocks) to the model so it can
-        // actually see what it rendered. Strip only non-essential metadata.
-        return result.content;
+        const imageBlock = result.content.find(b => b.type === 'image');
+        const textBlocks = result.content.filter(b => b.type === 'text');
+        let screenshotRef = 'Screenshot captured.';
+
+        // Save to disk for compact referencing
+        if (imageBlock && projectPath) {
+            try {
+                const screenshotDir = join(getChatDir(projectPath), 'screenshots');
+                mkdirSync(screenshotDir, { recursive: true });
+                const filename = `screenshot-${Date.now()}.jpg`;
+                const filePath = join(screenshotDir, filename);
+                const base64 = imageBlock.source?.data || imageBlock.data;
+                if (base64) {
+                    writeFileSync(filePath, Buffer.from(base64, 'base64'));
+                    screenshotRef = `Screenshot saved to ${filename}. Use coursecode_screenshot to take a new one if needed.`;
+                }
+            } catch (err) {
+                log.debug('Failed to save screenshot to disk', err);
+            }
+        }
+
+        // Text-only content for storage/history — no base64
+        const textContent = textBlocks.map(b => b.text).filter(Boolean).join('\n');
+        const storedContent = textContent ? `${screenshotRef}\n${textContent}` : screenshotRef;
+
+        // Attach transient image data for the current-turn API call only.
+        // This field is consumed by the provider-specific formatting and never persisted.
+        return {
+            _text: storedContent,
+            _screenshotBlocks: imageBlock ? [imageBlock] : []
+        };
     }
 
     const safeJson = JSON.stringify(result, (key, value) => {
@@ -919,6 +957,7 @@ function needsApproval(toolName) {
 }
 
 async function executeTool(toolName, toolInput, projectPath, webContents) {
+  try {
     // File tools resolve paths relative to the course/ directory, not the project root.
     // The AI only works with course content — it never needs to touch package.json, node_modules, etc.
     const courseRoot = resolve(projectPath, 'course');
@@ -935,6 +974,7 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
 
     // File operations (paths relative to course/)
     if (toolName === 'read_file') {
+        if (!toolInput?.path) return { error: 'Missing required parameter: path. Specify the file to read.' };
         const filePath = resolveToolPath(toolInput.path);
         if (!existsSync(filePath)) {
             let hint = '';
@@ -963,9 +1003,12 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
     }
 
     if (toolName === 'edit_file') {
+        if (!toolInput?.path) return { error: 'Missing required parameter: path. Specify the file to edit.' };
+        if (toolInput.old_string == null) return { error: 'Missing required parameter: old_string. Specify the text to find and replace.' };
+        if (toolInput.new_string == null) return { error: 'Missing required parameter: new_string. Specify the replacement text.' };
         const filePath = resolveToolPath(toolInput.path);
         if (!existsSync(filePath)) return { error: `File not found: ${toolInput.path}. Use list_files to discover the correct path.` };
-        if (toolInput.old_string === toolInput.new_string) return { error: `old_string and new_string are identical — no change would be made. Check that you are replacing the correct text.` };
+        if (toolInput.old_string === toolInput.new_string) return { error: 'old_string and new_string are identical. Check that you are replacing the correct text.' };
         const content = readFileSync(filePath, 'utf-8');
         const occurrences = content.split(toolInput.old_string).length - 1;
         if (occurrences === 0) return { error: `old_string not found in ${toolInput.path}. Read the file first to see current content.` };
@@ -976,6 +1019,8 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
     }
 
     if (toolName === 'create_file') {
+        if (!toolInput?.path) return { error: 'Missing required parameter: path. Specify the file to create.' };
+        if (toolInput.content == null) return { error: 'Missing required parameter: content. Specify the file contents.' };
         const filePath = resolveToolPath(toolInput.path);
         if (existsSync(filePath)) return { error: `File already exists: ${toolInput.path}. Use edit_file to modify existing files.` };
         const dir = dirname(filePath);
@@ -985,6 +1030,7 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
     }
 
     if (toolName === 'search_files') {
+        if (!toolInput?.pattern) return { error: 'Missing required parameter: pattern. Specify the text or regex to search for.' };
         const MAX_MATCHES = 50;
         const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.mp4', '.mp3', '.wav', '.ogg', '.zip', '.tar', '.gz', '.woff', '.woff2', '.ttf', '.eot', '.pdf']);
         const searchRoot = resolveToolPath(toolInput.path || '.');
@@ -1107,6 +1153,10 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
     } catch (err) {
         return { error: err.message };
     }
+  } catch (outerErr) {
+    log.warn(`executeTool(${toolName}) unhandled error:`, outerErr);
+    return { error: `Tool execution failed: ${outerErr.message}` };
+  }
 }
 
 // --- Build project context for system prompt ---
@@ -1693,7 +1743,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     return {
                                         meta: { id: tc.id, name: tc.name, status: isToolError ? 'error' : 'done', elapsedMs, filePath: tc.input?.path, detail: tc.input?.path || tc.input?.slideId, reason: toolReason(tc.name) },
                                         type: 'tool_result', tool_use_id: tc.id,
-                                        content: sanitizeToolResultForModel(tc.name, result),
+                                    content: sanitizeToolResultForModel(tc.name, result, projectPath),
                                         is_error: isToolError || undefined
                                     };
                                 } catch (err) {
@@ -1823,7 +1873,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     },
                                     type: 'tool_result',
                                     tool_use_id: tc.id,
-                                    content: sanitizeToolResultForModel(tc.name, result),
+                                    content: sanitizeToolResultForModel(tc.name, result, projectPath),
                                     is_error: isToolError || undefined
                                 });
                             } catch (err) {
@@ -1873,17 +1923,31 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         // Add tool results to conversation
                         const toolMetaById = new Map();
                         const toolResultContents = [];
+                        const pendingScreenshots = []; // transient image data for current-turn API call
+
                         for (const tr of toolResults) {
                             if (tr.meta?.id) toolMetaById.set(tr.meta.id, tr.meta);
+
+                            // Extract transient screenshot data before storing in conversation
+                            let storedContent = tr.content;
+                            if (storedContent && typeof storedContent === 'object' && storedContent._text !== undefined) {
+                                // Screenshot result: store text-only, extract image for current-turn API call
+                                if (storedContent._screenshotBlocks?.length) {
+                                    pendingScreenshots.push(...storedContent._screenshotBlocks);
+                                }
+                                storedContent = storedContent._text;
+                            }
+
                             const toolResultMessage = {
                                 type: 'tool_result',
                                 tool_use_id: tr.tool_use_id,
-                                content: tr.content
+                                content: storedContent
                             };
                             if (tr.is_error) toolResultMessage.is_error = true;
                             messages.push({ role: 'tool', ...toolResultMessage });
                             toolResultContents.push(toolResultMessage);
                         }
+
                         if (toolResultContents.length > 0) {
                             if (cloudApiType === 'responses') {
                                 // Responses API format: each tool result is a function_call_output item
@@ -1895,6 +1959,15 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                         output
                                     });
                                 }
+                                // Inject screenshot images as a user message with image_url
+                                if (pendingScreenshots.length > 0) {
+                                    const parts = pendingScreenshots.map(img => ({
+                                        type: 'image_url',
+                                        image_url: { url: `data:${img.mimeType || 'image/jpeg'};base64,${img.source?.data || img.data}` }
+                                    }));
+                                    parts.unshift({ type: 'text', text: 'Screenshot of the current slide:' });
+                                    apiMessages.push({ role: 'user', content: parts });
+                                }
                             } else if (cloudProvider === 'openai') {
                                 // OpenAI format: each tool result is a separate { role: 'tool' } message
                                 for (const tr of toolResultContents) {
@@ -1904,6 +1977,15 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                         tool_call_id: tr.tool_use_id,
                                         content
                                     });
+                                }
+                                // Inject screenshot images as a user message with image_url
+                                if (pendingScreenshots.length > 0) {
+                                    const parts = pendingScreenshots.map(img => ({
+                                        type: 'image_url',
+                                        image_url: { url: `data:${img.mimeType || 'image/jpeg'};base64,${img.source?.data || img.data}` }
+                                    }));
+                                    parts.unshift({ type: 'text', text: 'Screenshot of the current slide:' });
+                                    apiMessages.push({ role: 'user', content: parts });
                                 }
                             } else if (cloudProvider === 'google') {
                                 // Gemini format: functionResponse parts in a user message
@@ -1927,9 +2009,41 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                         }
                                     };
                                 });
+                                // Inject screenshot images as inlineData parts
+                                for (const img of pendingScreenshots) {
+                                    parts.push({
+                                        inlineData: {
+                                            mimeType: img.mimeType || 'image/jpeg',
+                                            data: img.source?.data || img.data
+                                        }
+                                    });
+                                }
                                 apiMessages.push({ role: 'user', parts });
                             } else {
-                                apiMessages.push({ role: 'user', content: toolResultContents });
+                                // Anthropic format: tool_result content blocks
+                                const anthropicResults = toolResultContents.map(tr => {
+                                    // For Anthropic, we can include image blocks natively in tool_result content
+                                    return tr;
+                                });
+                                // Inject screenshot image blocks into the tool results for Anthropic
+                                if (pendingScreenshots.length > 0) {
+                                    const imageContent = pendingScreenshots.map(img => ({
+                                        type: 'image',
+                                        source: {
+                                            type: 'base64',
+                                            media_type: img.mimeType || 'image/jpeg',
+                                            data: img.source?.data || img.data
+                                        }
+                                    }));
+                                    // Add images as additional content in a user message after tool results
+                                    apiMessages.push({ role: 'user', content: anthropicResults });
+                                    apiMessages.push({ role: 'user', content: [
+                                        { type: 'text', text: 'Screenshot of the current slide:' },
+                                        ...imageContent
+                                    ]});
+                                } else {
+                                    apiMessages.push({ role: 'user', content: anthropicResults });
+                                }
                             }
                         }
 
