@@ -689,6 +689,15 @@ function resolveMentions(projectPath, message, mentions = []) {
                         break;
                     }
                 }
+            } else if (mention.type === 'file' && mention.path) {
+                if (existsSync(mention.path)) {
+                    const content = readFileSync(mention.path, 'utf-8');
+                    appendMentionContext(
+                        `[Attached file: "${mention.filename || mention.path}"]`,
+                        content,
+                        MENTION_SLIDE_MAX_CHARS
+                    );
+                }
             }
         } catch (err) {
             log.debug(`Failed to resolve mention ${mention.type}:${mention.id || mention.filename}`, err);

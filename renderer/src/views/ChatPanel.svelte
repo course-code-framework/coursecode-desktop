@@ -3,6 +3,7 @@
   import { marked } from 'marked';
   import MessageBubble from '../components/MessageBubble.svelte';
   import MentionDropdown from '../components/MentionDropdown.svelte';
+  import AttachmentPicker from '../components/AttachmentPicker.svelte';
   import ModelPicker from '../components/ModelPicker.svelte';
   import Icon from '../components/Icon.svelte';
   import { showToast } from '../stores/toast.js';
@@ -248,7 +249,8 @@
 
   // --- Input handling ---
 
-  let selectedMentions = $state([]);
+  let attachments = $state([]);
+  let showAttachPicker = $state(false);
 
   function handleInput(e) {
     const text = e.target.value;
@@ -270,20 +272,21 @@
   }
 
   function handleMentionSelect(item) {
-    // Remove the @query text from the textarea; the chip above serves as the visual indicator
+    // Insert the mention label inline, replacing the @query text
     const cursorPos = inputEl?.selectionStart ?? inputText.length;
     const textBefore = inputText.substring(0, cursorPos);
     const textAfter = inputText.substring(cursorPos);
     const atMatch = textBefore.match(/@([^\s@]*)$/);
 
+    const label = item.title || item.filename || item.id || '';
     if (atMatch) {
       const before = textBefore.substring(0, atMatch.index);
-      inputText = `${before}${textAfter}`;
-      selectedMentions = [...selectedMentions, item];
-      // Restore cursor position after the removal
+      const inserted = `@${label} `;
+      inputText = `${before}${inserted}${textAfter}`;
       tick().then(() => {
         if (inputEl) {
-          inputEl.selectionStart = inputEl.selectionEnd = before.length;
+          const pos = before.length + inserted.length;
+          inputEl.selectionStart = inputEl.selectionEnd = pos;
         }
       });
     }
@@ -327,18 +330,19 @@
     const text = inputText.trim();
     if (!text || $streaming) return;
 
-    const mentions = [...selectedMentions, ...collectInlineMentions(text)];
+    const mentions = [...attachments, ...collectInlineMentions(text)];
     const deduped = [];
     const seen = new Set();
     for (const m of mentions) {
-      const key = `${m.type}:${m.id || m.filename || m.title}`;
+      const key = `${m.type}:${m.id || m.filename || m.path || m.title}`;
       if (seen.has(key)) continue;
       seen.add(key);
       deduped.push(m);
     }
     inputText = '';
-    selectedMentions = [];
+    attachments = [];
     showMentions = false;
+    showAttachPicker = false;
     showHistory = false;
     streamToolsExpanded = false;
 
@@ -352,10 +356,34 @@
   async function handleClear() {
     await clearChat(projectPath);
     showHistory = false;
+    attachments = [];
+    showAttachPicker = false;
     expandedChanges = new Set();
     expandedDiffs = new Set();
     diffCache = {};
     inputEl?.focus();
+  }
+
+  function handleAttachSelect(item) {
+    const key = `${item.type}:${item.id || item.filename || item.title}`;
+    if (attachments.some(a => `${a.type}:${a.id || a.filename || a.title}` === key)) return;
+    attachments = [...attachments, item];
+    showAttachPicker = false;
+    inputEl?.focus();
+  }
+
+  async function handleBrowseFiles() {
+    showAttachPicker = false;
+    const files = await window.api.dialog.pickFiles();
+    if (files?.length) {
+      const newAttachments = files.map(f => ({ type: 'file', path: f.path, filename: f.filename }));
+      attachments = [...attachments, ...newAttachments];
+    }
+    inputEl?.focus();
+  }
+
+  function removeAttachment(index) {
+    attachments = attachments.filter((_, i) => i !== index);
   }
 
   function toggleHistory() {
@@ -1183,26 +1211,48 @@
         onSelect={handleMentionSelect}
       />
 
-      {#if selectedMentions.length > 0}
-        <div class="selected-mentions">
-          {#each selectedMentions as m, i}
-            <span class="mention-tag">
-              @{m.title || m.filename || m.id}
-              <button class="mention-remove" onclick={() => selectedMentions = selectedMentions.filter((_, j) => j !== i)}>×</button>
+      <AttachmentPicker
+        items={[...($mentionIndex?.slides || []), ...($mentionIndex?.refs || []), ...($mentionIndex?.interactions || [])]}
+        visible={showAttachPicker}
+        onSelect={handleAttachSelect}
+        onBrowse={handleBrowseFiles}
+        onDismiss={() => showAttachPicker = false}
+      />
+
+      {#if attachments.length > 0}
+        <div class="selected-attachments">
+          {#each attachments as a, i}
+            <span class="attachment-tag">
+              <span class="attachment-tag-icon">{a.type === 'ref' ? '📚' : a.type === 'file' ? '📎' : '📄'}</span>
+              {a.title || a.filename || a.id}
+              <button class="attachment-remove" onclick={() => removeAttachment(i)}>×</button>
             </span>
           {/each}
         </div>
       {/if}
 
-      <textarea
-        bind:this={inputEl}
-        bind:value={inputText}
-        oninput={(e) => { handleInput(e); autoResize(e.target); }}
-        onkeydown={handleKeydown}
-        placeholder="Describe what you want to create… (@ to mention)"
-        rows="1"
-        disabled={$streaming}
-      ></textarea>
+      <div class="input-row">
+        <button
+          class="attach-btn"
+          title="Attach context"
+          onclick={() => showAttachPicker = !showAttachPicker}
+          disabled={$streaming}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+
+        <textarea
+          bind:this={inputEl}
+          bind:value={inputText}
+          oninput={(e) => { handleInput(e); autoResize(e.target); }}
+          onkeydown={handleKeydown}
+          placeholder="Describe what you want to create… (@ to mention)"
+          rows="1"
+          disabled={$streaming}
+        ></textarea>
+      </div>
 
       <div class="input-actions">
         {#if $streaming}
@@ -2107,17 +2157,17 @@
     box-shadow: 0 0 0 2px var(--accent-subtle);
   }
 
-  .selected-mentions {
+  .selected-attachments {
     display: flex;
     flex-wrap: wrap;
     gap: var(--sp-xs);
     padding: var(--sp-sm) var(--sp-sm) 0;
   }
 
-  .mention-tag {
+  .attachment-tag {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
+    gap: 4px;
     padding: 2px 8px;
     border-radius: var(--radius-pill);
     background: var(--accent-subtle);
@@ -2126,7 +2176,11 @@
     font-weight: 500;
   }
 
-  .mention-remove {
+  .attachment-tag-icon {
+    font-size: 11px;
+  }
+
+  .attachment-remove {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2141,13 +2195,47 @@
     opacity: 0.6;
   }
 
-  .mention-remove:hover {
+  .attachment-remove:hover {
     opacity: 1;
   }
 
+  .input-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 0;
+  }
+
+  .attach-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 36px;
+    flex-shrink: 0;
+    border: none;
+    background: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 0;
+    margin-left: var(--sp-xs);
+    border-radius: var(--radius-sm);
+    transition: color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+  }
+
+  .attach-btn:hover:not(:disabled) {
+    color: var(--accent);
+    background: var(--accent-subtle);
+  }
+
+  .attach-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
   textarea {
-    width: 100%;
-    padding: var(--sp-sm) var(--sp-md);
+    flex: 1;
+    min-width: 0;
+    padding: var(--sp-sm) var(--sp-md) var(--sp-sm) var(--sp-xs);
     background: transparent;
     border: none;
     box-shadow: none;

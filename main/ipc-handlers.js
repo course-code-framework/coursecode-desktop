@@ -176,6 +176,18 @@ export function registerIpcHandlers() {
         });
         return result.canceled ? null : result.filePath;
     });
+    handle('dialog:pickFiles', async (_e, defaultPath) => {
+        const result = await dialog.showOpenDialog({
+            properties: ['openFile', 'multiSelections'],
+            defaultPath: defaultPath || undefined,
+            title: 'Attach Files'
+        });
+        if (result.canceled || !result.filePaths.length) return [];
+        return result.filePaths.map(fp => ({
+            path: fp,
+            filename: require('path').basename(fp)
+        }));
+    });
 
     // --- Outline ---
     handle('outline:load', (_e, projectPath) => {

@@ -121,7 +121,8 @@ contextBridge.exposeInMainWorld('api', {
 
     dialog: {
         pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pickFolder', defaultPath),
-        saveFile: (defaultName) => ipcRenderer.invoke('dialog:saveFile', defaultName)
+        saveFile: (defaultName) => ipcRenderer.invoke('dialog:saveFile', defaultName),
+        pickFiles: (defaultPath) => ipcRenderer.invoke('dialog:pickFiles', defaultPath)
     },
 
     // --- Outline ---
