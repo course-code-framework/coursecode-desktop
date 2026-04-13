@@ -338,7 +338,6 @@ export async function clearChat(projectPath) {
     streamingText.set('');
     activeTools.set([]);
     pendingScreenshots = [];
-    // context memory is preserved across conversations
     sessionUsage.set({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
     sessionCredits.set(0);
     activeConversationId.set(null);

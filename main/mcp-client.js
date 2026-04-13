@@ -42,6 +42,7 @@ class McpConnection {
         this.initPromise = null;
         this._healthTimer = null;
         this._dead = false;
+        this._serverInstructions = null;
 
         // Parse newline-delimited JSON from stdout
         process.stdout.on('data', (chunk) => {
@@ -177,6 +178,7 @@ class McpConnection {
             });
             this.notify('notifications/initialized');
             this.initialized = true;
+            this._serverInstructions = result?.instructions || null;
             this._startHealthCheck();
             return result;
         })();
@@ -312,6 +314,19 @@ export async function getMcpTools(projectPath) {
     } catch (err) {
         log.debug('Failed to discover MCP tools', { projectPath, error: err?.message || String(err) });
         return [];
+    }
+}
+
+/**
+ * Return the MCP server's instructions (stage-aware authoring context).
+ * Returns null if not connected or no instructions available.
+ */
+export async function getMcpInstructions(projectPath) {
+    try {
+        const conn = await getMcpClient(projectPath);
+        return conn._serverInstructions;
+    } catch {
+        return null;
     }
 }
 

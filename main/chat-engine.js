@@ -7,7 +7,7 @@ import { loadToken } from './cloud-client.js';
 import { buildSystemPrompt } from './system-prompts.js';
 import { getSetting } from './settings.js';
 import { startPreview, getPreviewStatus } from './preview-manager.js';
-import { getMcpClient, getMcpTools } from './mcp-client.js';
+import { getMcpClient, getMcpTools, getMcpInstructions } from './mcp-client.js';
 import { listRefs, readRef } from './ref-manager.js';
 import { createSnapshot, getChanges } from './snapshot-manager.js';
 import { createLogger } from './logger.js';
@@ -1328,9 +1328,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     const controller = new AbortController();
     abortControllers.set(projectPath, controller);
 
-    // Build system prompt with project context
+    // Build project context (available before MCP)
     const projectContext = getProjectContext(projectPath);
-    const systemPrompt = buildSystemPrompt(projectContext);
 
     // Build API messages with truncation for efficiency
     // For cloud models, translate to the upstream provider's wire format
@@ -1358,10 +1357,15 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     try {
         const provider = await createProvider(providerId, credential, { cloudProvider, cloudApiType });
         let runtimeTools = [...FILE_TOOL_DEFINITIONS];
+        let mcpInstructions = null;
         if (getPreviewStatus(projectPath) === 'running') {
             const discoveredTools = await getMcpTools(projectPath);
             runtimeTools = mergeToolDefinitions(FILE_TOOL_DEFINITIONS, discoveredTools);
+            mcpInstructions = await getMcpInstructions(projectPath);
         }
+
+        // Build system prompt after MCP discovery so we can include server instructions
+        const systemPrompt = buildSystemPrompt(projectContext, mcpInstructions);
         log.debug('Provider created, starting agentic loop');
         let sessionInputTokens = 0;
         let sessionOutputTokens = 0;
@@ -2069,7 +2073,6 @@ export function clearConversation(projectPath) {
     archiveActiveConversation(projectPath);
     conversations.delete(projectPath);
     conversationSessions.delete(projectPath);
-    // Note: context-memory.json is preserved across conversations
 }
 
 export function listConversations(projectPath) {

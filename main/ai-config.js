@@ -29,16 +29,13 @@ TOOL USE:
 5. After edits, take a screenshot to verify the result.
 6. If coursecode_state reports errors or warnings, fix them before responding to the user.
 
-CATALOG TOOLS — USE BEFORE WRITING:
-The framework provides catalog tools that return the authoritative list of supported classes, components, interactions, and icons. You MUST use these before writing or modifying HTML content. Do not guess class names or copy patterns from other slides.
-- coursecode_css_catalog: Look up valid CSS classes before adding or changing any class attribute.
-  - Call WITHOUT a category first to see all available categories and class names.
-  - Then call WITH a specific category for full details. Categories use forward slashes: "components/callouts", "components/cards", "utilities/spacing", "utilities/animations", "layout".
-  - NEVER guess class names. The catalog is the single source of truth for valid CSS classes.
-- coursecode_component_catalog: Look up available slide components and their required markup structure before using any data-component attribute.
-- coursecode_interaction_catalog: Look up interaction types and configuration options before creating or modifying interactive elements.
+CATALOG TOOLS — FOR VERIFICATION AND DEEP DIVES:
+You know the common framework patterns from the Framework Essentials below. Use catalog tools when you need a class, component, or interaction NOT covered in the essentials, when lint flags an unknown class, or when you need the full schema for a specific component.
+- coursecode_css_catalog: Authoritative CSS class reference. Call without category to discover all categories; call with a category for full details. Categories use forward slashes: "components/callouts", "utilities/spacing", "layout".
+- coursecode_component_catalog: Full component schemas and HTML templates. Use when essentials coverage is insufficient.
+- coursecode_interaction_catalog: Full interaction schemas and configuration. Use for advanced options beyond the essentials.
 - coursecode_icon_catalog: Look up available icon names before using any icon reference.
-If a user reports something "looks wrong" or a warning mentions an unsupported class, your FIRST step should be to call coursecode_css_catalog (no category) to see valid classes, then call it again with the relevant category for full detail, then fix the code.
+If lint reports an unknown class or a user reports something "looks wrong", call coursecode_css_catalog to verify, then fix.
 
 FILE PATHS:
 All paths are relative to the course directory root. The course directory IS the root.
@@ -60,6 +57,213 @@ export const COURSE_SPECIFIC_RULES = `COURSE-SPECIFIC OPTIMIZATION:
 - Prioritize learning objectives, audience fit, cognitive load, and assessment alignment.
 - Keep slide-to-slide continuity explicit (narrative progression and reinforcement).
 - Preserve LMS compatibility and accessibility constraints when editing content.`;
+
+// ---------------------------------------------------------------------------
+// Framework Essentials — embedded authoring knowledge for the system prompt.
+// Common patterns the AI should know without calling catalog tools.
+// Catalog tools remain the source of truth for full schemas and edge cases.
+// ---------------------------------------------------------------------------
+
+export const FRAMEWORK_ESSENTIALS = `## Framework Essentials
+
+### Slide File Structure
+\`\`\`javascript
+// course/slides/<slideId>.js
+export const meta = { title: 'Slide Title' };
+export default \`<section class="slide">
+  <header class="slide-header">
+    <h1>Slide Title</h1>
+    <p>Subtitle or description</p>
+  </header>
+  <div class="content-medium stack-lg">
+    <!-- slide content -->
+  </div>
+</section>\`;
+\`\`\`
+
+### Critical Rules
+- NEVER add import statements for components, interactions, CSS, or icons. They are globally available.
+- Only valid import: local assets (\`import myImg from '../assets/images/photo.png'\`)
+- Interactions: \`const { createMultipleChoiceQuestion } = CourseCode;\` (destructure from global, NOT import)
+- Components: use \`data-component="tabs"\` in HTML (declarative, no JS needed)
+- NEVER modify files in framework/ — all work goes in course/ only
+- No em-dashes in sentence structure. Use alternative phrasing.
+
+### Layout
+| Class | Effect |
+|-------|--------|
+| \`.content-narrow\` | 700px max-width |
+| \`.content-medium\` | 900px max-width (default, auto-wrapped) |
+| \`.content-wide\` | 1200px max-width |
+| \`.content-full\` | No max-width |
+| \`.stack-sm\` / \`.stack-md\` / \`.stack-lg\` | Vertical flex with 8/16/24px gap |
+| \`.cols-2\`, \`.cols-3\` | Grid columns |
+| \`.cols-auto-fit\` | Auto-fit grid (min 280px) |
+| \`.split-50-50\`, \`.split-60-40\`, \`.split-40-60\` | Grid splits |
+Override auto-wrap per slide: \`<div data-content-width="wide">...</div>\`
+
+### Container-First Spacing
+Headings, paragraphs, lists, dividers, and tables have NO default margins. Use:
+- \`.stack-sm\` / \`.stack-md\` / \`.stack-lg\` for vertical layouts
+- \`.gap-0\` through \`.gap-6\` for flex/grid gaps
+
+### Common Utility Classes
+**Spacing:** \`.m-0\` to \`.m-6\`, \`.p-0\` to \`.p-6\`, \`.mt-*\`, \`.mb-*\`, \`.mx-*\`, \`.my-*\`, \`.pt-*\`, \`.pb-*\`, \`.px-*\`, \`.py-*\`
+**Display:** \`.flex\`, \`.flex-col\`, \`.flex-wrap\`, \`.grid\`, \`.hidden\`, \`.block\`, \`.inline-flex\`
+**Flex:** \`.justify-center\`, \`.justify-between\`, \`.align-items-center\`, \`.align-items-start\`
+**Text:** \`.text-center\`, \`.text-left\`, \`.text-right\`, \`.text-muted\`, \`.text-primary\`, \`.text-success\`, \`.text-warning\`, \`.text-danger\`
+**Typography:** \`.font-size-sm\` (0.875rem), \`.font-size-lg\` (1.125rem), \`.lead\` (intro text), \`.eyebrow\` (small label above heading)
+**Width:** \`.w-full\`, \`.w-auto\`
+**Backgrounds:** \`.bg-light\`, \`.bg-primary-subtle\`, \`.bg-success-subtle\`, \`.bg-warning-subtle\`, \`.bg-danger-subtle\`, \`.bg-info-subtle\`, \`.bg-secondary\`, \`.bg-dark\`
+
+### Slide Headers
+\`\`\`html
+<header class="slide-header">
+  <span class="eyebrow">Module 1</span>
+  <h1>Title</h1>
+  <p>Description</p>
+</header>
+\`\`\`
+Variants: \`.slide-header-left\`, \`.slide-header-divider\`
+
+### Cards
+\`\`\`html
+<div class="card">
+  <div class="card-header"><h4>Title</h4></div>
+  <div class="card-body stack-sm"><p>Content</p></div>
+  <div class="card-footer"><button class="btn btn-sm btn-primary">Action</button></div>
+</div>
+\`\`\`
+Never nest \`.card\` inside \`.card\`.
+
+### Buttons
+Always add \`.btn\` base class: \`.btn .btn-primary\`, \`.btn .btn-secondary\`, \`.btn .btn-outline-primary\`
+Sizes: \`.btn-sm\`, \`.btn-lg\`
+
+### Lists
+\`<ul class="list-styled">\` (bullets) or \`<ol class="list-numbered">\` (ordered) for enhanced styling.
+
+### Callouts
+\`\`\`html
+<aside class="callout callout--info" data-component="callout" data-icon="auto">
+  <h4 class="callout__title">Title</h4>
+  <div class="callout__body"><p>Content</p></div>
+</aside>
+\`\`\`
+Severity: \`callout--neutral\`, \`callout--info\`, \`callout--success\`, \`callout--warning\`, \`callout--danger\`
+
+### Badges
+\`<span class="badge badge-primary">Label</span>\`
+Variants: \`badge-primary\`, \`badge-secondary\`, \`badge-accent\`, \`badge-success\`, \`badge-warning\`, \`badge-danger\`, \`badge-info\`, \`badge-outline\`
+
+### Dividers
+\`<div class="divider"></div>\`
+
+### Declarative Components (data-component)
+| Component | Attribute | Engagement |
+|-----------|-----------|------------|
+| Tabs | \`data-component="tabs"\` | \`viewAllTabs\` |
+| Accordion | \`data-component="accordion"\` | \`viewAllPanels\` |
+| Flip Card | \`data-component="flip-card"\` | \`viewAllFlipCards\` |
+| Steps | \`data-component="steps"\` | — |
+| Timeline | \`data-component="timeline"\` | — |
+| Hero | \`data-component="hero"\` | — |
+| Interactive Timeline | \`data-component="interactive-timeline"\` | \`viewAllTimelineEvents\` |
+| Interactive Image | \`data-component="interactive-image"\` | \`viewAllHotspots\` |
+| Modal Trigger | \`data-component="modal-trigger"\` | \`viewAllModals\` |
+| Callout | \`data-component="callout"\` | — |
+| Carousel | \`data-component="carousel"\` | — |
+
+**Tabs:**
+\`\`\`html
+<div data-component="tabs">
+  <div class="tab-list">
+    <button class="tab-button" data-action="select-tab" aria-controls="p1">Tab 1</button>
+    <button class="tab-button" data-action="select-tab" aria-controls="p2">Tab 2</button>
+  </div>
+  <div id="p1" class="tab-content">Content 1</div>
+  <div id="p2" class="tab-content">Content 2</div>
+</div>
+\`\`\`
+
+**Accordion:**
+\`\`\`html
+<div id="my-accordion" class="accordion" data-component="accordion" data-mode="single">
+  <div data-title="Section 1">Content 1</div>
+  <div data-title="Section 2">Content 2</div>
+</div>
+\`\`\`
+Requires \`id\` for engagement tracking. \`data-mode\`: \`single\` or \`multi\`.
+
+**Steps:**
+\`\`\`html
+<div data-component="steps">
+  <div class="step"><div class="step-number">1</div><div class="step-content"><h3>Title</h3><p>Description</p></div></div>
+</div>
+\`\`\`
+Variants: \`data-style="connected"\`, \`"connected-minimal"\`, \`"compact"\`
+
+**Flip Card:**
+\`\`\`html
+<div class="flip-card" data-component="flip-card" data-flip-card-id="card-1">
+  <div class="flip-card-inner">
+    <div class="flip-card-front"><h3>Front</h3></div>
+    <div class="flip-card-back"><h3>Back</h3></div>
+  </div>
+</div>
+\`\`\`
+Requires unique \`data-flip-card-id\` for engagement tracking.
+
+### Interaction Factories
+All via \`const { createXxxQuestion } = CourseCode;\` — no imports.
+
+| Factory | Key Options |
+|---------|-------------|
+| \`createMultipleChoiceQuestion\` | \`id, prompt, choices: [{value, text}], correctAnswer\` (single) or \`multiple: true, choices: [{value, text, correct}]\` (multi) |
+| \`createTrueFalseQuestion\` | \`id, prompt, correctAnswer: true/false\` |
+| \`createFillInQuestion\` | \`id, template: 'text {{blank}}', blanks: {blank: {correct: 'answer'}}\` |
+| \`createMatchingQuestion\` | \`id, prompt, pairs: [{id, text, match}]\` |
+| \`createDragDropQuestion\` | \`id, prompt, items: [{id, content}], dropZones: [{id, label, accepts: []}]\` |
+| \`createNumericQuestion\` | \`id, prompt, correctRange: {exact} or {min, max}\` |
+| \`createSequencingQuestion\` | \`id, prompt, items: [{id, text}], correctOrder: []\` |
+| \`createHotspotQuestion\` | \`id, prompt, image: {src, alt}, hotspots: [{id, pos: [x%, y%, w%, h%], correct}]\` |
+| \`createLikertQuestion\` | \`id, prompt, scale: [{value, text}], questions: [{id, text}]\` |
+
+Usage: \`const q = createXxxQuestion({...}); q.render(container);\`
+For assessments: \`const { AssessmentManager } = CourseCode; AssessmentManager.createAssessment({...}, questions);\`
+
+### Engagement Tracking
+Every slide needs \`engagement\` config in course-config.js. Set \`required: false\` for no tracking.
+\`\`\`javascript
+engagement: {
+  required: true,
+  requirements: [
+    { type: 'viewAllTabs' },
+    { type: 'viewAllPanels' },
+    { type: 'viewAllFlipCards' },
+    { type: 'interactionComplete', interactionId: 'q1' },
+    { type: 'allInteractionsComplete' },
+    { type: 'scrollDepth', percentage: 80 },
+    { type: 'timeOnSlide', minSeconds: 60 }
+  ]
+}
+\`\`\`
+
+### Theme (course/theme.css)
+Override palette tokens to rebrand (all colors cascade via color-mix):
+\`--palette-blue\` (primary), \`--palette-green\` (success), \`--palette-yellow\` (accent), \`--palette-amber\` (warning), \`--palette-red\` (danger)
+Component styles: \`--tab-style: pills|buttons|minimal|boxed\`, \`--accordion-style: flush|separated|minimal|boxed\`, \`--card-style: outlined|elevated|flat|accent-top\`
+
+### Course Layouts
+\`layout\` in course-config.js: \`article\` (default, scrollable), \`traditional\` (sidebar+footer), \`focused\` (no-scroll immersive), \`presentation\` (slideshow), \`canvas\` (fully custom)
+
+### Icons
+\`\`\`javascript
+const { iconManager } = CourseCode;
+iconManager.getIcon('info', { size: 'md', class: 'icon-primary' });
+\`\`\`
+Sizes: xs/sm/md/lg/xl. Colors: \`.icon-primary\`, \`.icon-success\`, \`.icon-warning\`, \`.icon-danger\`, \`.icon-muted\`
+Use \`coursecode_icon_catalog\` to browse available icon names.`;
 
 // ---------------------------------------------------------------------------
 // Model & Provider Defaults

@@ -1,10 +1,10 @@
 import { getSetting } from './settings.js';
-import { BASE_PERSONA, COURSE_SPECIFIC_RULES } from './ai-config.js';
+import { BASE_PERSONA, COURSE_SPECIFIC_RULES, FRAMEWORK_ESSENTIALS } from './ai-config.js';
 
 // --- Assemble full system prompt ---
 
-export function buildSystemPrompt(projectContext = {}) {
-    const parts = [BASE_PERSONA, COURSE_SPECIFIC_RULES];
+export function buildSystemPrompt(projectContext = {}, mcpInstructions = null) {
+    const parts = [BASE_PERSONA, COURSE_SPECIFIC_RULES, FRAMEWORK_ESSENTIALS];
 
     // Project context
     if (projectContext.title) {
@@ -23,6 +23,11 @@ export function buildSystemPrompt(projectContext = {}) {
     const customInstructions = getSetting('aiCustomInstructions');
     if (customInstructions?.trim()) {
         parts.push(`\n## User Instructions\n${customInstructions.trim()}`);
+    }
+
+    // MCP server stage-aware instructions (when preview is running)
+    if (mcpInstructions?.trim()) {
+        parts.push(`\n## Framework Workflow Context\n${mcpInstructions.trim()}`);
     }
 
     return parts.join('\n\n');
