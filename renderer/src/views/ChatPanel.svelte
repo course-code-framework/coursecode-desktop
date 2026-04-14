@@ -213,7 +213,7 @@
       .trim();
   }
 
-  function findMentionByToken(token) {
+  function findMentionByToken(token, { strict = false } = {}) {
     const normalized = normalizeMentionToken(token);
     if (!normalized) return null;
     const idx = $mentionIndex;
@@ -247,6 +247,9 @@
       return false;
     });
     if (found) return found;
+
+    // Strict mode: no fuzzy matching (used for highlight validation).
+    if (strict) return null;
 
     // Fallback: single contains match (avoid ambiguous injection).
     const partial = all.filter(item => {
@@ -561,7 +564,7 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
     return escaped.replace(/@[^\s@]+/g, (match) => {
-      const resolved = findMentionByToken(match);
+      const resolved = findMentionByToken(match, { strict: true });
       if (resolved) return `<mark class="mention-hl">${match}</mark>`;
       return match;
     }) + '\n';
