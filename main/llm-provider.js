@@ -840,8 +840,8 @@ function validateCloudProxyBody(body, cloudProvider, cloudApiType) {
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
         issues.push('messages must be a non-empty array');
     }
-    if (typeof body.system !== 'string') {
-        issues.push('system must be a string');
+    if (typeof body.system !== 'string' && !Array.isArray(body.system)) {
+        issues.push('system must be a string or content block array');
     }
 
     if (body.tools != null && !Array.isArray(body.tools)) {
@@ -859,7 +859,7 @@ function validateCloudProxyBody(body, cloudProvider, cloudApiType) {
             }
 
             const isRoleMessage = (item.role === 'user' || item.role === 'assistant')
-                && typeof item.content === 'string';
+                && (typeof item.content === 'string' || Array.isArray(item.content));
             const isFunctionCall = item.type === 'function_call'
                 && typeof item.call_id === 'string' && item.call_id.trim()
                 && typeof item.name === 'string' && item.name.trim()
@@ -1077,11 +1077,50 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
             const useCompactedMessages = cloudApiType === 'responses' && shouldCompactResponsesForRequest(requestId);
             const outboundMessages = useCompactedMessages ? compactResponsesMessagesForRetry(messages) : messages;
 
+            // Anthropic prompt caching: inject cache_control markers so the proxy
+            // forwards them to Anthropic's API.  This mirrors the BYOK strategy:
+            //   1. System prompt → structured content block with cache_control
+            //   2. Last tool definition → cache_control marker
+            //   3. Conversation boundary (message N-3) → cache_control marker
+            // Without these, every request pays full input token cost for the
+            // static prefix (system + tools + older history).
+            let outboundSystem = system;
+            let outboundTools = formattedTools;
+            let cachedMessages = outboundMessages;
+            if (cloudProvider === 'anthropic') {
+                // System prompt as cacheable content block array
+                if (system) {
+                    outboundSystem = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+                }
+                // Mark last tool for caching
+                if (outboundTools?.length) {
+                    outboundTools = outboundTools.map((t, i) =>
+                        i === outboundTools.length - 1
+                            ? { ...t, cache_control: { type: 'ephemeral' } }
+                            : t
+                    );
+                }
+                // Mark conversation boundary (N-3) for caching
+                if (cachedMessages?.length >= 3) {
+                    cachedMessages = cachedMessages.map((m, i) => {
+                        if (i !== cachedMessages.length - 3 || m.role !== 'user') return m;
+                        if (typeof m.content === 'string') {
+                            return { ...m, content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }] };
+                        }
+                        if (Array.isArray(m.content) && m.content.length > 0) {
+                            const lastIdx = m.content.length - 1;
+                            return { ...m, content: m.content.map((block, bi) => bi === lastIdx ? { ...block, cache_control: { type: 'ephemeral' } } : block) };
+                        }
+                        return m;
+                    });
+                }
+            }
+
             const body = {
                 model,
-                messages: outboundMessages,
-                tools: formattedTools,
-                system,
+                messages: cachedMessages,
+                tools: outboundTools,
+                system: outboundSystem,
                 max_tokens: MAX_TOKENS
             };
             assertCloudProxyBodyValid(body, cloudProvider, cloudApiType, requestId, 'initial');

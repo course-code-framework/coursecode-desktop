@@ -187,6 +187,17 @@
     const event = new CustomEvent('openfile', { detail: { path }, bubbles: true });
     document.dispatchEvent(event);
   }
+
+  let lightboxSrc = $state(null);
+
+  function openLightbox(base64) {
+    lightboxSrc = `data:image/webp;base64,${base64}`;
+  }
+
+  function closeLightbox(e) {
+    if (e.type === 'keydown' && e.key !== 'Escape') return;
+    lightboxSrc = null;
+  }
 </script>
 
 <div class="message" class:message-user={isUser} class:message-assistant={!isUser} class:message-error={isError}>
@@ -195,7 +206,7 @@
       {#if message.mentions?.length}
         <div class="mention-chips">
           {#each message.mentions as mention}
-            <span class="mention-chip">@{mention.title || mention.filename || mention.id}</span>
+            <span class="mention-chip">@{mention.type === 'slide' ? (mention.file || mention.id) : (mention.title || mention.filename || mention.id)}</span>
           {/each}
         </div>
       {/if}
@@ -292,7 +303,7 @@
       {#if message.screenshots?.length}
         <div class="screenshots">
           {#each message.screenshots as screenshot}
-            <button type="button" class="screenshot-btn" onclick={() => window.open(`data:image/webp;base64,${screenshot}`)}>
+            <button type="button" class="screenshot-btn" onclick={() => openLightbox(screenshot)}>
               <img
                 class="screenshot"
                 src={`data:image/webp;base64,${screenshot}`}
@@ -301,6 +312,15 @@
             </button>
           {/each}
         </div>
+      {/if}
+
+      {#if lightboxSrc}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <div class="lightbox-overlay" onclick={closeLightbox}>
+          <img src={lightboxSrc} alt="Screenshot preview" class="lightbox-img" />
+        </div>
+        <svelte:window onkeydown={closeLightbox} />
       {/if}
 
       {#if fileChanges.length > 0}
@@ -833,6 +853,27 @@
 
   .screenshot:hover {
     box-shadow: var(--shadow-md);
+  }
+
+  /* Lightbox overlay */
+  .lightbox-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.8);
+    cursor: zoom-out;
+    animation: fadeIn 0.15s var(--ease);
+  }
+
+  .lightbox-img {
+    max-width: 90vw;
+    max-height: 90vh;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    object-fit: contain;
   }
 
   /* Usage info */

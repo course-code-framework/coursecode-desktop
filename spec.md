@@ -926,6 +926,45 @@ A dropdown panel accessible from a clock/history icon button in the chat header,
 2. Remove the conversation file from `conversations/`.
 3. Remove its entry from `conversations/index.json`.
 4. If the deleted conversation was the active one, reset to an empty chat.
+### Prompt Caching
+
+Prompt caching reduces input token costs and latency on multi-turn conversations by reusing previously processed prefix data (system prompt, tool definitions, older conversation history). Each provider handles caching differently; the desktop must apply the correct strategy per provider for both BYOK and cloud paths.
+
+#### Anthropic — Explicit `cache_control` Markers
+
+Anthropic requires explicit opt-in via `cache_control: { type: 'ephemeral' }` markers on content blocks. The desktop injects markers at three strategic breakpoints:
+
+1. **System prompt** — Wrapped as a content block array: `[{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]`
+2. **Last tool definition** — The final tool in the `tools` array gets `cache_control` so the entire tool block is cached
+3. **Conversation boundary** — The message at index `N-3` (the latest message that won't change next turn) gets `cache_control` on its last content block
+
+This strategy caches the entire static prefix (system + tools + older history) while keeping the last 2 messages (the most recent exchange) uncached since they change every turn.
+
+**BYOK path**: Markers are injected in `createAnthropicProvider` (`llm-provider.js`) before calling the Anthropic SDK.
+
+**Cloud path**: Markers are injected in `createCloudProxyProvider` (`llm-provider.js`) before building the request body. The proxy passes them through to Anthropic's API. The cloud path sends the system prompt as a content block array (not a plain string) so the `cache_control` marker reaches the API.
+
+**Cache metrics**: Anthropic reports `cache_creation_input_tokens` and `cache_read_input_tokens` in the usage response. These are forwarded through the `done` event and tracked in `sessionCacheCreation` / `sessionCacheRead`.
+
+#### OpenAI — Automatic Prefix Caching
+
+OpenAI automatically caches identical prompt prefixes ≥1,024 tokens. No client-side markers or opt-in are needed. The caching is server-side and applies to both Chat Completions and Responses API models.
+
+**BYOK path**: No special handling required. The `store: true` parameter (set on BYOK requests) enables OpenAI dashboard logging but does **not** affect prompt caching — caching is fully automatic regardless.
+
+**Cloud path**: No special handling required. The proxy forwards messages as-is and OpenAI's server-side caching activates automatically.
+
+**Cache metrics**: OpenAI reports `prompt_tokens_details.cached_tokens` in the usage response. The BYOK provider extracts this and forwards it as `cacheReadInputTokens`.
+
+#### Google/Gemini — Implicit Server-Side Caching
+
+Gemini 2.5+ models automatically cache repeated content server-side. No client-side configuration is needed.
+
+**BYOK path**: No special handling required.
+
+**Cloud path**: No special handling required. The proxy forwards messages as-is.
+
+**Cache metrics**: Gemini reports `cachedContentTokenCount` in `usageMetadata`. The BYOK provider extracts this and forwards it as `cacheReadInputTokens`.
 
 ---
 
@@ -975,7 +1014,7 @@ Content-Type: application/json
   "model": string,         // Model ID from GET /api/ai/models (e.g. "claude-sonnet-4-5-20250929")
   "messages": Message[],   // Provider-formatted messages (see Provider-Specific Formats)
   "tools"?: ToolDef[],     // Provider-formatted tool definitions (see Provider-Specific Formats)
-  "system"?: string,       // Top-level system prompt (proxy maps to provider convention)
+  "system"?: string | ContentBlock[],  // System prompt — string or Anthropic content block array (for cache_control)
   "max_tokens"?: number    // Optional output cap (capped at model's maxOutputTokens)
 }
 ```

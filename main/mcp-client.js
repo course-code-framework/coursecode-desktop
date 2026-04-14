@@ -318,6 +318,23 @@ export async function getMcpTools(projectPath) {
 }
 
 /**
+ * Return the current slide ID from the headless browser via MCP.
+ * Lightweight pre-prompt enrichment — returns null silently on failure.
+ */
+export async function getCurrentSlideId(projectPath) {
+    try {
+        const conn = await getMcpClient(projectPath);
+        const result = await conn.callTool('coursecode_state', {});
+        const text = result?.content?.[0]?.text;
+        if (!text) return null;
+        const parsed = JSON.parse(text);
+        return parsed?.slide || null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Return the MCP server's instructions (stage-aware authoring context).
  * Returns null if not connected or no instructions available.
  */

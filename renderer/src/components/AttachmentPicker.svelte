@@ -87,8 +87,8 @@
           {#each filtered.slides as item}
             <button class="attach-item" onclick={() => onSelect(item)}>
               <span class="attach-icon">{getIcon(item.type)}</span>
-              <span class="attach-label">{item.title}</span>
-              <span class="attach-detail">{item.file || `${item.id}.js`}</span>
+              <span class="attach-label">{item.file || item.id}</span>
+              <span class="attach-detail">{item.title}</span>
             </button>
           {/each}
         </div>

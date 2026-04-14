@@ -77,8 +77,12 @@ function normalizeCloudUsage(payload) {
 }
 
 export function subscribeToChatEvents() {
-    unsubStream = window.api.chat.onStream(({ projectPath, text, delta }) => {
+    unsubStream = window.api.chat.onStream(({ projectPath, text, delta, retry }) => {
         if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (retry) {
+            streamingText.set('');
+            return;
+        }
         if (typeof delta === 'string' && delta.length > 0) {
             streamingText.update(current => `${current}${delta}`);
             return;

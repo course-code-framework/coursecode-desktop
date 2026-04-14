@@ -14,6 +14,9 @@ export function buildSystemPrompt(projectContext = {}, mcpInstructions = null) {
         const slideList = projectContext.slides.map(s => `- ${s.id}: ${s.title} → slides/${s.id}.js`).join('\n');
         parts.push(`\n## Course Structure (slide ID → file path)\n${slideList}`);
     }
+    if (projectContext.activeSlide) {
+        parts.push(`\n## Active Slide (currently visible in preview)\nID: ${projectContext.activeSlide.id} → ${projectContext.activeSlide.file}`);
+    }
     if (projectContext.refs?.length) {
         const refList = projectContext.refs.map(r => `- ${r}`).join('\n');
         parts.push(`\n## Available Reference Documents\n${refList}`);

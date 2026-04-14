@@ -56,6 +56,11 @@
   let restoringSnapshotId = $state(null);
   let historyReady = $state(false);
 
+  // Input history (up/down arrow recall)
+  let inputHistory = $state([]);
+  let historyIndex = $state(-1);
+  let savedDraft = $state('');
+
   // Streaming tool activity disclosure state
   let streamToolsExpanded = $state(false);
 
@@ -243,9 +248,10 @@
     ];
     if (!q) return all.slice(0, 10);
     return all.filter(item => {
-      const label = (item.title || item.filename || item.id || '').toLowerCase();
+      const label = mentionLabel(item).toLowerCase();
+      const title = (item.title || '').toLowerCase();
       const file = (item.file || '').toLowerCase();
-      return label.includes(q) || file.includes(q);
+      return label.includes(q) || title.includes(q) || file.includes(q);
     }).slice(0, 10);
   }
 
@@ -322,6 +328,45 @@
       }
     }
 
+    // Input history navigation (up/down arrow)
+    if (e.key === 'ArrowUp' && inputHistory.length > 0) {
+      const cursorPos = inputEl?.selectionStart ?? 0;
+      const isFirstLine = !inputText.substring(0, cursorPos).includes('\n');
+      if (isFirstLine) {
+        e.preventDefault();
+        if (historyIndex === -1) {
+          savedDraft = inputText;
+          historyIndex = inputHistory.length - 1;
+        } else if (historyIndex > 0) {
+          historyIndex--;
+        }
+        inputText = inputHistory[historyIndex];
+        tick().then(() => {
+          if (inputEl) inputEl.selectionStart = inputEl.selectionEnd = inputText.length;
+        });
+        return;
+      }
+    }
+
+    if (e.key === 'ArrowDown' && historyIndex !== -1) {
+      const cursorPos = inputEl?.selectionStart ?? 0;
+      const isLastLine = !inputText.substring(cursorPos).includes('\n');
+      if (isLastLine) {
+        e.preventDefault();
+        if (historyIndex < inputHistory.length - 1) {
+          historyIndex++;
+          inputText = inputHistory[historyIndex];
+        } else {
+          historyIndex = -1;
+          inputText = savedDraft;
+        }
+        tick().then(() => {
+          if (inputEl) inputEl.selectionStart = inputEl.selectionEnd = inputText.length;
+        });
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -331,6 +376,13 @@
   async function handleSend() {
     const text = inputText.trim();
     if (!text || $streaming) return;
+
+    // Push to input history (dedupe consecutive identical messages, cap at 50)
+    if (inputHistory.length === 0 || inputHistory[inputHistory.length - 1] !== text) {
+      inputHistory = [...inputHistory.slice(-(50 - 1)), text];
+    }
+    historyIndex = -1;
+    savedDraft = '';
 
     const mentions = [...attachments, ...collectInlineMentions(text)];
     const deduped = [];
@@ -390,6 +442,10 @@
 
   function toggleHistory() {
     showHistory = !showHistory;
+    if (!showHistory) {
+      confirmDeleteId = null;
+      confirmDeleteAll = false;
+    }
   }
 
   async function handleLoadConversation(conversationId) {
@@ -430,6 +486,12 @@
       e.preventDefault();
       if ($messages.length > 0) handleClear();
     }
+    // Escape closes history panel
+    if (e.key === 'Escape' && showHistory) {
+      showHistory = false;
+      confirmDeleteId = null;
+      confirmDeleteAll = false;
+    }
   }
 
   // Auto-resize textarea + sync mirror
@@ -466,7 +528,7 @@
     return escaped.replace(/@[^\s@]+/g, '<mark class="mention-hl">$&</mark>') + '\n';
   }
 
-  let walkthroughSteps = $derived(() => {
+  let walkthroughSteps = $derived.by(() => {
     const refsReady = refCount > 0;
     const outlineReady = hasOutline;
     const slidesReady = ($mentionIndex?.slides?.length || 0) > 0;
@@ -782,7 +844,9 @@
   {/if}
 
   <!-- Messages -->
-  <div class="chat-body" bind:this={chatBodyEl}>
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="chat-body" bind:this={chatBodyEl} onclick={() => { if (showHistory) showHistory = false; }}>
     {#if !historyReady}
       <div class="chat-loading-state" data-testid="chat-loading-state">
         <span class="text-tertiary">Loading conversation…</span>
@@ -1254,7 +1318,7 @@
           {#each attachments as a, i}
             <span class="attachment-tag">
               <span class="attachment-tag-icon">{a.type === 'ref' ? '📚' : a.type === 'file' ? '📎' : '📄'}</span>
-              {a.title || a.filename || a.id}
+              {a.type === 'slide' ? (a.file || a.id) : (a.title || a.filename || a.id)}
               <button class="attachment-remove" onclick={() => removeAttachment(i)}>×</button>
             </span>
           {/each}
@@ -1578,7 +1642,7 @@
     overflow-y: auto;
     overflow-x: hidden;
     padding: var(--sp-md);
-    scroll-behavior: smooth;
+
   }
 
   .course-walkthrough {
@@ -2591,7 +2655,7 @@
   .diff-line-text {
     color: var(--text-secondary);
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   @keyframes chatPanelIn {

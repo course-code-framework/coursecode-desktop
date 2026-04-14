@@ -7,7 +7,7 @@ import { loadToken } from './cloud-client.js';
 import { buildSystemPrompt } from './system-prompts.js';
 import { getSetting } from './settings.js';
 import { startPreview, getPreviewStatus } from './preview-manager.js';
-import { getMcpClient, getMcpTools, getMcpInstructions } from './mcp-client.js';
+import { getMcpClient, getMcpTools, getMcpInstructions, getCurrentSlideId } from './mcp-client.js';
 import { listRefs, readRef } from './ref-manager.js';
 import { createSnapshot, getChanges } from './snapshot-manager.js';
 import { createLogger } from './logger.js';
@@ -1438,9 +1438,18 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         let runtimeTools = [...FILE_TOOL_DEFINITIONS];
         let mcpInstructions = null;
         if (getPreviewStatus(projectPath) === 'running') {
-            const discoveredTools = await getMcpTools(projectPath);
+            const [discoveredTools, slideId] = await Promise.all([
+                getMcpTools(projectPath),
+                getCurrentSlideId(projectPath)
+            ]);
             runtimeTools = mergeToolDefinitions(FILE_TOOL_DEFINITIONS, discoveredTools);
             mcpInstructions = await getMcpInstructions(projectPath);
+
+            // Resolve current slide ID to file path for prompt context
+            if (slideId && projectContext.slides?.length) {
+                const match = projectContext.slides.find(s => s.id === slideId);
+                projectContext.activeSlide = { id: slideId, file: match ? `slides/${match.id}.js` : `slides/${slideId}.js` };
+            }
         }
 
         // Build system prompt after MCP discovery so we can include server instructions
@@ -1960,13 +1969,13 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                         output
                                     });
                                 }
-                                // Inject screenshot images as a user message with image_url
+                                // Inject screenshot images as a user message with input_image
                                 if (pendingScreenshots.length > 0) {
                                     const parts = pendingScreenshots.map(img => ({
-                                        type: 'image_url',
-                                        image_url: { url: `data:${img.mimeType || 'image/jpeg'};base64,${img.source?.data || img.data}` }
+                                        type: 'input_image',
+                                        image_url: `data:${img.mimeType || 'image/jpeg'};base64,${img.source?.data || img.data}`
                                     }));
-                                    parts.unshift({ type: 'text', text: 'Screenshot of the current slide:' });
+                                    parts.unshift({ type: 'input_text', text: 'Screenshot of the current slide:' });
                                     apiMessages.push({ role: 'user', content: parts });
                                 }
                             } else if (cloudProvider === 'openai') {
