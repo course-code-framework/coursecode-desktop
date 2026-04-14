@@ -20,6 +20,7 @@ describe('buildSystemPrompt', () => {
     it('always includes base persona', () => {
         const prompt = buildSystemPrompt();
         expect(prompt).toContain('CourseCode course designer');
+        expect(prompt).toContain('execution-first');
     });
 
     it('always includes course-specific rules', () => {
@@ -63,34 +64,22 @@ describe('buildSystemPrompt', () => {
         expect(prompt).toContain('- safety-manual.md');
     });
 
-    it('includes project memory summary', () => {
-        const prompt = buildSystemPrompt({}, { summary: 'This is a 5-module safety course.' });
-        expect(prompt).toContain('## Course Memory');
-        expect(prompt).toContain('5-module safety course');
+    it('includes current turn guidance when provided', () => {
+        const prompt = buildSystemPrompt({ turnContext: 'Treat "yes" as approval to proceed.' });
+        expect(prompt).toContain('## Current Turn Guidance');
+        expect(prompt).toContain('Treat "yes" as approval to proceed.');
     });
 
-    it('includes constraints from memory', () => {
-        const prompt = buildSystemPrompt({}, {
-            constraints: ['Must be under 20 minutes', 'No video content']
-        });
-        expect(prompt).toContain('## Course Constraints');
-        expect(prompt).toContain('Must be under 20 minutes');
+    it('includes workflow context when provided as a string', () => {
+        const prompt = buildSystemPrompt({}, 'Preview is running and ready for runtime tools.');
+        expect(prompt).toContain('## Framework Workflow Context');
+        expect(prompt).toContain('Preview is running and ready for runtime tools.');
     });
 
-    it('includes decisions from memory', () => {
-        const prompt = buildSystemPrompt({}, {
-            decisions: ['Use article layout', 'SCORM 2004 format']
-        });
-        expect(prompt).toContain('## Accepted Decisions');
-        expect(prompt).toContain('Use article layout');
-    });
-
-    it('includes open questions from memory', () => {
-        const prompt = buildSystemPrompt({}, {
-            openQuestions: ['How many assessment questions?']
-        });
-        expect(prompt).toContain('## Open Questions');
-        expect(prompt).toContain('How many assessment questions?');
+    it('ignores non-string workflow context values', () => {
+        const prompt = buildSystemPrompt({}, { summary: 'legacy shape' });
+        expect(prompt).not.toContain('## Framework Workflow Context');
+        expect(prompt).not.toContain('legacy shape');
     });
 
     it('includes custom instructions from settings', () => {
@@ -118,24 +107,18 @@ describe('buildSystemPrompt', () => {
             {
                 title: 'Intro to Safety',
                 slides: [{ id: 'welcome', title: 'Welcome', type: 'content' }],
-                refs: ['manual.md']
+                refs: ['manual.md'],
+                turnContext: 'Treat the latest "yes" as confirmation to proceed.'
             },
-            {
-                summary: 'Safety intro course',
-                constraints: ['Max 10 slides'],
-                decisions: ['Article layout'],
-                openQuestions: ['Include quiz?']
-            }
+            'Preview is running and the active slide is welcome.'
         );
         // All sections should be present
         expect(prompt).toContain('CourseCode course designer');
         expect(prompt).toContain('Intro to Safety');
         expect(prompt).toContain('welcome: Welcome');
         expect(prompt).toContain('manual.md');
-        expect(prompt).toContain('Safety intro course');
-        expect(prompt).toContain('Max 10 slides');
-        expect(prompt).toContain('Article layout');
-        expect(prompt).toContain('Include quiz?');
+        expect(prompt).toContain('Treat the latest "yes" as confirmation to proceed.');
+        expect(prompt).toContain('Preview is running and the active slide is welcome.');
         expect(prompt).toContain('Keep it concise.');
     });
 });
@@ -148,7 +131,8 @@ describe('FILE_TOOL_DEFINITIONS', () => {
         expect(names).toContain('edit_file');
         expect(names).toContain('create_file');
         expect(names).toContain('list_files');
-        expect(names.length).toBe(4);
+        expect(names).toContain('search_files');
+        expect(names.length).toBe(5);
     });
 });
 

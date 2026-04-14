@@ -25,6 +25,9 @@ export function buildSystemPrompt(projectContext = {}, mcpInstructions = null) {
         const refList = projectContext.refs.map(r => `- ${r}`).join('\n');
         parts.push(`\n## Available Reference Documents\n${refList}`);
     }
+    if (projectContext.turnContext?.trim()) {
+        parts.push(`\n## Current Turn Guidance\n${projectContext.turnContext.trim()}`);
+    }
 
     // User custom instructions
     const customInstructions = getSetting('aiCustomInstructions');
@@ -33,7 +36,7 @@ export function buildSystemPrompt(projectContext = {}, mcpInstructions = null) {
     }
 
     // MCP server stage-aware instructions (when preview is running)
-    if (mcpInstructions?.trim()) {
+    if (typeof mcpInstructions === 'string' && mcpInstructions.trim()) {
         parts.push(`\n## Framework Workflow Context\n${mcpInstructions.trim()}`);
     }
 

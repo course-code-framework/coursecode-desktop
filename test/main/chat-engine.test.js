@@ -11,21 +11,24 @@ const loadApiKey = vi.fn(() => 'test-key');
 const estimateCost = vi.fn(() => 0.01);
 const getCloudModels = vi.fn(async () => []);
 const getProviderModels = vi.fn(() => []);
+const getModelContextWindow = vi.fn(() => null);
 
 vi.mock('../../main/llm-provider.js', () => ({
     createProvider: providerFactory,
     loadApiKey,
     estimateCost,
     getCloudModels,
-    getProviderModels
+    getProviderModels,
+    getModelContextWindow
 }));
 
 vi.mock('../../main/cloud-client.js', () => ({
     loadToken: vi.fn(() => null)
 }));
 
+const buildSystemPrompt = vi.fn(() => 'system prompt');
 vi.mock('../../main/system-prompts.js', () => ({
-    buildSystemPrompt: vi.fn(() => 'system prompt')
+    buildSystemPrompt
 }));
 
 vi.mock('../../main/settings.js', () => ({
@@ -130,6 +133,31 @@ describe('chat-engine storage and safety', () => {
         expect(existsSync(join(projectDir, '.chat'))).toBe(false);
         const chatFiles = listFilesRecursive(join(userDataDir, 'chat-history'));
         expect(chatFiles.some(file => file.endsWith('conversation.json'))).toBe(true);
+    });
+
+    it('adds a turn-context hint for terse affirmative follow-ups', async () => {
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                yield { type: 'text', text: 'Do you want me to update the slide now?' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 10, outputTokens: 20 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'Please update the welcome slide.', [], webContents, 'byok');
+
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                yield { type: 'text', text: 'Updated the slide.' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 12 } };
+            }
+        });
+
+        await sendMessage(projectDir, 'yes', [], webContents, 'byok');
+
+        const secondCallProjectContext = buildSystemPrompt.mock.calls.at(-1)?.[0];
+        expect(secondCallProjectContext?.turnContext).toContain('brief confirmation to continue');
+        expect(secondCallProjectContext?.turnContext).toContain('Do not restate the plan');
     });
 
     it('blocks path traversal for edit_file tool calls', async () => {
