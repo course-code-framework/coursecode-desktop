@@ -67,11 +67,37 @@
   /**
    * Insert a context mention from the preview context menu into the chat input.
    * Called by ProjectDetail when the user selects "Mention in Chat".
+   * Creates a proper structured attachment so the slide content is resolved by
+   * resolveMentions when the message is sent.
    */
   export function insertContextMention(text, slideId) {
-    const slideLabel = slideId ? ` — ${slideId}` : '';
-    const quote = `> "${text}"${slideLabel}\n\n`;
-    inputText = quote + inputText;
+    // Try to find the slide in the mention index and add it as a structured attachment
+    if (slideId) {
+      const idx = $mentionIndex;
+      const slide = (idx.slides || []).find(s => s.id === slideId);
+      if (slide) {
+        // Add as a structured attachment (shows as a chip, content resolved on send)
+        const key = `${slide.type}:${slide.id}`;
+        const alreadyAttached = attachments.some(
+          a => `${a.type}:${a.id}` === key
+        );
+        if (!alreadyAttached) {
+          attachments = [...attachments, slide];
+        }
+      } else {
+        // Slide not in index — fall back to inline @mention syntax
+        const file = `${slideId}.js`;
+        const mention = `@${file} `;
+        inputText = mention + inputText;
+      }
+    }
+
+    // Include selected text as a quoted context line
+    if (text) {
+      const quote = `> "${text}"\n\n`;
+      inputText = quote + inputText;
+    }
+
     tick().then(() => {
       if (inputEl) {
         inputEl.focus();

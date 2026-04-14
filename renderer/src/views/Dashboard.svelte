@@ -13,7 +13,7 @@
   import { popover } from '../actions/popover.js';
   import { getDisplayErrorMessage } from '../lib/errors.js';
 
-  let { onCreateNew, onOpenProject, onCloseProject, onOpenSettings } = $props();
+  let { onCreateNew, onOpenProject, onCloseProject } = $props();
 
   let previewStatuses = $state({});
   let cloudStatuses = $state({});
@@ -793,13 +793,6 @@
         </svg>
         New Course
       </button>
-      {#if $user}
-        <button class="btn-ghost avatar-btn" onclick={onOpenSettings} title={$user.email}>
-          <div class="avatar"><span class="avatar-initial">{$user.email?.[0]?.toUpperCase() || 'U'}</span></div>
-        </button>
-      {:else}
-        <button class="btn-ghost" onclick={onOpenSettings}>Sign In</button>
-      {/if}
     </div>
   </header>
 
@@ -1365,35 +1358,7 @@
     flex-shrink: 0;
   }
 
-  .avatar-btn {
-    width: 38px;
-    height: 38px;
-    padding: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
 
-  .avatar {
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    background: var(--accent);
-    color: var(--text-on-accent);
-    position: relative;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    line-height: 1;
-  }
-
-  .avatar-initial {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    transform: translateY(0.5px);
-  }
 
   .content {
     flex: 1;

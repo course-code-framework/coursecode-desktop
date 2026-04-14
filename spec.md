@@ -333,7 +333,7 @@ All communication between renderer and main process flows through typed IPC chan
 
 The primary view. Displays all detected projects as cards in a responsive grid.
 
-**Header bar**: App title and logo on left. "New Course" button and Settings gear icon on right. Cloud auth state indicator (avatar or "Sign In" link).
+**Header bar**: App title and logo on left. Search bar in center. \"New Course\" button on right. Cloud connection status and Settings gear are in the global TabBar (see Tab Bar).
 
 **Toolbar**: Below the header bar, a row containing:
 - **Search field** — Filters projects by name as the user types.
@@ -426,6 +426,7 @@ Preferences view accessible from the Dashboard header.
 - **Projects directory**: Path input with a "Browse" button (opens native directory picker). Default: `~/CourseCode Projects/`. Changing this triggers a re-scan.
 - **Default format**: Dropdown (cmi5, SCORM 2004, SCORM 1.2, LTI). Pre-selects in the Create Wizard.
 - **Default layout**: Dropdown (article, traditional, presentation, focused).
+- **Auto Save**: Toggle (default: on). When enabled, the editor writes files to disk automatically after 1 second of typing inactivity. The manual Save button in the editor breadcrumb bar is hidden when auto-save is on. ⌘S / Ctrl+S always saves immediately regardless of this setting.
 
 **Appearance**
 - **Theme**: Light / Dark / System. The app follows the OS preference by default.
@@ -564,6 +565,7 @@ Reads and writes a JSON file at `app.getPath('userData')/settings.json`.
 - `projectsDir`: `path.join(os.homedir(), 'CourseCode Projects')` — the directory to scan for projects.
 - `defaultFormat`: `'cmi5'`
 - `defaultLayout`: `'article'`
+- `autoSave`: `true` — when `true`, the editor automatically saves files to disk after 1 second of inactivity (debounced). When `false`, files are only saved via ⌘S / Ctrl+S. The Save button in the editor breadcrumb bar is hidden when auto-save is enabled.
 - `theme`: `'system'` — `'light'`, `'dark'`, or `'system'`.
 - `setupCompleted`: `false` — whether the Setup Assistant has been completed.
 - `cliVersion`: `null` — installed CLI version for update checks.

@@ -45,10 +45,15 @@ export async function openFileInEditor(projectPath, relativePath) {
     editorContent.set(result.content);
 }
 
+let autoSaveTimer = null;
+
 /**
- * Save the current file.
+ * Save the current file to disk immediately.
+ * Clears any pending auto-save timer so a debounced write doesn't double-fire.
  */
 export async function saveFile(projectPath) {
+    clearAutoSaveTimer();
+
     let currentContent;
     editorContent.subscribe(v => currentContent = v)();
 
@@ -62,9 +67,29 @@ export async function saveFile(projectPath) {
 }
 
 /**
- * Close the current file.
+ * Schedule a debounced save (1 000 ms). Resets the timer on each call
+ * so rapid keystrokes don't trigger multiple writes.
+ */
+export function scheduleAutoSave(projectPath) {
+    clearAutoSaveTimer();
+    autoSaveTimer = setTimeout(() => {
+        autoSaveTimer = null;
+        saveFile(projectPath);
+    }, 1000);
+}
+
+function clearAutoSaveTimer() {
+    if (autoSaveTimer) {
+        clearTimeout(autoSaveTimer);
+        autoSaveTimer = null;
+    }
+}
+
+/**
+ * Close the current file. Flushes any pending auto-save timer.
  */
 export function closeFile() {
+    clearAutoSaveTimer();
     openFile.set(null);
     savedContent.set(null);
     editorContent.set(null);

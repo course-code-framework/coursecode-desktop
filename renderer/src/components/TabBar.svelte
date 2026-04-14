@@ -1,6 +1,7 @@
 <script>
   import { tabs, activeTabId, setActiveTab, closeTab } from '../stores/tabs.js';
   import { settings, updateSetting } from '../stores/settings.js';
+  import { user } from '../stores/auth.js';
 
   let { onTabClose, onOpenSettings } = $props();
 
@@ -82,6 +83,25 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
           <rect x="3" y="4" width="18" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/>
           <path d="M8 20h8M12 16v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      {/if}
+    </button>
+    <button
+      class="tab-action-btn cloud-btn"
+      class:connected={!!$user}
+      onclick={onOpenSettings}
+      title={$user ? `Connected as ${$user.email}` : 'Not connected to cloud — click to sign in'}
+      data-testid="cloud-status-btn"
+    >
+      {#if $user}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+          <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="cloud-dot"></span>
+      {:else}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+          <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+          <line x1="2" y1="2" x2="22" y2="22" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity="0.5"/>
         </svg>
       {/if}
     </button>
@@ -258,5 +278,24 @@
       margin-left: var(--sp-xs);
       padding-left: var(--sp-xs);
     }
+  }
+
+  .cloud-btn {
+    position: relative;
+  }
+
+  .cloud-btn.connected {
+    color: var(--text-secondary);
+  }
+
+  .cloud-dot {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success, #22c55e);
+    border: 1.5px solid var(--bg-elevated);
   }
 </style>

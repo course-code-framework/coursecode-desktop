@@ -199,7 +199,6 @@
                 onCreateNew={() => showOverlay('create')}
                 onOpenProject={handleOpenProject}
                 onCloseProject={handleCloseProject}
-                onOpenSettings={() => showOverlay('settings')}
               />
             {:else if tab.type === 'course'}
               <ProjectDetail projectPath={tab.path} />

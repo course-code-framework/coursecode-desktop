@@ -2,8 +2,9 @@
   import { onMount, onDestroy } from 'svelte';
   import {
     openFile, dirty, editorContent, currentDir, dirEntries,
-    loadDirectory, openFileInEditor, saveFile, closeFile
+    loadDirectory, openFileInEditor, saveFile, scheduleAutoSave, closeFile
   } from '../stores/editor.js';
+  import { settings } from '../stores/settings.js';
   import Icon from './Icon.svelte';
 
   let { projectPath } = $props();
@@ -64,9 +65,12 @@
       saveFile(projectPath);
     });
 
-    // Track content changes → store
+    // Track content changes → store + auto-save
     editor.onDidChangeModelContent(() => {
       editorContent.set(editor.getValue());
+      if ($settings.autoSave) {
+        scheduleAutoSave(projectPath);
+      }
     });
 
     // Watch for theme changes
@@ -269,9 +273,11 @@
           <span class="dirty-dot" title="Unsaved changes">●</span>
         {/if}
         <div class="breadcrumb-spacer"></div>
-        <button class="breadcrumb-btn" onclick={() => saveFile(projectPath)} disabled={!$dirty} title="Save (⌘S)">
-          Save
-        </button>
+        {#if !$settings.autoSave}
+          <button class="breadcrumb-btn" onclick={() => saveFile(projectPath)} disabled={!$dirty} title="Save (⌘S)">
+            Save
+          </button>
+        {/if}
         <button class="breadcrumb-btn" onclick={closeFile} title="Close file">
           ✕
         </button>

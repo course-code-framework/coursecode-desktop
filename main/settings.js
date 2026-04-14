@@ -14,6 +14,7 @@ const DEFAULTS = {
     projectsDir: join(homedir(), 'CourseCode Projects'),
     defaultFormat: 'cmi5',
     defaultLayout: 'article',
+    autoSave: true,
     aiChatEnabled: false,
     keepPreviewRunningWithoutTab: false,
     previewPorts: {},

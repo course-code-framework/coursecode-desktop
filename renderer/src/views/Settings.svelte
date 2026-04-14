@@ -342,6 +342,23 @@
 
       <div class="setting-row">
         <div class="setting-info">
+          <span class="setting-label">Auto Save</span>
+          <span class="setting-desc">Automatically save files after you stop typing.</span>
+        </div>
+        <div class="setting-control">
+          <label class="toggle-check">
+            <input
+              type="checkbox"
+              checked={$settings.autoSave !== false}
+              onchange={(e) => updateSetting('autoSave', e.target.checked)}
+            />
+            <span>Enabled</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
           <span class="setting-label">Show AI Chat by Default</span>
           <span class="setting-desc">When opening a course tab, start with the AI panel visible.</span>
         </div>
