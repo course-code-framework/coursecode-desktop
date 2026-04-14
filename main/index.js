@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell, nativeTheme, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog } from 'electron';
 import { join } from 'path';
 import { is } from '@electron-toolkit/utils';
 import { registerIpcHandlers } from './ipc-handlers.js';
@@ -72,96 +72,54 @@ function createWindow() {
         return { action: 'deny' };
     });
 
-    // Smart context menu — preview-aware with Mention, Edit Mode, Copy
-    mainWindow.webContents.on('context-menu', (_event, params) => {
+    // Smart context menu — sends context data to renderer for a custom styled menu.
+    // Frame-level actions (select all, toggle edit mode) are handled via dedicated
+    // IPC handlers since they require executeJavaScript on the preview frame.
+    mainWindow.webContents.on('context-menu', async (_event, params) => {
         const isPreviewFrame = /^https?:\/\/127\.0\.0\.1:\d+/.test(params.frameURL || '');
-        const hasSelection = !!params.selectionText?.trim();
-        const items = [];
+        const selectionText = params.selectionText?.trim() || '';
 
-        if (hasSelection) {
-            items.push({
-                label: 'Copy',
-                accelerator: 'CmdOrCtrl+C',
-                click: () => mainWindow.webContents.copy()
-            });
-        }
-        items.push({
-            label: 'Select All',
-            accelerator: 'CmdOrCtrl+A',
-            click: () => {
-                if (isPreviewFrame) {
-                    // Select all within the iframe frame
-                    for (const frame of mainWindow.webContents.mainFrame.frames) {
-                        if (frame.url === params.frameURL) {
-                            frame.executeJavaScript('document.execCommand("selectAll")');
-                            break;
-                        }
-                    }
-                } else {
-                    mainWindow.webContents.selectAll();
-                }
-            }
-        });
-
+        // Resolve current slide if right-clicking in the preview
+        let slideId = null;
         if (isPreviewFrame) {
-            items.push({ type: 'separator' });
-
-            if (hasSelection) {
-                const selectionText = params.selectionText.trim();
-                const truncated = selectionText.length > 30
-                    ? selectionText.slice(0, 30) + '…'
-                    : selectionText;
-                items.push({
-                    label: `Mention "${truncated}" in Chat`,
-                    click: async () => {
-                        // Resolve current slide via the preview server API
-                        const portMatch = params.frameURL.match(/:([\d]+)/);
-                        let slideId = null;
-                        if (portMatch) {
-                            // Find the project path for this port
-                            const { getProjectForPort } = await import('./preview-manager.js');
-                            const projectPath = getProjectForPort(Number(portMatch[1]));
-                            if (projectPath) {
-                                slideId = await getCurrentSlideId(projectPath);
-                            }
-                        }
-                        mainWindow.webContents.send('preview:contextMention', {
-                            text: selectionText,
-                            slideId
-                        });
-                    }
-                });
+            const portMatch = params.frameURL.match(/:(\d+)/);
+            if (portMatch) {
+                const { getProjectForPort } = await import('./preview-manager.js');
+                const projectPath = getProjectForPort(Number(portMatch[1]));
+                if (projectPath) {
+                    slideId = await getCurrentSlideId(projectPath);
+                }
             }
-
-            items.push({
-                label: 'Toggle Edit Mode',
-                click: () => {
-                    for (const frame of mainWindow.webContents.mainFrame.frames) {
-                        if (frame.url === params.frameURL) {
-                            // The preview iframe embeds a stub-player that has its own
-                            // course iframe. The edit mode button lives on the stub-player
-                            // (the top-level document of the preview frame).
-                            frame.executeJavaScript(
-                                'document.getElementById("stub-player-edit-mode-btn")?.click()'
-                            );
-                            break;
-                        }
-                    }
-                }
-            });
-
-            items.push({ type: 'separator' });
-            items.push({
-                label: 'Open Preview in Browser',
-                click: () => {
-                    const previewOrigin = params.frameURL.match(/^https?:\/\/127\.0\.0\.1:\d+/);
-                    if (previewOrigin) shell.openExternal(previewOrigin[0]);
-                }
-            });
         }
 
-        if (items.length > 0) {
-            Menu.buildFromTemplate(items).popup({ window: mainWindow });
+        mainWindow.webContents.send('preview:contextMenu', {
+            x: params.x,
+            y: params.y,
+            selectionText,
+            isPreviewFrame,
+            slideId,
+            frameURL: params.frameURL || ''
+        });
+    });
+
+    // IPC handlers for preview frame actions (require executeJavaScript on the frame)
+    ipcMain.handle('preview:selectAll', (_e, frameURL) => {
+        for (const frame of mainWindow.webContents.mainFrame.frames) {
+            if (frame.url === frameURL) {
+                frame.executeJavaScript('document.execCommand("selectAll")');
+                break;
+            }
+        }
+    });
+
+    ipcMain.handle('preview:toggleEditMode', (_e, frameURL) => {
+        for (const frame of mainWindow.webContents.mainFrame.frames) {
+            if (frame.url === frameURL) {
+                frame.executeJavaScript(
+                    'document.getElementById("stub-player-edit-mode-btn")?.click()'
+                );
+                break;
+            }
         }
     });
 

@@ -185,3 +185,52 @@ async function isBundledCLIReady(webContents) {
 export function getDownloadUrl(toolId) {
     return registry.tools[toolId]?.downloadUrl || null;
 }
+
+/**
+ * Fetch the latest published version of the coursecode npm package.
+ *
+ * Hits the npm registry API and caches the result for 15 minutes to avoid
+ * excessive network calls. Returns null if the registry is unreachable.
+ */
+let _latestVersionCache = { version: null, fetchedAt: 0 };
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+export async function getLatestFrameworkVersion() {
+    const now = Date.now();
+    if (_latestVersionCache.version && (now - _latestVersionCache.fetchedAt) < CACHE_TTL_MS) {
+        return _latestVersionCache.version;
+    }
+
+    const packageName = registry.tools.cli?.install?.npmPackage || 'coursecode';
+
+    try {
+        const { default: https } = await import('https');
+        const version = await new Promise((resolve, reject) => {
+            const req = https.get(`https://registry.npmjs.org/${packageName}/latest`, {
+                headers: { 'Accept': 'application/json' },
+                timeout: 8000
+            }, (res) => {
+                let body = '';
+                res.on('data', (chunk) => { body += chunk; });
+                res.on('end', () => {
+                    try {
+                        const data = JSON.parse(body);
+                        resolve(data.version || null);
+                    } catch {
+                        resolve(null);
+                    }
+                });
+            });
+            req.on('error', () => resolve(null));
+            req.on('timeout', () => { req.destroy(); resolve(null); });
+        });
+
+        if (version) {
+            _latestVersionCache = { version, fetchedAt: now };
+        }
+        return version;
+    } catch (err) {
+        log.debug('Failed to fetch latest framework version from npm', err);
+        return _latestVersionCache.version || null; // Return stale cache if available
+    }
+}

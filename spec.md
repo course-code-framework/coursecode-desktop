@@ -310,6 +310,9 @@ All communication between renderer and main process flows through typed IPC chan
 - `api.tools.openTerminal(projectPath)` → `void` — Open terminal at path.
 - `api.tools.openInFinder(projectPath)` → `void` — Open in Finder/Explorer.
 
+### Version
+- `api.version.getLatest()` → `string | null` — Fetch the latest published version of the `coursecode` npm package from the registry. Cached in-memory for 15 minutes. Returns `null` if the registry is unreachable.
+
 ### Dialog
 - `api.dialog.pickFolder(defaultPath?)` → `string | null` — Open native folder picker dialog.
 
@@ -350,7 +353,7 @@ The primary view. Displays all detected projects as cards in a responsive grid.
 
 **Project scanning**: On app launch and when returning to Dashboard, the main process scans the configured projects directory (one level deep) looking for directories containing `course-config.js` or `.coursecoderc.json`.
 
-**Version upgrade indicator**: When a project's `frameworkVersion` (from `.coursecoderc.json`) is behind the installed CLI version (`cliVersion` from settings), the version text on the card becomes clickable and shows an accent-colored info-circle icon. Clicking the version text or icon opens the **Version Modal** — a centered dialog that compares the course version against the installed version and provides a one-click "Upgrade Course" action. The upgrade runs `npm install coursecode@latest` via the bundled npm (same no-terminal pattern as CLI installation). After a successful upgrade, the modal prompts to restart the preview if it was running.
+**Version upgrade indicator**: When a project's `frameworkVersion` (from `.coursecoderc.json`) is behind the latest published version of the `coursecode` npm package (fetched from the npm registry via `api.version.getLatest()`), the version text on the card becomes clickable and shows an accent-colored info-circle icon. Clicking the version text or icon opens the **Version Modal** — a centered dialog that compares the course version against the latest published version and provides a one-click "Upgrade Course" action. The upgrade runs `npm install coursecode@latest` via the bundled npm (same no-terminal pattern as CLI installation). After a successful upgrade, the modal prompts to restart the preview if it was running.
 
 **Cloud status polling**: For projects linked to CourseCode Cloud (those with a `cloudId` in `.coursecoderc.json`), the Dashboard polls `coursecode status --json` every **60 seconds** to refresh deploy status, preview link state, and stale binding detection. An immediate poll also fires on mount and after every user-initiated action (deploy, preview link change, delete). If the status response indicates the course's deployment source is GitHub (`source.type === 'github'`), the project's `githubLinked` flag is updated reactively so the deploy button locks to preview-only mode without requiring a full re-scan.
 
@@ -392,7 +395,7 @@ Toolbar buttons (left to right):
 - **Deploy** (↑) — Build + upload to cloud. Requires cloud auth.
 - | separator |
 - **Outline** — Toggle the course outline panel.
-- **Version** (ⓘ) — Opens the Version Modal showing the course's framework version vs. the installed CLI version. Always visible. When an upgrade is available (installed version > course version), an accent-colored indicator dot pulses on the icon corner. The modal provides a one-click "Upgrade Course" action and, on success, prompts to restart the preview if it was running.
+- **Version** (ⓘ) — Opens the Version Modal showing the course's framework version vs. the latest published version on npm. Always visible. When an upgrade is available (published version > course version), an accent-colored indicator dot pulses on the icon corner. The modal provides a one-click "Upgrade Course" action and, on success, prompts to restart the preview if it was running.
 - | separator |
 - **AI Chat** (✨) — Toggle the chat workspace. Also controlled by `aiChatEnabled` setting.
 - | separator |

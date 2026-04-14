@@ -34,11 +34,13 @@ contextBridge.exposeInMainWorld('api', {
             ipcRenderer.on('open-preview-in-browser', handler);
             return () => ipcRenderer.removeListener('open-preview-in-browser', handler);
         },
-        onContextMention: (callback) => {
+        onContextMenu: (callback) => {
             const handler = (_event, data) => callback(data);
-            ipcRenderer.on('preview:contextMention', handler);
-            return () => ipcRenderer.removeListener('preview:contextMention', handler);
-        }
+            ipcRenderer.on('preview:contextMenu', handler);
+            return () => ipcRenderer.removeListener('preview:contextMenu', handler);
+        },
+        selectAll: (frameURL) => ipcRenderer.invoke('preview:selectAll', frameURL),
+        toggleEditMode: (frameURL) => ipcRenderer.invoke('preview:toggleEditMode', frameURL)
     },
 
     build: {
@@ -97,6 +99,10 @@ contextBridge.exposeInMainWorld('api', {
         openTerminal: (projectPath) => ipcRenderer.invoke('tools:openTerminal', projectPath),
         openInFinder: (projectPath) => ipcRenderer.invoke('tools:openInFinder', projectPath),
         openCourseFolder: (projectPath) => ipcRenderer.invoke('tools:openCourseFolder', projectPath)
+    },
+
+    version: {
+        getLatest: () => ipcRenderer.invoke('version:getLatest')
     },
 
     app: {

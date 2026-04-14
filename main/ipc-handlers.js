@@ -4,7 +4,7 @@ import { scanProjects, createProject, openProject, deleteProject, clearCloudBind
 import { startPreview, stopPreview, getPreviewStatus, getPreviewPort, getAllPreviewStatuses } from './preview-manager.js';
 import { exportBuild } from './build-manager.js';
 import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus, updatePreviewLink } from './cloud-client.js';
-import { getSetupStatus, installCLI, getDownloadUrl } from './cli-installer.js';
+import { getSetupStatus, installCLI, getDownloadUrl, getLatestFrameworkVersion } from './cli-installer.js';
 import {
     sendMessage, stopGeneration, clearConversation, loadHistory,
     buildMentionIndex, getSessionContext, resetConversationCache, resolveToolApproval,
@@ -76,6 +76,7 @@ export function registerIpcHandlers() {
     handle('shell:openExternal', (_e, url) => {
         if (url && (url.startsWith('https://') || url.startsWith('http://'))) shell.openExternal(url);
     });
+    handle('version:getLatest', () => getLatestFrameworkVersion());
 
     handle('tools:openTerminal', (_e, projectPath) => {
         const { spawn } = require('child_process');

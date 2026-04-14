@@ -34,7 +34,6 @@
   let mentionSelectedIndex = $state(0);
   let filteredMentions = $derived(filterMentions(mentionQuery));
   let unsubNewChat = null;
-  let unsubContextMention = null;
 
   // History panel state
   let showHistory = $state(false);
@@ -64,6 +63,22 @@
 
   // Streaming tool activity disclosure state
   let streamToolsExpanded = $state(false);
+
+  /**
+   * Insert a context mention from the preview context menu into the chat input.
+   * Called by ProjectDetail when the user selects "Mention in Chat".
+   */
+  export function insertContextMention(text, slideId) {
+    const slideLabel = slideId ? ` — ${slideId}` : '';
+    const quote = `> "${text}"${slideLabel}\n\n`;
+    inputText = quote + inputText;
+    tick().then(() => {
+      if (inputEl) {
+        inputEl.focus();
+        inputEl.selectionStart = inputEl.selectionEnd = inputText.length;
+      }
+    });
+  }
 
   // --- Lifecycle ---
 
@@ -106,26 +121,11 @@
         workflowSteps = [...workflowSteps, 'Cancelled'];
       }
     });
-
-    // Subscribe to context menu "Mention in Chat" from preview iframe
-    unsubContextMention = window.api.preview.onContextMention?.((data) => {
-      const { text, slideId } = data;
-      const slideLabel = slideId ? ` — ${slideId}` : '';
-      const quote = `> "${text}"${slideLabel}\n\n`;
-      inputText = quote + inputText;
-      tick().then(() => {
-        if (inputEl) {
-          inputEl.focus();
-          inputEl.selectionStart = inputEl.selectionEnd = inputText.length;
-        }
-      });
-    });
   });
 
   onDestroy(() => {
     unsubscribeFromChatEvents();
     unsubNewChat?.();
-    unsubContextMention?.();
     unsubWorkflow?.();
   });
 

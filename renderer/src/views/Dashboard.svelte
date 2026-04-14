@@ -39,6 +39,7 @@
   let deployProgress = $state({});
   let unsubDeployProgress = null;
   let versionModal = $state(null); // { project } when open
+  let latestFrameworkVersion = $state(null);
 
   function compareSemver(a, b) {
     if (!a || !b) return 0;
@@ -52,7 +53,7 @@
   }
 
   function hasUpgrade(project) {
-    return project?.frameworkVersion && $settings.cliVersion && compareSemver($settings.cliVersion, project.frameworkVersion) > 0;
+    return project?.frameworkVersion && latestFrameworkVersion && compareSemver(latestFrameworkVersion, project.frameworkVersion) > 0;
   }
 
   function openVersionModal(e, project) {
@@ -61,8 +62,9 @@
   }
 
   function handleVersionUpgraded(project, newVersion) {
-    // Refresh the project list so the card shows the new version
     refreshProjects();
+    // Re-fetch latest version in case the upgrade changed what's available
+    window.api.version.getLatest().then(v => { if (v) latestFrameworkVersion = v; }).catch(() => {});
   }
 
   const formatLabels = {
@@ -194,6 +196,9 @@
     unsubDeployProgress = window.api.cloud.onDeployProgress(handleDeployProgress);
     statusInterval = setInterval(refreshStatuses, 3000);
     cloudStatusInterval = setInterval(refreshCloudStatuses, 60000);
+
+    // Fetch latest published framework version for upgrade indicators
+    window.api.version.getLatest().then(v => { if (v) latestFrameworkVersion = v; }).catch(() => {});
 
     // Load pinned projects from localStorage
     try {
@@ -1227,7 +1232,7 @@
   {#if versionModal}
     <VersionModal
       courseVersion={versionModal.project.frameworkVersion}
-      installedVersion={$settings.cliVersion}
+      installedVersion={latestFrameworkVersion}
       courseName={versionModal.project.title || versionModal.project.name}
       projectPath={versionModal.project.path}
       onclose={() => versionModal = null}

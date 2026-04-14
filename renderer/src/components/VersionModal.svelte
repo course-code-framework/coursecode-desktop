@@ -125,7 +125,7 @@
         <div class="version-box" class:highlight={upgradeAvailable}>
           <span class="version-label">Installed</span>
           <span class="version-value">{formatVersion(installedVersion)}</span>
-          <span class="version-sublabel">CourseCode CLI</span>
+          <span class="version-sublabel">Latest Published</span>
         </div>
       </div>
 

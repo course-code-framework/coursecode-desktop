@@ -48,8 +48,14 @@
   let checkedBindingKey = $state('');
   let checkingBinding = $state(false);
   let cloudStatusInterval = null;
+
+  // Context menu state
+  let ctxMenu = $state(null); // { x, y, selectionText, isPreviewFrame, slideId, frameURL }
+  let chatPanelRef = $state(null);
+  let unsubContextMenu = null;
   let deployProgress = $state(null);
   let versionModalOpen = $state(false);
+  let latestFrameworkVersion = $state(null);
 
   function compareSemver(a, b) {
     if (!a || !b) return 0;
@@ -63,7 +69,7 @@
   }
 
   const upgradeAvailable = $derived(
-    project?.frameworkVersion && $settings.cliVersion && compareSemver($settings.cliVersion, project.frameworkVersion) > 0
+    project?.frameworkVersion && latestFrameworkVersion && compareSemver(latestFrameworkVersion, project.frameworkVersion) > 0
   );
 
   let unsubLog = null;
@@ -76,6 +82,9 @@
     previewStatus = await window.api.preview.status(projectPath);
     previewPort = await window.api.preview.port(projectPath);
     chatPanelVisible = $settings.aiChatEnabled === true;
+
+    // Fetch latest published framework version for upgrade indicator
+    window.api.version.getLatest().then(v => { if (v) latestFrameworkVersion = v; }).catch(() => {});
 
     // Load ref count
     try {
@@ -138,11 +147,19 @@
     }
   }
 
+  // Subscribe to context menu events from main process
+  onMount(() => {
+    unsubContextMenu = window.api.preview.onContextMenu?.((data) => {
+      ctxMenu = data;
+    });
+  });
+
   onDestroy(() => {
     unsubLog?.();
     unsubBuild?.();
     unsubOpenBrowser?.();
     unsubDeployProgress?.();
+    unsubContextMenu?.();
     document.removeEventListener('openfile', handleOpenFile);
     document.removeEventListener('mousedown', handleDeployOutsideClick);
     document.removeEventListener('mousedown', handleExportOutsideClick);
@@ -158,6 +175,66 @@
 
   function addConsoleLine(data) {
     consoleLines = [...consoleLines.slice(-200), data];
+  }
+
+  // --- Context Menu Actions ---
+
+  function dismissCtxMenu() {
+    ctxMenu = null;
+  }
+
+  function ctxCopy() {
+    if (ctxMenu?.selectionText) {
+      window.api.clipboard.writeText(ctxMenu.selectionText);
+    }
+    dismissCtxMenu();
+  }
+
+  function ctxSelectAll() {
+    if (ctxMenu?.isPreviewFrame && ctxMenu.frameURL) {
+      window.api.preview.selectAll(ctxMenu.frameURL);
+    }
+    dismissCtxMenu();
+  }
+
+  function ctxMention() {
+    if (ctxMenu?.selectionText && chatPanelRef) {
+      chatPanelRef.insertContextMention(ctxMenu.selectionText, ctxMenu.slideId);
+    }
+    dismissCtxMenu();
+  }
+
+  async function ctxOpenInEditor() {
+    const slideId = ctxMenu?.slideId;
+    dismissCtxMenu();
+    if (!slideId) return;
+    const filePath = `course/slides/${slideId}.js`;
+    rightTab = 'editor';
+    try {
+      await openFileInEditor(projectPath, filePath);
+    } catch (err) {
+      showToast({ type: 'error', message: `Unable to open file: ${err?.message || filePath}` });
+    }
+  }
+
+  function ctxToggleEdit() {
+    if (ctxMenu?.frameURL) {
+      window.api.preview.toggleEditMode(ctxMenu.frameURL);
+    }
+    dismissCtxMenu();
+  }
+
+  function ctxOpenInBrowser() {
+    const origin = ctxMenu?.frameURL?.match(/^https?:\/\/127\.0\.0\.1:\d+/);
+    if (origin) window.api.shell.openExternal(origin[0]);
+    dismissCtxMenu();
+  }
+
+  function handleCtxKeydown(e) {
+    if (e.key === 'Escape' && ctxMenu) {
+      e.preventDefault();
+      dismissCtxMenu();
+    }
   }
 
   async function reloadProject() {
@@ -787,12 +864,15 @@
   {#if versionModalOpen}
     <VersionModal
       courseVersion={project?.frameworkVersion}
-      installedVersion={$settings.cliVersion}
+      installedVersion={latestFrameworkVersion}
       courseName={project?.title || project?.name || ''}
       projectPath={projectPath}
       previewRunning={previewStatus === 'running'}
       onclose={() => versionModalOpen = false}
-      onupgraded={async () => { await reloadProject(); }}
+      onupgraded={async () => {
+        await reloadProject();
+        window.api.version.getLatest().then(v => { if (v) latestFrameworkVersion = v; }).catch(() => {});
+      }}
     />
   {/if}
 
@@ -925,6 +1005,7 @@
         <div class="chat-area">
           {#key chatReloadKey}
             <ChatPanel
+              bind:this={chatPanelRef}
               {projectPath}
               refCount={refCount}
               onOpenRefs={() => { refsExpanded = true; }}
@@ -986,6 +1067,48 @@
     </div>
   </div>
 </div>
+
+{#if ctxMenu}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="ctx-backdrop" onmousedown={dismissCtxMenu} onkeydown={handleCtxKeydown}></div>
+  <div
+    class="ctx-menu"
+    role="menu"
+    style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
+  >
+    {#if ctxMenu.selectionText}
+      <button class="ctx-item" role="menuitem" onclick={ctxCopy}>
+        <span class="ctx-icon">📋</span> Copy
+        <span class="ctx-shortcut">{navigator.platform.includes('Mac') ? '⌘C' : 'Ctrl+C'}</span>
+      </button>
+    {/if}
+    {#if ctxMenu.isPreviewFrame}
+      <button class="ctx-item" role="menuitem" onclick={ctxSelectAll}>
+        <span class="ctx-icon">☰</span> Select All
+        <span class="ctx-shortcut">{navigator.platform.includes('Mac') ? '⌘A' : 'Ctrl+A'}</span>
+      </button>
+      <div class="ctx-separator"></div>
+      {#if ctxMenu.selectionText && chatPanelVisible}
+        <button class="ctx-item" role="menuitem" onclick={ctxMention}>
+          <span class="ctx-icon">💬</span> Mention in Chat
+        </button>
+      {/if}
+      {#if ctxMenu.slideId}
+        <button class="ctx-item" role="menuitem" onclick={ctxOpenInEditor}>
+          <span class="ctx-icon">📝</span> Open in Editor
+          <span class="ctx-detail">{ctxMenu.slideId}.js</span>
+        </button>
+      {/if}
+      <button class="ctx-item" role="menuitem" onclick={ctxToggleEdit}>
+        <span class="ctx-icon">✏️</span> Toggle Edit Mode
+      </button>
+      <div class="ctx-separator"></div>
+      <button class="ctx-item" role="menuitem" onclick={ctxOpenInBrowser}>
+        <span class="ctx-icon">🌐</span> Open in Browser
+      </button>
+    {/if}
+  </div>
+{/if}
 
 {#if staleBindingPrompt}
   <ConfirmDialog
@@ -1737,5 +1860,81 @@
   @keyframes popoverIn {
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Context Menu ── */
+  .ctx-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9998;
+  }
+
+  .ctx-menu {
+    position: fixed;
+    z-index: 9999;
+    min-width: 200px;
+    max-width: 300px;
+    padding: var(--sp-xs) 0;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-lg);
+    animation: ctxMenuIn var(--duration-fast) var(--ease);
+  }
+
+  @keyframes ctxMenuIn {
+    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+
+  .ctx-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 12px;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    font-family: var(--font-sans);
+    cursor: pointer;
+    text-align: left;
+    white-space: nowrap;
+    transition: background var(--duration-fast) var(--ease);
+  }
+
+  .ctx-item:hover {
+    background: var(--accent-subtle);
+  }
+
+  .ctx-icon {
+    font-size: 13px;
+    width: 18px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .ctx-shortcut {
+    margin-left: auto;
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    font-family: var(--font-sans);
+  }
+
+  .ctx-detail {
+    margin-left: auto;
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+  }
+
+  .ctx-separator {
+    height: 1px;
+    background: var(--border);
+    margin: var(--sp-xs) 0;
   }
 </style>
