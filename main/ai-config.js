@@ -313,7 +313,7 @@ Use \`coursecode_icon_catalog\` to browse available icon names.`;
 // Model & Provider Defaults
 // ---------------------------------------------------------------------------
 
-export const MAX_TOKENS = 8192;
+export const MAX_TOKENS = 8192; // Default fallback for unknown models
 export const DEFAULT_MAX_CONTEXT_CHARS = 120000;
 export const OLDER_MESSAGE_MAX_CHARS = 1500;
 
@@ -321,32 +321,14 @@ export const OLDER_MESSAGE_MAX_CHARS = 1500;
 // Model Context Windows (tokens) — used for dynamic context budgeting
 // ---------------------------------------------------------------------------
 
-export const MODEL_CONTEXT_WINDOWS = {
-    // Anthropic
-    'claude-3-5-sonnet-latest': 200000,
-    'claude-3-7-sonnet-latest': 200000,
-    'claude-sonnet-4-20250514': 200000,
-    'claude-4-sonnet': 200000,
-    // OpenAI
-    'gpt-4o': 128000,
-    'gpt-4o-mini': 128000,
-    'o3': 200000,
-    'o3-mini': 128000,
-    'o4-mini': 128000,
-    // Google
-    'gemini-2.5-pro': 1048576,
-    'gemini-2.5-flash': 1048576,
-};
-
 /** Approximate chars-per-token ratio for context budgeting */
 const CHARS_PER_TOKEN = 4;
 
 /**
- * Get the max context chars for a given model, using 75% of the model's
- * context window to leave room for output tokens and system overhead.
+ * Get the max context chars for a given model.
+ * @param {number|null} contextTokens - Context window size from the provider API (optional)
  */
-export function getMaxContextChars(modelId) {
-    const contextTokens = MODEL_CONTEXT_WINDOWS[modelId];
+export function getMaxContextChars(contextTokens) {
     if (!contextTokens) return DEFAULT_MAX_CONTEXT_CHARS;
     // Use 75% of context window, capped at a reasonable limit
     const budgetTokens = Math.floor(contextTokens * 0.75);

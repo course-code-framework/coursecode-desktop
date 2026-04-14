@@ -782,12 +782,14 @@ The desktop app treats the LLM as a capable collaborator, not a subordinate to b
 **Principles:**
 
 - **Rich, unambiguous context over runtime correction.** System prompts, tool descriptions, and project context should give the model everything it needs to act correctly on the first try. If the model consistently fails at something, improve the prompt or tool schema rather than injecting corrective messages.
-- **No synthetic conversation messages.** The app must not inject fake user messages, nudges, or scolding into the conversation to steer model behavior. Every message in the conversation history should represent genuine user input or authentic model output.
+- **No conversational manipulation.** The app must not inject fake scolding, nudging, or personality-shaping messages into the conversation to steer model behavior. Every message attributed to the user in conversation history should represent genuine user input.
+- **Proper output token budgets.** Each model gets its actual maximum output token limit, fetched dynamically from the provider API at startup — not a single hardcoded constant. When the model's response is truncated (`stop_reason: max_tokens`), the agentic loop auto-continues so the model can finish — the truncation was a resource limit, not a completion signal.
+- **Context truncation preserves task intent.** The first user message (the original task request) and the last 3 messages are always preserved during context window management. Middle messages are truncated first. This prevents the model from losing sight of the original task in long conversations.
 - **Clear tool descriptions with examples.** Tool schemas should include concrete path examples, boundary descriptions, and failure guidance so the model can self-correct from tool error responses.
 - **Trust tool error messages as teaching signals.** When a tool call fails (e.g., file not found), the error response should include actionable hints ("Did you mean slides/intro.js?" or "Use list_files to discover paths"). The model learns from these within the same agentic loop without external intervention.
 - **Diagnose root causes, not symptoms.** If the model repeatedly makes the same mistake, trace it back to a gap in the system prompt, a misleading tool description, or missing project context. Fix the source.
 
-This philosophy aligns with how production AI IDEs (VS Code + Copilot, Cursor, Windsurf) integrate LLMs: they invest in context quality, tool design, and prompt engineering rather than runtime workarounds.
+This philosophy aligns with how production AI IDEs (VS Code + Copilot, Cursor, Windsurf) integrate LLMs: they invest in context quality, tool design, prompt engineering, and agentic loop reliability rather than runtime workarounds.
 
 ### Architecture
 

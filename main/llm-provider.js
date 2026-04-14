@@ -18,7 +18,7 @@ const providers = {
         keyPattern: /^sk-ant-/,
         docs: 'https://console.anthropic.com/settings/keys',
         pricing: {
-            'claude-3-5-sonnet-latest': { input: 3, output: 15 }
+            'claude-sonnet-4-20250514': { input: 3, output: 15 }
         }
     },
     openai: {
@@ -49,6 +49,29 @@ const googleProviderInfo = {
 };
 
 Object.assign(providers, googleProviderInfo);
+
+/**
+ * Dynamic model limits — populated by fetching from provider APIs.
+ * No hardcoded per-model maps needed.
+ */
+const modelOutputLimits = new Map();
+const modelContextWindows = new Map();
+
+export function getModelOutputLimit(modelId) {
+    return modelOutputLimits.get(modelId) || null;
+}
+
+export function getModelContextWindow(modelId) {
+    return modelContextWindows.get(modelId) || null;
+}
+
+/**
+ * Get the max output tokens for a model.
+ * Uses dynamically fetched limits from provider APIs, falling back to MAX_TOKENS.
+ */
+function getMaxOutputTokens(modelId) {
+    return modelOutputLimits.get(modelId) || MAX_TOKENS;
+}
 
 // --- API Key Storage (encrypted via safeStorage) ---
 
@@ -121,13 +144,17 @@ async function fetchAnthropicModels(apiKey) {
 
     const payload = await response.json();
     const discovered = (payload.data || [])
-        .map(m => m?.id)
-        .filter(id => typeof id === 'string' && id.startsWith('claude-'))
-        .map(id => ({ id, label: labelFromModelId(id) }));
+        .filter(m => typeof m?.id === 'string' && m.id.startsWith('claude-'))
+        .map(m => {
+            // Anthropic returns max_tokens (max output) and max_input_tokens per model
+            if (m.max_tokens) modelOutputLimits.set(m.id, m.max_tokens);
+            if (m.max_input_tokens) modelContextWindows.set(m.id, m.max_input_tokens);
+            return { id: m.id, label: labelFromModelId(m.id) };
+        });
 
     return markDefaultModel(discovered, [
-        'claude-3-5-sonnet-latest',
-        'claude-3-7-sonnet-latest'
+        'claude-sonnet-4-20250514',
+        'claude-4-sonnet'
     ]);
 }
 
@@ -161,9 +188,14 @@ async function fetchGoogleModels(apiKey) {
 
     const payload = await response.json();
     const discovered = (payload.models || [])
-        .map(m => m?.name?.replace('models/', ''))
-        .filter(id => typeof id === 'string' && id.startsWith('gemini-'))
-        .map(id => ({ id, label: labelFromModelId(id) }));
+        .filter(m => typeof m?.name === 'string' && m.name.includes('gemini-'))
+        .map(m => {
+            const id = m.name.replace('models/', '');
+            // Google returns outputTokenLimit and inputTokenLimit per model
+            if (m.outputTokenLimit) modelOutputLimits.set(id, m.outputTokenLimit);
+            if (m.inputTokenLimit) modelContextWindows.set(id, m.inputTokenLimit);
+            return { id, label: labelFromModelId(id) };
+        });
 
     return markDefaultModel(discovered, ['gemini-2.5-pro', 'gemini-2.5-flash']);
 }
@@ -292,7 +324,7 @@ async function createAnthropicProvider(apiKey) {
 
             const stream = client.messages.stream({
                 model,
-                max_tokens: MAX_TOKENS,
+                max_tokens: getMaxOutputTokens(model),
                 system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
                 messages: cachedMessages,
                 tools: cachedTools,
@@ -635,7 +667,7 @@ async function createGoogleProvider(apiKey) {
 
             const requestBody = {
                 contents,
-                generationConfig: { maxOutputTokens: MAX_TOKENS },
+                generationConfig: { maxOutputTokens: getMaxOutputTokens(model) },
             };
 
             if (system) {
@@ -1121,7 +1153,7 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                 messages: cachedMessages,
                 tools: outboundTools,
                 system: outboundSystem,
-                max_tokens: MAX_TOKENS
+                max_tokens: getMaxOutputTokens(model)
             };
             assertCloudProxyBodyValid(body, cloudProvider, cloudApiType, requestId, 'initial');
             if (verboseAiDiagnostics) {
@@ -1411,7 +1443,14 @@ export async function getCloudModels(token) {
         throw new Error(`Failed to fetch models: HTTP ${res.status}`);
     }
     const data = await res.json();
-    return data?.models || [];
+    const models = data?.models || [];
+
+    // Populate dynamic limits from cloud model metadata
+    for (const m of models) {
+        if (m.id && m.maxOutputTokens) modelOutputLimits.set(m.id, m.maxOutputTokens);
+    }
+
+    return models;
 }
 
 export async function getCloudUsage(token) {

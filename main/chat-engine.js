@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSy
 import { createHash, randomBytes } from 'crypto';
 import { app } from 'electron';
 import { join, resolve, dirname, sep } from 'path';
-import { createProvider, loadApiKey, estimateCost, getCloudModels, getProviderModels } from './llm-provider.js';
+import { createProvider, loadApiKey, estimateCost, getCloudModels, getProviderModels, getModelContextWindow } from './llm-provider.js';
 import { loadToken } from './cloud-client.js';
 import { buildSystemPrompt } from './system-prompts.js';
 import { getSetting } from './settings.js';
@@ -28,6 +28,7 @@ const MENTION_SLIDE_MAX_CHARS = 4500;
 const MENTION_INTERACTION_MAX_CHARS = 4500;
 const CHAT_TRACE_PREVIEW_CHARS = 280;
 const MAX_AGENTIC_LOOP_ITERATIONS = 25;
+const MAX_TRUNCATION_CONTINUES = 3;
 const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file']);
 const verboseAiDiagnostics = !app.isPackaged && /^(1|true|yes)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '0'));
 const NOISY_CHAT_TRACE_STEPS = new Set([
@@ -127,18 +128,23 @@ function prepareApiMessages(messages, maxContextChars) {
     const apiMessages = [];
     const lastIndex = messages.length - 1;
     let contextChars = 0;
+    let firstUserSeen = false;
 
     for (let i = 0; i <= lastIndex; i++) {
         const m = messages[i];
         const isRecent = i >= lastIndex - 3; // keep the last few messages untruncated
+        // Always preserve the first user message — it's the original task request
+        const isFirstUser = m.role === 'user' && !firstUserSeen;
+        if (m.role === 'user') firstUserSeen = true;
+        const isProtected = isRecent || isFirstUser;
 
         if (m.role === 'user') {
             // Skip empty user messages (Anthropic rejects them)
             const isEmpty = !m.content || (Array.isArray(m.content) && m.content.length === 0);
             if (isEmpty) continue;
-            const compacted = compactMessageContent(m.content, isRecent);
+            const compacted = compactMessageContent(m.content, isProtected);
             const messageChars = estimateContentChars(compacted);
-            if (!isRecent && contextChars + messageChars > contextBudget) continue;
+            if (!isProtected && contextChars + messageChars > contextBudget) continue;
             contextChars += messageChars;
             apiMessages.push({ role: 'user', content: compacted });
         } else if (m.role === 'assistant') {
@@ -146,7 +152,7 @@ function prepareApiMessages(messages, maxContextChars) {
                 const raw = { ...m._raw };
                 if (Array.isArray(raw.content)) {
                     // Strip base64 images from older assistant messages
-                    if (!isRecent) {
+                    if (!isProtected) {
                         raw.content = stripImageBlocks(raw.content);
                     }
                     // Filter out empty text blocks (Anthropic rejects them)
@@ -155,7 +161,7 @@ function prepareApiMessages(messages, maxContextChars) {
                     );
                     // Skip if nothing left after filtering
                     if (raw.content.length === 0) continue;
-                    if (!isRecent) {
+                    if (!isProtected) {
                         raw.content = raw.content.map(block => {
                             if (block.type === 'text' && block.text) {
                                 return { ...block, text: truncateText(block.text) };
@@ -165,13 +171,13 @@ function prepareApiMessages(messages, maxContextChars) {
                     }
                 }
                 const messageChars = estimateContentChars(raw.content);
-                if (!isRecent && contextChars + messageChars > contextBudget) continue;
+                if (!isProtected && contextChars + messageChars > contextBudget) continue;
                 contextChars += messageChars;
                 apiMessages.push(raw);
             } else if (m.content) {
-                const compacted = compactMessageContent(m.content, isRecent);
+                const compacted = compactMessageContent(m.content, isProtected);
                 const messageChars = estimateContentChars(compacted);
-                if (!isRecent && contextChars + messageChars > contextBudget) continue;
+                if (!isProtected && contextChars + messageChars > contextBudget) continue;
                 contextChars += messageChars;
                 apiMessages.push({ role: 'assistant', content: compacted });
             }
@@ -184,7 +190,7 @@ function prepareApiMessages(messages, maxContextChars) {
                     .map(block => block.type === 'image' ? { type: 'text', text: '[screenshot — use coursecode_screenshot to view current state]' } : block);
             } else {
                 const contentStr = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-                toolContent = isRecent ? contentStr : truncateContent(contentStr);
+                toolContent = isProtected ? contentStr : truncateContent(contentStr);
             }
 
             const toolResult = {
@@ -1412,7 +1418,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     // Build API messages with truncation for efficiency
     // For cloud models, translate to the upstream provider's wire format
-    const maxContextChars = getMaxContextChars(modelId);
+    const maxContextChars = getMaxContextChars(getModelContextWindow(modelId));
     let apiMessages;
     if (cloudApiType === 'responses') {
         apiMessages = prepareOpenAIResponsesInput(messages, maxContextChars);
@@ -1471,6 +1477,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         let continueLoop = true;
         let loopIteration = 0;
         let hadToolErrors = false;
+        let truncationContinues = 0;
+        let lastStopReason = null;
         // Auto-snapshot before AI starts making changes
         const chatIndex = messages.length - 1; // Index of the user message
         try { await createSnapshot(projectPath, 'Before AI changes', { chatIndex }); } catch (err) { log.debug('Pre-AI snapshot failed (repo may not be initialized)', err); }
@@ -1620,6 +1628,9 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             inputPreview: toPreviewText(tc.input)
                         }))
                     });
+
+                    // Track the stop reason for loop control
+                    lastStopReason = event.stopReason;
 
                     // Store assistant message
                     const assistantContent = [];
@@ -2077,6 +2088,24 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         });
                         currentText = '';
                         currentToolCalls = [];
+                    } else if (lastStopReason === 'max_tokens' && truncationContinues < MAX_TRUNCATION_CONTINUES) {
+                        // Model was truncated mid-response — auto-continue so it can finish.
+                        // This is standard agentic loop behavior: the model ran out of output
+                        // space, not because it finished, but because max_tokens was reached.
+                        truncationContinues += 1;
+                        continueLoop = true;
+                        log.warn('Model response truncated (max_tokens), auto-continuing', {
+                            requestId,
+                            truncationContinue: truncationContinues,
+                            partialChars: currentText.length
+                        });
+                        trace('llm-loop-continue', {
+                            reason: 'max-tokens-truncation',
+                            truncationContinue: truncationContinues,
+                            totalApiMessages: apiMessages.length
+                        });
+                        // Don't reset currentText/currentToolCalls — the stored
+                        // assistant message already has the partial content
                     }
                     // Done is terminal for this stream — break to prevent duplicate processing
                     break;
