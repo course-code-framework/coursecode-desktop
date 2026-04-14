@@ -93,12 +93,21 @@
     };
   });
 
+  // Cache Monaco models per file path so scroll/cursor/folding state
+  // persists across file navigations. Monaco internally saves and restores
+  // view state per model when swapping via editor.setModel().
+  const modelCache = new Map(); // path → ITextModel
+
   onDestroy(() => {
+    for (const model of modelCache.values()) {
+      if (!model.isDisposed()) model.dispose();
+    }
+    modelCache.clear();
     editor?.dispose();
     resizeObserver?.disconnect();
   });
 
-  // React to openFile changes — load content into Monaco.
+  // React to openFile changes — load or create a Monaco model.
   // Both `editor` and `monaco` are reactive ($state) so this effect also
   // fires when Monaco finishes initializing after a deferred first mount.
   $effect(() => {
@@ -106,7 +115,15 @@
     const ed = editor;
     const m = monaco;
     if (ed && m && file) {
-      const model = m.editor.createModel(file.content, file.language);
+      let model = modelCache.get(file.path);
+      if (!model || model.isDisposed()) {
+        const uri = m.Uri.parse(`file:///${file.path}`);
+        model = m.editor.createModel(file.content, file.language, uri);
+        modelCache.set(file.path, model);
+      } else if (model.getValue() !== file.content) {
+        // Content changed on disk (e.g. AI edit) — update without losing view state
+        model.setValue(file.content);
+      }
       ed.setModel(model);
     } else if (ed && !file) {
       ed.setModel(null);

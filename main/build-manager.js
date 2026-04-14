@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { copyFile } from 'fs/promises';
 import { readdir, stat } from 'fs/promises';
 import { shell } from 'electron';
-import { getChildEnv, getCLISpawnArgs } from './node-env.js';
+import { getChildEnv, getProjectCLISpawnArgs } from './node-env.js';
 import { createSnapshot } from './snapshot-manager.js';
 import { createLogger } from './logger.js';
 
@@ -27,7 +27,7 @@ export async function exportBuild(projectPath, format, savePath, webContents) {
     const env = getChildEnv({ LMS_FORMAT: format || 'cmi5' });
 
     return new Promise((resolve, reject) => {
-        const { command, args } = getCLISpawnArgs(['build', '--format', format || 'cmi5']);
+        const { command, args } = getProjectCLISpawnArgs(projectPath, ['build', '--format', format || 'cmi5']);
         const child = spawn(command, args, {
             cwd: projectPath,
             env,

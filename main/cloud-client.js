@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawn } from 'child_process';
-import { getChildEnv, isLocalMode, getCLISpawnArgs } from './node-env.js';
+import { getChildEnv, isLocalMode, getCLISpawnArgs, getProjectCLISpawnArgs } from './node-env.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('cloud');
@@ -103,13 +103,15 @@ export function loadToken() {
 /**
  * Spawn a CLI command and capture output.
  */
-function runCLI(args, { cwd } = {}) {
+function runCLI(args, { cwd, projectPath } = {}) {
     if (isLocalMode()) args = [...args, '--local'];
     const token = loadToken();
     const env = getChildEnv(token ? { COURSECODE_CLOUD_TOKEN: token } : {});
 
     return new Promise((resolve, reject) => {
-        const { command, args: cliArgs } = getCLISpawnArgs(args);
+        const { command, args: cliArgs } = projectPath
+            ? getProjectCLISpawnArgs(projectPath, args)
+            : getCLISpawnArgs(args);
         const useShell = process.platform === 'win32' && command === 'coursecode';
         const child = spawn(command, cliArgs, {
             cwd,
@@ -267,7 +269,7 @@ export async function cloudDeploy(projectPath, webContents, options = {}) {
         if (options.promote) args.push('--promote');
         if (options.preview) args.push('--preview');
         if (options.repairBinding) args.push('--repair-binding');
-        const { command, args: cliArgs } = getCLISpawnArgs(args);
+        const { command, args: cliArgs } = getProjectCLISpawnArgs(projectPath, args);
         const useShell = process.platform === 'win32' && command === 'coursecode';
         const child = spawn(command, cliArgs, {
             cwd: projectPath,
@@ -359,7 +361,7 @@ export async function getDeployStatus(projectPath, options = {}) {
         const env = getChildEnv(token ? { COURSECODE_CLOUD_TOKEN: token } : {});
 
         return await new Promise((resolve) => {
-            const { command, args: cliArgs } = getCLISpawnArgs(args);
+            const { command, args: cliArgs } = getProjectCLISpawnArgs(projectPath, args);
             const useShell = process.platform === 'win32' && command === 'coursecode';
             const child = spawn(command, cliArgs, {
                 cwd: projectPath,
@@ -414,7 +416,7 @@ export async function updatePreviewLink(projectPath, options = {}) {
     if (options.repairBinding) args.push('--repair-binding');
     if (isLocalMode()) args.push('--local');
 
-    return runCLI(args, { cwd: projectPath });
+    return runCLI(args, { cwd: projectPath, projectPath });
 }
 
 /**
@@ -429,5 +431,5 @@ export async function cloudDelete(projectPath) {
 
     const args = ['delete', '--json', '--force'];
     if (isLocalMode()) args.push('--local');
-    return runCLI(args, { cwd: projectPath });
+    return runCLI(args, { cwd: projectPath, projectPath });
 }

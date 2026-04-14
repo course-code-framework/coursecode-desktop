@@ -1018,7 +1018,7 @@
     {/if}
 
     <div class="workspace-right">
-      {#if rightTab === 'preview'}
+      <div class="view-panel" class:hidden={rightTab !== 'preview'}>
         {#if previewPort}
           {#key `${previewPort}:${previewFrameKey}`}
             <iframe
@@ -1034,9 +1034,11 @@
             <span class="text-tertiary">{startingPreview ? 'Starting preview…' : 'Preview not available'}</span>
           </div>
         {/if}
-      {:else}
+      </div>
+
+      <div class="view-panel" class:hidden={rightTab !== 'editor'}>
         <EditorPanel {projectPath} />
-      {/if}
+      </div>
 
       {#if refViewerOpen}
         <div class="history-overlay ref-viewer-overlay">
@@ -1250,6 +1252,20 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  .view-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .view-panel.hidden {
+    visibility: hidden;
+    height: 0;
+    overflow: hidden;
+    flex: 0;
   }
 
   /* ── Preview / Editor Toggle ── */

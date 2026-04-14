@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, statSync } from 'fs';
 import { spawn } from 'child_process';
-import { getCLISpawnArgs, getChildEnv } from './node-env.js';
+import { getProjectCLISpawnArgs, getChildEnv } from './node-env.js';
 
 /**
  * List reference markdown documents for a project.
@@ -57,7 +57,7 @@ export function convertRef(projectPath, filePath, webContents) {
         copyFileSync(filePath, destPath);
 
         // Run convert on the references directory
-        const { command, args } = getCLISpawnArgs(['convert', refsDir]);
+        const { command, args } = getProjectCLISpawnArgs(projectPath, ['convert', refsDir]);
         const child = spawn(command, args, {
             cwd: projectPath,
             env: getChildEnv(),

@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { shell } from 'electron';
-import { getChildEnv, getCLISpawnArgs, killProcessTree } from './node-env.js';
+import { getChildEnv, getProjectCLISpawnArgs, killProcessTree } from './node-env.js';
 import { stopMcpClient, killAllMcpClients } from './mcp-client.js';
 import { createLogger } from './logger.js';
 import { getSetting, saveSetting } from './settings.js';
@@ -143,7 +143,7 @@ export async function startPreview(projectPath, webContents, { openBrowser = tru
     const env = getChildEnv({ PORT: String(port) });
 
     // Spawn the coursecode CLI preview command
-    const { command, args } = getCLISpawnArgs(['preview', '--port', String(port), '--desktop']);
+    const { command, args } = getProjectCLISpawnArgs(projectPath, ['preview', '--port', String(port), '--desktop']);
     log.info(`Spawning: ${command} ${args.join(' ')}`, { projectPath, port });
     const child = spawn(command, args, {
         cwd: projectPath,

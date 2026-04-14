@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { app } from 'electron';
-import { getCLISpawnArgs, getChildEnv, killProcessTree } from './node-env.js';
+import { getProjectCLISpawnArgs, getChildEnv, killProcessTree } from './node-env.js';
 import { getPreviewPort } from './preview-manager.js';
 import { createLogger } from './logger.js';
 
@@ -272,7 +272,7 @@ export async function getMcpClient(projectPath) {
 }
 
 async function _spawnMcpConnection(projectPath, port) {
-    const { command, args } = getCLISpawnArgs(['mcp', '--port', String(port)]);
+    const { command, args } = getProjectCLISpawnArgs(projectPath, ['mcp', '--port', String(port)]);
     const env = getChildEnv();
 
     log.info(`Spawning: ${command} ${args.join(' ')}`, { projectPath });

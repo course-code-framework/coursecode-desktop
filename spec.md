@@ -223,6 +223,10 @@ Resolves paths to Electron's bundled Node binary and a bundled copy of npm. All 
 - In development: use the system Node/npm (developer has it installed).
 - In production (packaged app): use `process.execPath` for Node. Bundle `npm` as a vendored dependency within the app's `resources/` directory.
 
+**Two-tier CLI resolution:**
+- `getCLISpawnArgs(cliArgs)` — Resolves the `coursecode` CLI from the **app's** `node_modules` (the bundled copy). Used for app-scoped operations that don't have a project context: `coursecode create`, `--version`, login/logout/whoami.
+- `getProjectCLISpawnArgs(projectPath, cliArgs)` — Resolves the CLI from the **project's** `node_modules/coursecode/bin/cli.js` first, falling back to the bundled CLI if not found. Used for all project-scoped operations: `preview`, `build`, `deploy`, `status`, `mcp`, `convert`. This ensures that preview, build, and deploy use the framework version the course depends on, not the version bundled with the desktop app — critical for version upgrade correctness.
+
 **PATH injection:** When spawning child processes for project operations, the module prepends Electron's Node binary directory to the child's `PATH` environment variable. This ensures that `node`, `npm`, and `npx` resolve to the bundled versions, not the system (which may not exist).
 
 **npm bundling:** The app packages a copy of `npm` in its `resources/vendor/npm/` directory. This is extracted from the npm tarball at build time via a postinstall script. The `node-env.js` module constructs the full path to `npm-cli.js` and invokes it via the bundled Node binary.

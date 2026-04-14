@@ -137,6 +137,9 @@ export function killProcessTree(child, signal = 'SIGTERM') {
  * Resolves the CLI bin from node_modules in both dev and production,
  * avoiding Windows .cmd shim issues with spawn().
  * Returns { command, args } — append CLI subcommand args to `args`.
+ *
+ * This resolves from the APP's node_modules (the bundled CLI).
+ * For project-scoped operations, use getProjectCLISpawnArgs() instead.
  */
 export function getCLISpawnArgs(cliArgs = []) {
     // Resolve CLI from node_modules directly (avoids Windows .cmd shim ENOENT).
@@ -154,4 +157,25 @@ export function getCLISpawnArgs(cliArgs = []) {
 
     // Fallback: assume it's on PATH (e.g. globally installed via Setup Assistant)
     return { command: 'coursecode', args: cliArgs };
+}
+
+/**
+ * Get the command + args to spawn the `coursecode` CLI from a project's
+ * own node_modules. This ensures project-scoped operations (preview, build,
+ * deploy, mcp, convert) use the framework version the course depends on,
+ * not the version bundled with the desktop app.
+ *
+ * Falls back to the bundled/global CLI if the project doesn't have its own copy.
+ */
+export function getProjectCLISpawnArgs(projectPath, cliArgs = []) {
+    if (projectPath) {
+        const projectCliBin = join(projectPath, 'node_modules', 'coursecode', 'bin', 'cli.js');
+        if (existsSync(projectCliBin)) {
+            const nodeCmd = isPackaged ? getNodePath() : 'node';
+            return { command: nodeCmd, args: [projectCliBin, ...cliArgs] };
+        }
+    }
+
+    // Fallback to bundled CLI
+    return getCLISpawnArgs(cliArgs);
 }

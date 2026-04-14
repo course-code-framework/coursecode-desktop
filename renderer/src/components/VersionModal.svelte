@@ -123,9 +123,9 @@
           {/if}
         </div>
         <div class="version-box" class:highlight={upgradeAvailable}>
-          <span class="version-label">Installed</span>
+          <span class="version-label">Latest</span>
           <span class="version-value">{formatVersion(installedVersion)}</span>
-          <span class="version-sublabel">Latest Published</span>
+          <span class="version-sublabel">Published</span>
         </div>
       </div>
 
@@ -152,7 +152,7 @@
         </div>
       {:else if !installedVersion}
         <div class="neutral-banner">
-          <p>The installed CourseCode version could not be determined.</p>
+          <p>The latest CourseCode version could not be determined. Check your internet connection.</p>
         </div>
       {/if}
 
