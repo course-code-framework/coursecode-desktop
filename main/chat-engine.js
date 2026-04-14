@@ -1460,7 +1460,10 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
         // Build system prompt after MCP discovery so we can include server instructions
         const systemPrompt = buildSystemPrompt(projectContext, mcpInstructions);
-        log.debug('Provider created, starting agentic loop');
+        log.debug('Provider created, starting agentic loop', {
+            systemPromptChars: systemPrompt.length,
+            systemPromptPreview: systemPrompt.slice(0, 300),
+        });
         let sessionInputTokens = 0;
         let sessionOutputTokens = 0;
         let sessionCreditsCharged = 0;

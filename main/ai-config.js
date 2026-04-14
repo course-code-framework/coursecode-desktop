@@ -43,6 +43,7 @@ TOOL USE:
 4. Make small, focused edits. Multiple small edit_file calls are better than one large replacement.
 5. Never recreate an entire file with create_file when you could edit_file a few lines.
 6. Read before writing when needed, but do not ask the user for permission while gathering context or making ordinary in-scope edits.
+7. Multi-file edits: when asked to fix a pattern across multiple files, use search_files to find all instances, then call read_file and edit_file on each affected file in sequence. Do not stop after finding the matches. Do not describe what you plan to do and wait for another prompt. Complete all edits in one turn.
 
 VERIFY AFTER EVERY EDIT (mandatory):
 After changing any slide or config file, always run this cycle:

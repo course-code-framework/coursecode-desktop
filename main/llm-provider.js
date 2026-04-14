@@ -553,7 +553,9 @@ async function createOpenAIProvider(apiKey) {
 
             yield {
                 type: 'done',
-                stopReason: lastFinishReason === 'tool_calls' ? 'tool_use' : (lastFinishReason || 'stop'),
+                stopReason: lastFinishReason === 'tool_calls' ? 'tool_use'
+                    : lastFinishReason === 'length' ? 'max_tokens'
+                    : (lastFinishReason || 'end_turn'),
                 usage: { inputTokens, outputTokens, cacheReadInputTokens: cachedTokens }
             };
         },
