@@ -663,11 +663,6 @@
     }
   }
 
-  function openInVSCode(e, path) {
-    e.stopPropagation();
-    window.api.tools.openInVSCode(path);
-  }
-
   function openInFinder(e, path) {
     e.stopPropagation();
     window.api.tools.openCourseFolder(path);

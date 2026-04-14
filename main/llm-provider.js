@@ -6,7 +6,7 @@ import { MAX_TOKENS } from './ai-config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('ai');
-const verboseAiDiagnostics = !app.isPackaged && !/^(0|false|no)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '1'));
+const verboseAiDiagnostics = !app.isPackaged && /^(1|true|yes)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '0'));
 
 // --- Provider Registry ---
 
@@ -1109,6 +1109,13 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
             // 30s timeout for the initial connection/response
             const connectTimeout = setTimeout(() => fetchController.abort(), 30_000);
 
+            const requestHeaders = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+            if (cloudProvider) requestHeaders['X-CourseCode-Cloud-Provider'] = cloudProvider;
+            if (cloudApiType) requestHeaders['X-CourseCode-Cloud-Api-Type'] = cloudApiType;
+
             let res;
             try {
                 if (verboseAiDiagnostics) {
@@ -1124,13 +1131,6 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
                         bodyKeys: Object.keys(body)
                     });
                 }
-
-                const requestHeaders = {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                };
-                if (cloudProvider) requestHeaders['X-CourseCode-Cloud-Provider'] = cloudProvider;
-                if (cloudApiType) requestHeaders['X-CourseCode-Cloud-Api-Type'] = cloudApiType;
 
                 res = await net.fetch(`${baseUrl}/api/ai/chat`, {
                     method: 'POST',

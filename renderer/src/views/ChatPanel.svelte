@@ -162,6 +162,7 @@
   // --- Mention filtering ---
 
   function mentionLabel(item) {
+    if (item.type === 'slide') return item.file || item.id || '';
     return item.title || item.filename || item.id || '';
   }
 
@@ -279,7 +280,7 @@
     const textAfter = inputText.substring(cursorPos);
     const atMatch = textBefore.match(/@([^\s@]*)$/);
 
-    const label = item.title || item.filename || item.id || '';
+    const label = mentionLabel(item);
     if (atMatch) {
       const before = textBefore.substring(0, atMatch.index);
       const inserted = `@${label} `;
@@ -2291,12 +2292,9 @@
   }
 
   .textarea-mirror :global(.mention-hl) {
-    display: inline-block;
-    white-space: nowrap;
     background: var(--accent-subtle);
     color: var(--accent);
     border-radius: 3px;
-    padding: 0 2px;
   }
 
   textarea {

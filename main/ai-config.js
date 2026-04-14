@@ -497,7 +497,7 @@ export const MUTATION_TOOLS = new Set([
 
 /** Tools that can run in parallel (no side effects, independent reads) */
 export const PARALLELIZABLE_TOOLS = new Set([
-    'read_file', 'list_files',
+    'read_file', 'list_files', 'search_files',
     'coursecode_state', 'coursecode_screenshot',
     'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',

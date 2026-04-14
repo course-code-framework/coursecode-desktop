@@ -13,14 +13,14 @@
   }
 
   function getLabel(item) {
-    if (item.type === 'slide') return item.title;
+    if (item.type === 'slide') return item.file || item.id;
     if (item.type === 'ref') return item.filename;
     if (item.type === 'interaction') return item.id;
     return item.title || item.id || item.filename;
   }
 
   function getDetail(item) {
-    if (item.type === 'slide' && item.file) return item.file;
+    if (item.type === 'slide' && item.title) return item.title;
     return item.type;
   }
 

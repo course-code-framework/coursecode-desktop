@@ -83,8 +83,6 @@ contextBridge.exposeInMainWorld('api', {
     },
 
     tools: {
-        detect: () => ipcRenderer.invoke('tools:detect'),
-        openInVSCode: (projectPath) => ipcRenderer.invoke('tools:openInVSCode', projectPath),
         openTerminal: (projectPath) => ipcRenderer.invoke('tools:openTerminal', projectPath),
         openInFinder: (projectPath) => ipcRenderer.invoke('tools:openInFinder', projectPath),
         openCourseFolder: (projectPath) => ipcRenderer.invoke('tools:openCourseFolder', projectPath)

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync, unlinkSync, renameSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { app } from 'electron';
-import { join, resolve, dirname } from 'path';
+import { join, resolve, dirname, sep } from 'path';
 import { createProvider, loadApiKey, estimateCost, getCloudModels, getProviderModels } from './llm-provider.js';
 import { loadToken } from './cloud-client.js';
 import { buildSystemPrompt } from './system-prompts.js';
@@ -729,7 +729,7 @@ const EXCLUDED_MCP_TOOLS = new Set(['coursecode_lint']);
 function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
     // Start with the desktop's file tools (always present, execute locally).
     const merged = [...fileTools];
-    const byName = new Map(merged.map(t => [t.name, t]));
+    const byName = new Set(merged.map(t => t.name));
 
     // Add MCP-discovered tools, skipping any that collide with local file tools.
     for (const tool of discoveredTools) {
@@ -737,6 +737,7 @@ function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
         if (!name) continue;
         if (LOCAL_FILE_TOOLS.has(name)) continue; // desktop handles file I/O
         if (EXCLUDED_MCP_TOOLS.has(name)) continue; // build-only lint redundant with preview running
+        if (byName.has(name)) continue; // already present (dedup)
 
         const normalized = {
             name,
@@ -744,7 +745,7 @@ function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
             input_schema: tool.inputSchema || tool.input_schema || { type: 'object', properties: {} }
         };
 
-        byName.set(name, normalized);
+        byName.add(name);
         merged.push(normalized);
     }
 
@@ -1130,7 +1131,7 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         // The catalog uses OS path separators internally (path.relative output).
         // Normalize forward slashes from the AI to the OS separator, and also
         // accept backslashes — convert both to the platform separator.
-        toolInput = { ...toolInput, category: toolInput.category.replace(/[\\/]/g, require('path').sep) };
+        toolInput = { ...toolInput, category: toolInput.category.replace(/[\\/]/g, sep) };
     }
 
     // Delegate to the MCP server via stdio JSON-RPC
