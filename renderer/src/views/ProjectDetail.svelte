@@ -218,8 +218,8 @@
   }
 
   function ctxToggleEdit() {
-    if (ctxMenu?.frameURL) {
-      window.api.preview.toggleEditMode(ctxMenu.frameURL);
+    if (previewPort) {
+      window.api.preview.toggleEditMode(previewPort);
     }
     dismissCtxMenu();
   }

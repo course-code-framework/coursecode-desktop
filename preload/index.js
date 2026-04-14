@@ -40,7 +40,7 @@ contextBridge.exposeInMainWorld('api', {
             return () => ipcRenderer.removeListener('preview:contextMenu', handler);
         },
         selectAll: (frameURL) => ipcRenderer.invoke('preview:selectAll', frameURL),
-        toggleEditMode: (frameURL) => ipcRenderer.invoke('preview:toggleEditMode', frameURL)
+        toggleEditMode: (port) => ipcRenderer.invoke('preview:toggleEditMode', port)
     },
 
     build: {

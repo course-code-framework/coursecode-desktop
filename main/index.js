@@ -104,7 +104,9 @@ function createWindow() {
 
     // IPC handlers for preview frame actions (require executeJavaScript on the frame)
     ipcMain.handle('preview:selectAll', (_e, frameURL) => {
-        for (const frame of mainWindow.webContents.mainFrame.frames) {
+        // The course content is a nested iframe (grandchild of mainFrame),
+        // so use framesInSubtree for recursive lookup.
+        for (const frame of mainWindow.webContents.mainFrame.framesInSubtree) {
             if (frame.url === frameURL) {
                 frame.executeJavaScript('document.execCommand("selectAll")');
                 break;
@@ -112,9 +114,12 @@ function createWindow() {
         }
     });
 
-    ipcMain.handle('preview:toggleEditMode', (_e, frameURL) => {
+    ipcMain.handle('preview:toggleEditMode', (_e, port) => {
+        // The edit-mode button lives in the stub player's top-level document
+        // (direct child frame at the preview server root).
+        const target = `http://127.0.0.1:${port}`;
         for (const frame of mainWindow.webContents.mainFrame.frames) {
-            if (frame.url === frameURL) {
+            if (frame.url.startsWith(target)) {
                 frame.executeJavaScript(
                     'document.getElementById("stub-player-edit-mode-btn")?.click()'
                 );
