@@ -135,31 +135,6 @@ describe('chat-engine storage and safety', () => {
         expect(chatFiles.some(file => file.endsWith('conversation.json'))).toBe(true);
     });
 
-    it('adds a turn-context hint for terse affirmative follow-ups', async () => {
-        providerFactory.mockResolvedValue({
-            async *chat() {
-                yield { type: 'text', text: 'Do you want me to update the slide now?' };
-                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 10, outputTokens: 20 } };
-            }
-        });
-
-        const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Please update the welcome slide.', [], webContents, 'byok');
-
-        providerFactory.mockResolvedValue({
-            async *chat() {
-                yield { type: 'text', text: 'Updated the slide.' };
-                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 12 } };
-            }
-        });
-
-        await sendMessage(projectDir, 'yes', [], webContents, 'byok');
-
-        const secondCallProjectContext = buildSystemPrompt.mock.calls.at(-1)?.[0];
-        expect(secondCallProjectContext?.turnContext).toContain('brief confirmation to continue');
-        expect(secondCallProjectContext?.turnContext).toContain('Do not restate the plan');
-    });
-
     it('blocks path traversal for edit_file tool calls', async () => {
         const outsidePath = join(projectDir, '..', 'evil.txt');
         let callCount = 0;

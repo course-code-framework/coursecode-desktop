@@ -1198,22 +1198,6 @@ function getProjectContext(projectPath) {
     return context;
 }
 
-function isBriefAffirmation(message) {
-    if (typeof message !== 'string') return false;
-    const normalized = message.trim().toLowerCase();
-    if (!normalized || normalized.length > 40) return false;
-    return /^(yes|yep|yeah|ok|okay|sure|proceed|continue|go ahead|do it|sounds good|please do|please proceed)[.!]?$/i.test(normalized);
-}
-
-function getTurnContextHint(messages, userMessage) {
-    if (!isBriefAffirmation(userMessage)) return null;
-    const lastAssistant = [...messages].reverse().find(
-        (message) => message.role === 'assistant' && typeof message.content === 'string' && message.content.trim()
-    );
-    if (!lastAssistant) return null;
-    return 'The latest user message is a brief confirmation to continue. Treat it as approval to carry out the immediately previous in-scope action now. Do not restate the plan or reply with acknowledgement only. Gather any needed context, execute, verify, then report the result.';
-}
-
 // --- Mention index building ---
 
 export function buildMentionIndex(projectPath) {
@@ -1431,10 +1415,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     // Build project context (available before MCP)
     const projectContext = getProjectContext(projectPath);
-    const turnContextHint = getTurnContextHint(messages, userMessage);
-    if (turnContextHint) {
-        projectContext.turnContext = turnContextHint;
-    }
 
     // Build API messages with truncation for efficiency
     // For cloud models, translate to the upstream provider's wire format

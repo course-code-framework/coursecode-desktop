@@ -121,14 +121,14 @@ export const FRAMEWORK_ESSENTIALS = `## Framework Essentials
 - Each slide has three identifiers: **id** (e.g., \`example-welcome\`), **filename** (e.g., \`example-welcome.js\`), and **title** (e.g., \`Welcome\`)
 - Convention: slide id = filename without .js extension
 - In course-config.js: \`{ id: 'example-welcome', component: '@slides/example-welcome.js', title: 'Welcome' }\`
-- File path: \`course/slides/example-welcome.js\`
+- File-tool path: \`slides/example-welcome.js\`
 - MCP tools use the slide **id** (e.g., \`coursecode_navigate({ slideId: 'example-welcome' })\`)
 - File tools use the relative path (e.g., \`slides/example-welcome.js\`)
 - When the user mentions a slide by filename or title, map it to the correct id/path
 
 ### Slide File Structure
 \`\`\`javascript
-// course/slides/<slideId>.js
+// slides/<slideId>.js
 export const meta = { title: 'Slide Title' };
 export default \`<section class="slide">
   <header class="slide-header">
@@ -197,7 +197,7 @@ Variants: \`.slide-header-left\`, \`.slide-header-divider\`
 Never nest \`.card\` inside \`.card\`.
 
 ### Buttons
-Always add \`.btn\` base class: \`.btn .btn-primary\`, \`.btn .btn-secondary\`, \`.btn .btn-outline-primary\`
+Always add \`.btn\` base class: \`class="btn btn-primary"\`, \`class="btn btn-secondary"\`, \`class="btn btn-outline-primary"\`
 Sizes: \`.btn-sm\`, \`.btn-lg\`
 
 ### Lists

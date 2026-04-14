@@ -64,12 +64,6 @@ describe('buildSystemPrompt', () => {
         expect(prompt).toContain('- safety-manual.md');
     });
 
-    it('includes current turn guidance when provided', () => {
-        const prompt = buildSystemPrompt({ turnContext: 'Treat "yes" as approval to proceed.' });
-        expect(prompt).toContain('## Current Turn Guidance');
-        expect(prompt).toContain('Treat "yes" as approval to proceed.');
-    });
-
     it('includes workflow context when provided as a string', () => {
         const prompt = buildSystemPrompt({}, 'Preview is running and ready for runtime tools.');
         expect(prompt).toContain('## Framework Workflow Context');
@@ -107,8 +101,7 @@ describe('buildSystemPrompt', () => {
             {
                 title: 'Intro to Safety',
                 slides: [{ id: 'welcome', title: 'Welcome', type: 'content' }],
-                refs: ['manual.md'],
-                turnContext: 'Treat the latest "yes" as confirmation to proceed.'
+                refs: ['manual.md']
             },
             'Preview is running and the active slide is welcome.'
         );
@@ -117,7 +110,6 @@ describe('buildSystemPrompt', () => {
         expect(prompt).toContain('Intro to Safety');
         expect(prompt).toContain('welcome: Welcome');
         expect(prompt).toContain('manual.md');
-        expect(prompt).toContain('Treat the latest "yes" as confirmation to proceed.');
         expect(prompt).toContain('Preview is running and the active slide is welcome.');
         expect(prompt).toContain('Keep it concise.');
     });

@@ -25,10 +25,6 @@ export function buildSystemPrompt(projectContext = {}, mcpInstructions = null) {
         const refList = projectContext.refs.map(r => `- ${r}`).join('\n');
         parts.push(`\n## Available Reference Documents\n${refList}`);
     }
-    if (projectContext.turnContext?.trim()) {
-        parts.push(`\n## Current Turn Guidance\n${projectContext.turnContext.trim()}`);
-    }
-
     // User custom instructions
     const customInstructions = getSetting('aiCustomInstructions');
     if (customInstructions?.trim()) {
