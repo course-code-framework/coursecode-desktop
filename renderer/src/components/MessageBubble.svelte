@@ -198,7 +198,13 @@
     if (e.type === 'keydown' && e.key !== 'Escape') return;
     lightboxSrc = null;
   }
+
+  function handleWindowKeydown(e) {
+    if (lightboxSrc) closeLightbox(e);
+  }
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <div class="message" class:message-user={isUser} class:message-assistant={!isUser} class:message-error={isError}>
   {#if isUser}
@@ -320,7 +326,6 @@
         <div class="lightbox-overlay" onclick={closeLightbox}>
           <img src={lightboxSrc} alt="Screenshot preview" class="lightbox-img" />
         </div>
-        <svelte:window onkeydown={closeLightbox} />
       {/if}
 
       {#if fileChanges.length > 0}
