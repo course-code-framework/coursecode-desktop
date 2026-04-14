@@ -3,8 +3,8 @@ import { join, basename } from 'path';
 import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 import { shell } from 'electron';
-import { getSetting } from './settings.js';
-import { getChildEnv, getCLISpawnArgs } from './node-env.js';
+import { getSetting, saveSetting } from './settings.js';
+import { getChildEnv, getCLISpawnArgs, npmSpawnArgs } from './node-env.js';
 import { initRepo, createSnapshot } from './snapshot-manager.js';
 import { stopPreview } from './preview-manager.js';
 import { stopGeneration, deleteChatHistory } from './chat-engine.js';
@@ -321,4 +321,95 @@ export async function clearCloudBinding(projectPath) {
     delete rc.githubRepo;
     await writeFile(rcPath, JSON.stringify(rc, null, 2) + '\n', 'utf-8');
     log.info('Cleared cloud binding', { projectPath });
+}
+
+/**
+ * Upgrade the coursecode framework dependency in a project.
+ *
+ * Runs `npm install coursecode@latest` in the project directory using the
+ * bundled npm (same pattern as cli-installer.js). On success, updates the
+ * project's .coursecoderc.json frameworkVersion to reflect the new version.
+ *
+ * Streams progress events to the renderer via webContents.
+ */
+export async function upgradeProject(projectPath, webContents) {
+    const { command, args } = npmSpawnArgs(['install', 'coursecode@latest']);
+    const env = getChildEnv();
+
+    return new Promise((resolve, reject) => {
+        const sendProgress = (phase, text) => {
+            if (webContents && !webContents.isDestroyed()) {
+                webContents.send('project:upgradeProgress', { phase, text });
+            }
+        };
+
+        sendProgress('installing', 'Upgrading CourseCode framework…');
+
+        const child = spawn(command, args, {
+            cwd: projectPath,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+
+        let stderrBuffer = '';
+
+        child.stdout.on('data', (data) => {
+            sendProgress('installing', data.toString());
+        });
+
+        child.stderr.on('data', (data) => {
+            stderrBuffer += data.toString();
+            sendProgress('installing', data.toString());
+        });
+
+        child.on('exit', async (code) => {
+            if (code !== 0) {
+                const detail = stderrBuffer
+                    .split(/\r?\n/)
+                    .map(line => line.trim())
+                    .filter(Boolean)
+                    .slice(-6)
+                    .join('\n');
+                sendProgress('error', `Upgrade failed (exit code ${code})`);
+                reject(new Error(`Framework upgrade failed (exit code ${code}).${detail ? `\n${detail}` : ''}`));
+                return;
+            }
+
+            // Read the newly installed version from the package
+            let newVersion = null;
+            try {
+                const pkgPath = join(projectPath, 'node_modules', 'coursecode', 'package.json');
+                if (existsSync(pkgPath)) {
+                    const pkg = JSON.parse(await readFile(pkgPath, 'utf-8'));
+                    newVersion = pkg.version;
+                }
+            } catch (err) {
+                log.debug('Could not read new framework version after upgrade', err);
+            }
+
+            // Stamp the new version into .coursecoderc.json
+            if (newVersion) {
+                try {
+                    const rcPath = join(projectPath, '.coursecoderc.json');
+                    let rc = {};
+                    if (existsSync(rcPath)) {
+                        rc = JSON.parse(await readFile(rcPath, 'utf-8'));
+                    }
+                    rc.frameworkVersion = newVersion;
+                    await writeFile(rcPath, JSON.stringify(rc, null, 2) + '\n', 'utf-8');
+                } catch (err) {
+                    log.warn('Failed to update frameworkVersion in .coursecoderc.json', err);
+                }
+            }
+
+            sendProgress('complete', `Upgraded to CourseCode ${newVersion || 'latest'}`);
+            log.info('Project framework upgraded', { projectPath, newVersion });
+            resolve({ success: true, version: newVersion });
+        });
+
+        child.on('error', (err) => {
+            sendProgress('error', `Upgrade failed: ${err.message}`);
+            reject(err);
+        });
+    });
 }

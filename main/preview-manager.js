@@ -298,6 +298,17 @@ export function getPreviewPort(projectPath) {
 }
 
 /**
+ * Reverse-lookup: given a preview port, return the project path that owns it.
+ * Returns null if no running preview matches.
+ */
+export function getProjectForPort(port) {
+    for (const [projectPath, entry] of previews) {
+        if (!entry.process.killed && entry.port === port) return projectPath;
+    }
+    return null;
+}
+
+/**
  * Get status + port for all tracked projects.
  * Returns { [projectPath]: { status, port } }
  */

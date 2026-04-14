@@ -9,7 +9,13 @@ contextBridge.exposeInMainWorld('api', {
         open: (projectPath) => ipcRenderer.invoke('projects:open', projectPath),
         reveal: (projectPath) => ipcRenderer.invoke('projects:reveal', projectPath),
         delete: (projectPath, options) => ipcRenderer.invoke('projects:delete', projectPath, options),
-        clearCloudBinding: (projectPath) => ipcRenderer.invoke('projects:clearCloudBinding', projectPath)
+        clearCloudBinding: (projectPath) => ipcRenderer.invoke('projects:clearCloudBinding', projectPath),
+        upgrade: (projectPath) => ipcRenderer.invoke('projects:upgrade', projectPath),
+        onUpgradeProgress: (callback) => {
+            const handler = (_event, data) => callback(data);
+            ipcRenderer.on('project:upgradeProgress', handler);
+            return () => ipcRenderer.removeListener('project:upgradeProgress', handler);
+        }
     },
 
     preview: {
@@ -27,6 +33,11 @@ contextBridge.exposeInMainWorld('api', {
             const handler = () => callback();
             ipcRenderer.on('open-preview-in-browser', handler);
             return () => ipcRenderer.removeListener('open-preview-in-browser', handler);
+        },
+        onContextMention: (callback) => {
+            const handler = (_event, data) => callback(data);
+            ipcRenderer.on('preview:contextMention', handler);
+            return () => ipcRenderer.removeListener('preview:contextMention', handler);
         }
     },
 

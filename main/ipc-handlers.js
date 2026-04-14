@@ -1,6 +1,6 @@
 import { ipcMain, app, shell, dialog } from 'electron';
 import { getAllSettings, saveSetting } from './settings.js';
-import { scanProjects, createProject, openProject, deleteProject, clearCloudBinding } from './project-manager.js';
+import { scanProjects, createProject, openProject, deleteProject, clearCloudBinding, upgradeProject } from './project-manager.js';
 import { startPreview, stopPreview, getPreviewStatus, getPreviewPort, getAllPreviewStatuses } from './preview-manager.js';
 import { exportBuild } from './build-manager.js';
 import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus, updatePreviewLink } from './cloud-client.js';
@@ -42,6 +42,7 @@ export function registerIpcHandlers() {
     });
     handle('projects:delete', (_e, projectPath, options) => deleteProject(projectPath, options));
     handle('projects:clearCloudBinding', (_e, projectPath) => clearCloudBinding(projectPath));
+    handle('projects:upgrade', (e, projectPath) => upgradeProject(projectPath, e.sender));
 
     // --- Preview ---
     handle('preview:start', (e, projectPath, opts) => startPreview(projectPath, e.sender, opts));

@@ -8,6 +8,7 @@
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import Icon from '../components/Icon.svelte';
   import DeployProgressDialog from '../components/DeployProgressDialog.svelte';
+  import VersionModal from '../components/VersionModal.svelte';
   import { showToast } from '../stores/toast.js';
   import { popover } from '../actions/popover.js';
   import { getDisplayErrorMessage } from '../lib/errors.js';
@@ -37,6 +38,32 @@
   let refreshingCloudStatuses = $state(false);
   let deployProgress = $state({});
   let unsubDeployProgress = null;
+  let versionModal = $state(null); // { project } when open
+
+  function compareSemver(a, b) {
+    if (!a || !b) return 0;
+    const pa = a.replace(/^v/, '').split('.').map(Number);
+    const pb = b.replace(/^v/, '').split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      const diff = (pa[i] || 0) - (pb[i] || 0);
+      if (diff !== 0) return diff;
+    }
+    return 0;
+  }
+
+  function hasUpgrade(project) {
+    return project?.frameworkVersion && $settings.cliVersion && compareSemver($settings.cliVersion, project.frameworkVersion) > 0;
+  }
+
+  function openVersionModal(e, project) {
+    e.stopPropagation();
+    versionModal = { project };
+  }
+
+  function handleVersionUpgraded(project, newVersion) {
+    // Refresh the project list so the card shows the new version
+    refreshProjects();
+  }
 
   const formatLabels = {
     'cmi5': 'cmi5',
@@ -847,7 +874,16 @@
                 <span class="meta-date">{formatDate(project.lastModified)}</span>
                 {#if project.frameworkVersion}
                   <span class="meta-dot">·</span>
-                  <span class="meta-version">v{project.frameworkVersion}</span>
+                  <button class="meta-version-btn" onclick={(e) => openVersionModal(e, project)} title={hasUpgrade(project) ? `v${project.frameworkVersion} — Update available` : `v${project.frameworkVersion}`}>
+                    <span class="meta-version">v{project.frameworkVersion}</span>
+                    {#if hasUpgrade(project)}
+                      <svg class="version-info-icon" width="12" height="12" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+                        <path d="M12 16v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <circle cx="12" cy="9" r="1" fill="currentColor"/>
+                      </svg>
+                    {/if}
+                  </button>
                 {/if}
               </div>
             </div>
@@ -1187,6 +1223,17 @@
       onclose={() => clearDeployProgress(path)}
     />
   {/each}
+
+  {#if versionModal}
+    <VersionModal
+      courseVersion={versionModal.project.frameworkVersion}
+      installedVersion={$settings.cliVersion}
+      courseName={versionModal.project.title || versionModal.project.name}
+      projectPath={versionModal.project.path}
+      onclose={() => versionModal = null}
+      onupgraded={(v) => handleVersionUpgraded(versionModal.project, v)}
+    />
+  {/if}
 </div>
 
 <style>
@@ -1435,6 +1482,32 @@
     font-size: var(--text-xs);
     color: var(--text-tertiary);
     min-width: 0;
+  }
+
+  .meta-version-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    font-size: inherit;
+    font-family: inherit;
+    line-height: 1;
+    border-radius: 3px;
+    transition: color var(--duration-fast) var(--ease);
+  }
+
+  .meta-version-btn:hover {
+    color: var(--accent);
+  }
+
+  .version-info-icon {
+    color: var(--accent);
+    flex-shrink: 0;
   }
 
   .card-title-btn {

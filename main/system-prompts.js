@@ -15,7 +15,11 @@ export function buildSystemPrompt(projectContext = {}, mcpInstructions = null) {
         parts.push(`\n## Course Structure (slide ID → file path)\n${slideList}`);
     }
     if (projectContext.activeSlide) {
-        parts.push(`\n## Active Slide (currently visible in preview)\nID: ${projectContext.activeSlide.id} → ${projectContext.activeSlide.file}`);
+        parts.push(
+            `\n## Active Slide (user's preview)\nID: ${projectContext.activeSlide.id} → ${projectContext.activeSlide.file}\n` +
+            `This is the slide the user is currently viewing. MCP runtime tools (coursecode_state, coursecode_screenshot, coursecode_interact) operate on a separate headless browser that may be on a different slide. ` +
+            `When the user asks about what they're looking at, call coursecode_navigate with this slide ID first.`
+        );
     }
     if (projectContext.refs?.length) {
         const refList = projectContext.refs.map(r => `- ${r}`).join('\n');

@@ -239,6 +239,8 @@ All communication between renderer and main process flows through typed IPC chan
 - `api.projects.open(projectPath)` → `Project` — Load a specific project's details.
 - `api.projects.reveal(projectPath)` → `void` — Open project folder in Finder/Explorer.
 - `api.projects.delete(projectPath)` → `void` — Move project to trash.
+- `api.projects.upgrade(projectPath)` → `{ success, version }` — Upgrade the project's CourseCode framework dependency to the latest version. Runs `npm install coursecode@latest` via the bundled npm, then stamps the new version into `.coursecoderc.json`. Streams progress events via `project:upgradeProgress`.
+- `api.projects.onUpgradeProgress(callback)` → `unsubscribe` — Stream upgrade progress: `{ phase, text }`. Phases: `installing`, `complete`, `error`.
 
 ### Preview
 - `api.preview.start(projectPath, opts?)` → `{ port }` — Start preview server, return assigned port. Options: `{ openBrowser: boolean }` (default `true`). When `false`, starts the server without opening an external browser window (used for embedded preview in chat mode).
@@ -348,6 +350,8 @@ The primary view. Displays all detected projects as cards in a responsive grid.
 
 **Project scanning**: On app launch and when returning to Dashboard, the main process scans the configured projects directory (one level deep) looking for directories containing `course-config.js` or `.coursecoderc.json`.
 
+**Version upgrade indicator**: When a project's `frameworkVersion` (from `.coursecoderc.json`) is behind the installed CLI version (`cliVersion` from settings), the version text on the card becomes clickable and shows an accent-colored info-circle icon. Clicking the version text or icon opens the **Version Modal** — a centered dialog that compares the course version against the installed version and provides a one-click "Upgrade Course" action. The upgrade runs `npm install coursecode@latest` via the bundled npm (same no-terminal pattern as CLI installation). After a successful upgrade, the modal prompts to restart the preview if it was running.
+
 **Cloud status polling**: For projects linked to CourseCode Cloud (those with a `cloudId` in `.coursecoderc.json`), the Dashboard polls `coursecode status --json` every **60 seconds** to refresh deploy status, preview link state, and stale binding detection. An immediate poll also fires on mount and after every user-initiated action (deploy, preview link change, delete). If the status response indicates the course's deployment source is GitHub (`source.type === 'github'`), the project's `githubLinked` flag is updated reactively so the deploy button locks to preview-only mode without requiring a full re-scan.
 
 ### Create Wizard
@@ -387,8 +391,11 @@ Toolbar buttons (left to right):
 - **Export** (↓) — Runs the build. Shows progress in console.
 - **Deploy** (↑) — Build + upload to cloud. Requires cloud auth.
 - | separator |
+- **Outline** — Toggle the course outline panel.
+- **Version** (ⓘ) — Opens the Version Modal showing the course's framework version vs. the installed CLI version. Always visible. When an upgrade is available (installed version > course version), an accent-colored indicator dot pulses on the icon corner. The modal provides a one-click "Upgrade Course" action and, on success, prompts to restart the preview if it was running.
+- | separator |
 - **AI Chat** (✨) — Toggle the chat workspace. Also controlled by `aiChatEnabled` setting.
-- | spacer |
+- | separator |
 - **Finder** — Reveal in Finder/Explorer.
 - **Terminal** — Open system terminal at project path.
 
@@ -494,6 +501,8 @@ Returns an array of `Project` objects sorted by last modified (newest first).
 **GitHub detection**: During scanning and project open, reads `sourceType` from `.coursecoderc.json`. If `sourceType === 'github'`, the project is flagged as `githubLinked`, which locks the deploy button to preview-only mode in the UI.
 
 **Cloud binding management**: `clearCloudBinding(projectPath)` removes all cloud-related keys (`cloudId`, `orgId`, `sourceType`, `githubRepo`) from `.coursecoderc.json` while preserving other metadata like `frameworkVersion`.
+
+**Framework upgrade**: `upgradeProject(projectPath, webContents)` upgrades the `coursecode` npm package in the project directory to the latest version. Uses `npmSpawnArgs()` and `getChildEnv()` from `node-env.js` (same bundled-npm pattern as `cli-installer.js`). Streams progress events to the renderer via `webContents.send('project:upgradeProgress', { phase, text })`. On success, reads the newly installed version from `node_modules/coursecode/package.json` and stamps it into `.coursecoderc.json` as `frameworkVersion`.
 
 ### `preview-manager.js` — Preview Server Lifecycle
 

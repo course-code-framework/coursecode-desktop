@@ -34,6 +34,7 @@
   let mentionSelectedIndex = $state(0);
   let filteredMentions = $derived(filterMentions(mentionQuery));
   let unsubNewChat = null;
+  let unsubContextMention = null;
 
   // History panel state
   let showHistory = $state(false);
@@ -105,11 +106,26 @@
         workflowSteps = [...workflowSteps, 'Cancelled'];
       }
     });
+
+    // Subscribe to context menu "Mention in Chat" from preview iframe
+    unsubContextMention = window.api.preview.onContextMention?.((data) => {
+      const { text, slideId } = data;
+      const slideLabel = slideId ? ` — ${slideId}` : '';
+      const quote = `> "${text}"${slideLabel}\n\n`;
+      inputText = quote + inputText;
+      tick().then(() => {
+        if (inputEl) {
+          inputEl.focus();
+          inputEl.selectionStart = inputEl.selectionEnd = inputText.length;
+        }
+      });
+    });
   });
 
   onDestroy(() => {
     unsubscribeFromChatEvents();
     unsubNewChat?.();
+    unsubContextMention?.();
     unsubWorkflow?.();
   });
 

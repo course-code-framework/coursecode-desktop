@@ -6,6 +6,7 @@
   import OutlinePanel from './OutlinePanel.svelte';
   import EditorPanel from '../components/EditorPanel.svelte';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
+  import VersionModal from '../components/VersionModal.svelte';
   import { openFileInEditor } from '../stores/editor.js';
   import { showToast } from '../stores/toast.js';
   import { popover } from '../actions/popover.js';
@@ -48,6 +49,22 @@
   let checkingBinding = $state(false);
   let cloudStatusInterval = null;
   let deployProgress = $state(null);
+  let versionModalOpen = $state(false);
+
+  function compareSemver(a, b) {
+    if (!a || !b) return 0;
+    const pa = a.replace(/^v/, '').split('.').map(Number);
+    const pb = b.replace(/^v/, '').split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      const diff = (pa[i] || 0) - (pb[i] || 0);
+      if (diff !== 0) return diff;
+    }
+    return 0;
+  }
+
+  const upgradeAvailable = $derived(
+    project?.frameworkVersion && $settings.cliVersion && compareSemver($settings.cliVersion, project.frameworkVersion) > 0
+  );
 
   let unsubLog = null;
   let unsubBuild = null;
@@ -700,6 +717,22 @@
           <polyline points="10 9 9 9 8 9"/>
         </Icon>
       </button>
+
+      <button
+        class="tool-btn version-btn"
+        onclick={() => versionModalOpen = true}
+        title={upgradeAvailable ? 'CourseCode Version — Update Available' : 'CourseCode Version'}
+        data-testid="version-btn"
+      >
+        <Icon>
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M12 16v-4"/>
+          <path d="M12 8h.01"/>
+        </Icon>
+        {#if upgradeAvailable}
+          <span class="version-indicator"></span>
+        {/if}
+      </button>
     </div>
 
     <div class="toolbar-separator"></div>
@@ -748,6 +781,18 @@
       dashboardUrl={deployProgress.dashboardUrl || ''}
       previewUrl={deployProgress.previewUrl || ''}
       onclose={clearDeployProgress}
+    />
+  {/if}
+
+  {#if versionModalOpen}
+    <VersionModal
+      courseVersion={project?.frameworkVersion}
+      installedVersion={$settings.cliVersion}
+      courseName={project?.title || project?.name || ''}
+      projectPath={projectPath}
+      previewRunning={previewStatus === 'running'}
+      onclose={() => versionModalOpen = false}
+      onupgraded={async () => { await reloadProject(); }}
     />
   {/if}
 
@@ -1665,6 +1710,28 @@
 
   .deploy-popover-confirm:hover {
     background: var(--accent-hover);
+  }
+
+  .version-btn {
+    position: relative;
+  }
+
+  .version-indicator {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 1.5px solid var(--bg-elevated);
+    pointer-events: none;
+    animation: indicatorPulse 2s ease-in-out infinite;
+  }
+
+  @keyframes indicatorPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
   }
 
   @keyframes popoverIn {

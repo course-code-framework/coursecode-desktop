@@ -318,17 +318,25 @@ export async function getMcpTools(projectPath) {
 }
 
 /**
- * Return the current slide ID from the headless browser via MCP.
+ * Return the current slide ID from the preview server's LMS state.
+ *
+ * Reads cmi.location (the SCORM bookmark) directly from the preview server's
+ * HTTP API rather than from the MCP headless browser. The headless Puppeteer
+ * browser is a separate process with its own NavigationState — it does NOT
+ * track what the user is viewing in the desktop's preview iframe. The preview
+ * server's LMS store, however, is synced from the user's actual browser via
+ * POST /__lms/sync, so it reflects the real navigation state.
+ *
  * Lightweight pre-prompt enrichment — returns null silently on failure.
  */
 export async function getCurrentSlideId(projectPath) {
     try {
-        const conn = await getMcpClient(projectPath);
-        const result = await conn.callTool('coursecode_state', {});
-        const text = result?.content?.[0]?.text;
-        if (!text) return null;
-        const parsed = JSON.parse(text);
-        return parsed?.slide || null;
+        const port = getPreviewPort(projectPath);
+        if (!port) return null;
+        const resp = await fetch(`http://localhost:${port}/__lms/session`);
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        return data?.bookmark || null;
     } catch {
         return null;
     }
