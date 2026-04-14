@@ -67,36 +67,29 @@
   /**
    * Insert a context mention from the preview context menu into the chat input.
    * Called by ProjectDetail when the user selects "Mention in Chat".
-   * Creates a proper structured attachment so the slide content is resolved by
-   * resolveMentions when the message is sent.
+   * Inserts a properly formatted inline @mention (same as the @ dropdown)
+   * followed by the selected text.
    */
   export function insertContextMention(text, slideId) {
-    // Try to find the slide in the mention index and add it as a structured attachment
+    let parts = [];
+
     if (slideId) {
+      // Resolve the mention label the same way the @ dropdown does
       const idx = $mentionIndex;
       const slide = (idx.slides || []).find(s => s.id === slideId);
-      if (slide) {
-        // Add as a structured attachment (shows as a chip, content resolved on send)
-        const key = `${slide.type}:${slide.id}`;
-        const alreadyAttached = attachments.some(
-          a => `${a.type}:${a.id}` === key
-        );
-        if (!alreadyAttached) {
-          attachments = [...attachments, slide];
-        }
-      } else {
-        // Slide not in index — fall back to inline @mention syntax
-        const file = `${slideId}.js`;
-        const mention = `@${file} `;
-        inputText = mention + inputText;
-      }
+      const label = slide ? mentionLabel(slide) : `${slideId}.js`;
+      parts.push(`@${label}`);
     }
 
-    // Include selected text as a quoted context line
     if (text) {
-      const quote = `> "${text}"\n\n`;
-      inputText = quote + inputText;
+      parts.push(`text "${text}"`);
     }
+
+    const inserted = parts.join(' ');
+    if (!inserted) return;
+
+    // Prepend to existing input with a trailing space
+    inputText = inserted + (inputText ? ' ' + inputText : '');
 
     tick().then(() => {
       if (inputEl) {
@@ -562,12 +555,16 @@
 
   function buildHighlightHtml(text) {
     if (!text) return '';
-    // Escape HTML, then wrap @mentions in <mark> tags
+    // Escape HTML, then wrap valid @mentions in <mark> tags
     const escaped = text
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
-    return escaped.replace(/@[^\s@]+/g, '<mark class="mention-hl">$&</mark>') + '\n';
+    return escaped.replace(/@[^\s@]+/g, (match) => {
+      const resolved = findMentionByToken(match);
+      if (resolved) return `<mark class="mention-hl">${match}</mark>`;
+      return match;
+    }) + '\n';
   }
 
   let walkthroughSteps = $derived.by(() => {
