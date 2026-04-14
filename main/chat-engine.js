@@ -15,7 +15,7 @@ import { translateChatError } from './errors.js';
 import {
     FILE_TOOL_DEFINITIONS, TOOL_LABELS, PREVIEW_TOOLS, DEFAULT_PROVIDER,
     TOOL_RESULT_MAX_CHARS, STATE_TOOL_MAX_CHARS, MCP_TOOL_TRUNCATION_NOTE,
-    OLDER_MESSAGE_MAX_CHARS,
+    OLDER_MESSAGE_MAX_CHARS, READ_FILE_MAX_LINES,
     SAFE_TOOLS, MUTATION_TOOLS, PARALLELIZABLE_TOOLS,
     getMaxContextChars, COST_WARNING_THRESHOLDS, CREDIT_LOW_THRESHOLD
 } from './ai-config.js';
@@ -997,14 +997,23 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         const fullContent = readFileSync(filePath, 'utf-8');
         const lines = fullContent.split('\n');
         const totalLines = lines.length;
+        const hasExplicitRange = toolInput.start_line != null || toolInput.end_line != null;
         const startLine = Math.max(1, Math.min(toolInput.start_line || 1, totalLines));
-        const endLine = Math.min(toolInput.end_line || totalLines, totalLines);
+        let endLine = Math.min(toolInput.end_line || totalLines, totalLines);
+
+        // Soft cap: truncate full-file reads on large files
+        if (!hasExplicitRange && totalLines > READ_FILE_MAX_LINES) {
+            endLine = READ_FILE_MAX_LINES;
+        }
+
         const selected = lines.slice(startLine - 1, endLine);
         const content = selected.join('\n');
         const result = { content, totalLines };
         if (startLine > 1 || endLine < totalLines) {
             result.range = { start: startLine, end: endLine };
-            if (endLine < totalLines) result.truncatedAfterLine = endLine;
+            if (endLine < totalLines) {
+                result.hint = `Showing lines ${startLine}–${endLine} of ${totalLines}. Use search_files to find specific content, or provide start_line/end_line to read a targeted range.`;
+            }
         }
         return result;
     }

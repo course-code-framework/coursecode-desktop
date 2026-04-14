@@ -37,13 +37,14 @@ CONFIRMATION ANTI-PATTERNS:
 - After a brief affirmation, never reply only with an acknowledgement such as "Okay, I'll do that." Start doing the work.
 
 TOOL USE:
-1. Read before writing. Always read a file before editing it.
-2. Use search_files to locate specific text, then read_file with start_line/end_line around those line numbers to get context.
-3. Use edit_file for targeted changes. Use create_file only for new files.
-4. Make small, focused edits. Multiple small edit_file calls are better than one large replacement.
-5. Never recreate an entire file with create_file when you could edit_file a few lines.
-6. Read before writing when needed, but do not ask the user for permission while gathering context or making ordinary in-scope edits.
-7. Multi-file edits: when asked to fix a pattern across multiple files, use search_files to find all instances, then call read_file and edit_file on each affected file in sequence. Do not stop after finding the matches. Do not describe what you plan to do and wait for another prompt. Complete all edits in one turn.
+1. Search first, read targeted. Use search_files to locate specific text, then read_file with start_line/end_line around those line numbers to get surrounding context. Do not read entire files when you only need a specific section.
+2. read_file truncates large files. Files over 100 lines are capped at the first 100 lines when no range is given. Always provide start_line/end_line for targeted reads. Use list_files to see line counts before reading.
+3. Read before writing. Always read the relevant section of a file before editing it.
+4. Use edit_file for targeted changes. Use create_file only for new files.
+5. Make small, focused edits. Multiple small edit_file calls are better than one large replacement.
+6. Never recreate an entire file with create_file when you could edit_file a few lines.
+7. Do not ask the user for permission while gathering context or making ordinary in-scope edits.
+8. Multi-file edits: use search_files to find all instances across files. For each match, read_file with start_line/end_line around the hit (±10 lines for context), then edit_file. Do NOT read entire files — the search results give you line numbers, so use them for targeted reads. Do not stop after finding the matches. Do not propose changes and wait. Complete all edits in one turn.
 
 VERIFY AFTER EVERY EDIT (mandatory):
 After changing any slide or config file, always run this cycle:
@@ -334,6 +335,9 @@ export const MAX_TOKENS = 8192; // Default fallback for unknown models
 export const DEFAULT_MAX_CONTEXT_CHARS = 120000;
 export const OLDER_MESSAGE_MAX_CHARS = 1500;
 
+/** Max lines returned by read_file when no start_line/end_line range is given */
+export const READ_FILE_MAX_LINES = 100;
+
 // ---------------------------------------------------------------------------
 // Model Context Windows (tokens) — used for dynamic context budgeting
 // ---------------------------------------------------------------------------
@@ -376,13 +380,13 @@ export const DEFAULT_PROVIDER = 'anthropic';
 export const FILE_TOOL_DEFINITIONS = [
     {
         name: 'read_file',
-        description: 'Read a file in the course project. All paths are relative to the course directory root (e.g. slides/intro.js, course-config.js, assets/logo.png). There is no src/ prefix. If the file is not found, the error will suggest the correct path or recommend using list_files to discover it. Returns totalLines so you can request additional ranges if the file was truncated.',
+        description: 'Read a file in the course project. Prefer search_files to locate content first, then read_file with start_line/end_line to get surrounding context. Files over 100 lines are truncated when no range is given — use start_line/end_line for targeted reads. All paths are relative to the course directory root (e.g. slides/intro.js, course-config.js). There is no src/ prefix. If the file is not found, the error will suggest the correct path. Returns totalLines so you can request additional ranges.',
         input_schema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'File path relative to the course directory. Examples: slides/intro.js, slides/module-1-overview.js, course-config.js, assessments/quiz-1.js. Never prefix with src/ or course/.' },
-                start_line: { type: 'integer', description: 'First line to read (1-based, inclusive). Omit to start from the beginning.' },
-                end_line: { type: 'integer', description: 'Last line to read (1-based, inclusive). Omit to read to the end. Use with start_line to read a specific range of a large file.' }
+                start_line: { type: 'integer', description: 'First line to read (1-based, inclusive). Omit to start from the beginning. Recommended: use search_files to find line numbers first, then read a targeted range.' },
+                end_line: { type: 'integer', description: 'Last line to read (1-based, inclusive). Omit to read to the end. Files over 100 lines are truncated without a range — always provide end_line for large files.' }
             },
             required: ['path']
         }
@@ -462,8 +466,7 @@ export const TOOL_LABELS = {
     coursecode_build: 'Building the course…',
     coursecode_workflow_status: 'Checking progress…',
     coursecode_icon_catalog: 'Looking up icons…',
-    coursecode_viewport: 'Resizing viewport…',
-    coursecode_export_content: 'Exporting content…'
+    coursecode_viewport: 'Resizing viewport…'
 };
 
 // ---------------------------------------------------------------------------
@@ -485,7 +488,7 @@ export const SAFE_TOOLS = new Set([
     'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
     'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
-    'coursecode_workflow_status', 'coursecode_viewport', 'coursecode_export_content'
+    'coursecode_workflow_status', 'coursecode_viewport'
 ]);
 
 /** Tools that mutate files or course state — may require approval */
@@ -500,7 +503,7 @@ export const PARALLELIZABLE_TOOLS = new Set([
     'coursecode_state', 'coursecode_screenshot',
     'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
-    'coursecode_workflow_status', 'coursecode_viewport', 'coursecode_export_content'
+    'coursecode_workflow_status', 'coursecode_viewport'
 ]);
 
 // ---------------------------------------------------------------------------
@@ -512,9 +515,6 @@ export const TOOL_RESULT_MAX_CHARS = 16_000;
 
 /** Higher limit for coursecode_state, the AI's primary orientation tool */
 export const STATE_TOOL_MAX_CHARS = 48_000;
-
-/** Truncation notice appended when a file tool result is trimmed */
-export const TOOL_RESULT_TRUNCATION_NOTE = '… (truncated — use read_file with start_line/end_line to read remaining lines)';
 
 /** Truncation notice appended when an MCP tool result is trimmed */
 export const MCP_TOOL_TRUNCATION_NOTE = '… (output truncated due to size — the complete result was too large to include)';

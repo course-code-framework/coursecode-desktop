@@ -819,13 +819,15 @@ Defined in `ai-config.js` as `FILE_TOOL_DEFINITIONS`. These execute locally via 
 
 | Tool | Purpose |
 |---|---|
-| `read_file` | Read a file's contents (course-relative path) |
+| `read_file` | Read a file's contents with optional line range. Soft-capped at 100 lines for full-file reads. |
 | `edit_file` | Apply a search-and-replace edit to an existing file |
 | `create_file` | Create a new file with specified contents |
 | `search_files` | Search for text across course project files |
-| `list_files` | List directory contents (defaults to course root) |
+| `list_files` | List directory contents with line counts (defaults to course root) |
 
-#### MCP Tools (framework-provided, 13 tools)
+**Search-first file reading strategy.** The system prompt and tool descriptions guide the AI toward a `search_files` → targeted `read_file` workflow instead of reading entire files. `read_file` accepts optional `start_line` / `end_line` parameters (1-based, inclusive) for targeted reads. When neither is provided and the file exceeds `READ_FILE_MAX_LINES` (100), only the first 100 lines are returned with a `hint` field directing the AI to use `search_files` or provide a line range. Files at or under 100 lines are returned in full. This keeps token usage efficient while avoiding unnecessary friction on small slide files.
+
+#### MCP Tools (framework-provided, 12 tools)
 
 Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-RPC (`coursecode mcp --port <port>`). The MCP connection is managed by `mcp-client.js`. The desktop app assumes the MCP server is **always available** when a preview is running; MCP tools are only included in the tool list when a preview server is active.
 
@@ -845,7 +847,7 @@ Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-
 | `coursecode_component_catalog` | Look up available slide components |
 | `coursecode_interaction_catalog` | Look up interaction types and configuration |
 | `coursecode_icon_catalog` | Look up available icon names |
-| `coursecode_export_content` | Export slide content as plain text |
+
 
 #### Tool Merging
 
