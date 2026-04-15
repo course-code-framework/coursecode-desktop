@@ -987,15 +987,46 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
     };
 
     /**
-     * Fetch errors/warnings from the preview server's lightweight error endpoint.
+     * Fetch errors/warnings from the preview server after a file edit.
+     * Waits for the Vite rebuild to complete (by polling for a changed
+     * lastBuildTime) so the returned errors reflect the post-edit state,
+     * not stale data from the previous session.
      * Returns a compact summary: null if clean, detail for 1, count + first for multiple.
-     * Never blocks the tool result — fails silently if preview isn't running.
+     * Never blocks the tool result for more than ~5s — fails silently if preview isn't running.
      */
     const fetchPreviewErrors = async () => {
         try {
             const port = getPreviewPort(projectPath);
             if (!port) return null;
-            const resp = await fetch(`http://127.0.0.1:${port}/__lms/errors`, { signal: AbortSignal.timeout(2000) });
+            const baseUrl = `http://127.0.0.1:${port}`;
+
+            // Snapshot the current build timestamp so we know when a NEW build completes
+            let preBuildTime = null;
+            try {
+                const buildResp = await fetch(`${baseUrl}/__mcp/errors`, { signal: AbortSignal.timeout(1000) });
+                if (buildResp.ok) {
+                    const buildData = await buildResp.json();
+                    preBuildTime = buildData.lastBuildTime;
+                }
+            } catch { /* preview may not be running yet */ }
+
+            // Poll until lastBuildTime changes (Vite finished rebuilding) — max ~5s
+            const deadline = Date.now() + 5000;
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 400));
+                try {
+                    const buildResp = await fetch(`${baseUrl}/__mcp/errors`, { signal: AbortSignal.timeout(1000) });
+                    if (buildResp.ok) {
+                        const buildData = await buildResp.json();
+                        if (buildData.lastBuildTime && buildData.lastBuildTime !== preBuildTime) break;
+                    }
+                } catch { /* retry */ }
+            }
+
+            // Small grace period for the stub player to sync errors after reload
+            await new Promise(r => setTimeout(r, 600));
+
+            const resp = await fetch(`${baseUrl}/__lms/errors`, { signal: AbortSignal.timeout(2000) });
             if (!resp.ok) return null;
             const data = await resp.json();
             const errors = [...(data.errors || []), ...(data.warnings || [])];
