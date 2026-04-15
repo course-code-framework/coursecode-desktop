@@ -27,7 +27,7 @@ const MENTION_REF_MAX_CHARS = 6000;
 const MENTION_SLIDE_MAX_CHARS = 4500;
 const MENTION_INTERACTION_MAX_CHARS = 4500;
 const CHAT_TRACE_PREVIEW_CHARS = 280;
-const MAX_AGENTIC_LOOP_ITERATIONS = 25;
+const MAX_AGENTIC_LOOP_ITERATIONS = 75;
 const MAX_TRUNCATION_CONTINUES = 3;
 const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file']);
 const verboseAiDiagnostics = !app.isPackaged && /^(1|true|yes)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '0'));
@@ -1626,6 +1626,19 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         log.warn('Cloud stream timed out after retry', { streamedChars: currentText.length, toolCalls: currentToolCalls.length });
                         throw new Error('The AI service timed out before finishing its response. Try again.');
                     }
+
+                    // Emit incremental usage so the UI can show cost/credits in real-time
+                    webContents?.send('chat:stepUsage', {
+                        projectPath,
+                        usage: event.usage || {},
+                        creditsCharged: event.creditsCharged || 0,
+                        estimatedCost: isCloud ? null : estimateCost(
+                            getSetting('aiProvider') || DEFAULT_PROVIDER,
+                            modelId,
+                            event.usage?.inputTokens || 0,
+                            event.usage?.outputTokens || 0
+                        )
+                    });
 
                     trace('llm-response-complete', {
                         stopReason: event.stopReason,

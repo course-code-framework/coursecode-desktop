@@ -53,6 +53,7 @@ let unsubDone = null;
 let unsubChangeSummary = null;
 let unsubToolApproval = null;
 let unsubToolArgsDelta = null;
+let unsubStepUsage = null;
 
 let currentAiMode = 'byok';
 let activeProjectPath = null;
@@ -200,16 +201,11 @@ export function subscribeToChatEvents() {
         pendingChangeSummary = null;
         pendingScreenshots = [];
 
-        // Update session usage
+        // Usage is accumulated incrementally via stepUsage events.
+        // Here we only run end-of-message checks (cost warnings, credit refresh).
         if (usage) {
-            sessionUsage.update(s => ({
-                inputTokens: s.inputTokens + (usage.inputTokens || 0),
-                outputTokens: s.outputTokens + (usage.outputTokens || 0),
-                estimatedCost: (s.estimatedCost || 0) + (usage.estimatedCost || 0)
-            }));
-
             // Check cost warning thresholds (BYOK mode)
-            if (currentAiMode === 'byok' && usage.estimatedCost > 0) {
+            if (currentAiMode === 'byok') {
                 let totalCost = 0;
                 sessionUsage.subscribe(s => totalCost = s.estimatedCost)();
                 costWarningsShown.update(shown => {
@@ -233,33 +229,7 @@ export function subscribeToChatEvents() {
                 });
             }
 
-            if (usage.creditsCharged != null) {
-                sessionCredits.update(c => c + usage.creditsCharged);
-                credits.update((current) => {
-                    if (!current || current.total_credits == null) return current;
-                    return {
-                        ...current,
-                        total_credits: Math.max(0, current.total_credits - usage.creditsCharged)
-                    };
-                });
-
-                // Check low credit warning (cloud mode)
-                let currentCredits = null;
-                credits.subscribe(c => currentCredits = c)();
-                if (currentCredits?.total_credits != null && currentCredits.total_credits < CREDIT_LOW_THRESHOLD) {
-                    costWarningsShown.update(shown => {
-                        if (shown.has('low_credits')) return shown;
-                        const newShown = new Set(shown);
-                        newShown.add('low_credits');
-                        messages.update(msgs => [...msgs, {
-                            role: 'system',
-                            type: 'costWarning',
-                            content: `Your cloud credits are running low (${currentCredits.total_credits.toFixed(0)} remaining).`
-                        }]);
-                        return newShown;
-                    });
-                }
-            }
+            // Check low credit warning (cloud mode)
             if (currentAiMode === 'cloud') {
                 loadCredits();
             }
@@ -275,6 +245,44 @@ export function subscribeToChatEvents() {
         if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
         pendingApprovals.update(list => [...list, { toolUseId, tool, label, input, filePath }]);
     });
+
+    unsubStepUsage = window.api.chat.onStepUsage?.(({ projectPath, usage, creditsCharged, estimatedCost }) => {
+        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (usage) {
+            sessionUsage.update(s => ({
+                inputTokens: s.inputTokens + (usage.inputTokens || 0),
+                outputTokens: s.outputTokens + (usage.outputTokens || 0),
+                estimatedCost: (s.estimatedCost || 0) + (estimatedCost || 0)
+            }));
+        }
+        if (creditsCharged != null && creditsCharged > 0) {
+            sessionCredits.update(c => c + creditsCharged);
+            credits.update((current) => {
+                if (!current || current.total_credits == null) return current;
+                return {
+                    ...current,
+                    total_credits: Math.max(0, current.total_credits - creditsCharged)
+                };
+            });
+
+            // Check low credit warning (cloud mode)
+            let currentCredits = null;
+            credits.subscribe(c => currentCredits = c)();
+            if (currentCredits?.total_credits != null && currentCredits.total_credits < CREDIT_LOW_THRESHOLD) {
+                costWarningsShown.update(shown => {
+                    if (shown.has('low_credits')) return shown;
+                    const newShown = new Set(shown);
+                    newShown.add('low_credits');
+                    messages.update(msgs => [...msgs, {
+                        role: 'system',
+                        type: 'costWarning',
+                        content: `Your cloud credits are running low (${currentCredits.total_credits.toFixed(0)} remaining).`
+                    }]);
+                    return newShown;
+                });
+            }
+        }
+    });
 }
 
 export function unsubscribeFromChatEvents() {
@@ -286,6 +294,7 @@ export function unsubscribeFromChatEvents() {
     unsubDone?.();
     unsubChangeSummary?.();
     unsubToolApproval?.();
+    unsubStepUsage?.();
 }
 
 // --- Actions ---

@@ -212,6 +212,11 @@ contextBridge.exposeInMainWorld('api', {
             ipcRenderer.on('chat:done', handler);
             return () => ipcRenderer.removeListener('chat:done', handler);
         },
+        onStepUsage: (callback) => {
+            const handler = (_event, data) => callback(data);
+            ipcRenderer.on('chat:stepUsage', handler);
+            return () => ipcRenderer.removeListener('chat:stepUsage', handler);
+        },
         onChangeSummary: (callback) => {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('chat:changeSummary', handler);
