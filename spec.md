@@ -813,27 +813,29 @@ This philosophy aligns with how production AI IDEs (VS Code + Copilot, Cursor, W
 
 The AI operates with two layers of tools that are merged at runtime into a single flat list sent to the LLM.
 
-#### File Tools (desktop-only, 5 tools)
+#### File Tools (desktop-only, 6 tools)
 
 Defined in `ai-config.js` as `FILE_TOOL_DEFINITIONS`. These execute locally via Node.js file operations in `chat-engine.js`. All paths are resolved relative to the project's `course/` subdirectory, so from the AI's perspective the root is `course/` and it cannot access files outside that boundary.
 
 | Tool | Purpose |
 |---|---|
 | `read_file` | Read a file's contents with optional line range. Soft-capped at 100 lines for full-file reads. |
-| `edit_file` | Apply a search-and-replace edit to an existing file |
+| `edit_file` | Apply a search-and-replace edit to an existing file. Returns a snippet of surrounding context after success. |
 | `create_file` | Create a new file with specified contents |
+| `delete_file` | Delete a file from the course project. **Always requires user approval** regardless of `toolApprovalMode`. |
 | `search_files` | Search for text across course project files |
 | `list_files` | List directory contents with line counts (defaults to course root) |
 
 **Search-first file reading strategy.** The system prompt and tool descriptions guide the AI toward a `search_files` → targeted `read_file` workflow instead of reading entire files. `read_file` accepts optional `start_line` / `end_line` parameters (1-based, inclusive) for targeted reads. When neither is provided and the file exceeds `READ_FILE_MAX_LINES` (100), only the first 100 lines are returned with a `hint` field directing the AI to use `search_files` or provide a line range. Files at or under 100 lines are returned in full. This keeps token usage efficient while avoiding unnecessary friction on small slide files.
 
-#### MCP Tools (framework-provided, 12 tools)
+#### MCP Tools (framework-provided, 13 tools)
 
 Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-RPC (`coursecode mcp --port <port>`). The MCP connection is managed by `mcp-client.js`. The desktop app assumes the MCP server is **always available** when a preview is running; MCP tools are only included in the tool list when a preview server is active.
 
 | Tool | Purpose |
 |---|---|
 | `coursecode_state` | Get current course state (config, slide list, active slide, stage, errors/warnings) |
+| `coursecode_errors` | Lightweight error/warning check from the live preview (no headless browser needed) |
 | `coursecode_navigate` | Navigate to a specific slide by index |
 | `coursecode_interact` | Simulate user interactions (click, type, drag) on the live preview |
 | `coursecode_reset` | Reset the course to its initial state |

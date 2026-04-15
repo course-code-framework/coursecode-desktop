@@ -6,7 +6,7 @@ import { createProvider, loadApiKey, estimateCost, getCloudModels, getProviderMo
 import { loadToken } from './cloud-client.js';
 import { buildSystemPrompt } from './system-prompts.js';
 import { getSetting } from './settings.js';
-import { startPreview, getPreviewStatus } from './preview-manager.js';
+import { startPreview, getPreviewStatus, getPreviewPort } from './preview-manager.js';
 import { getMcpClient, getMcpTools, getMcpInstructions, getCurrentSlideId } from './mcp-client.js';
 import { listRefs, readRef } from './ref-manager.js';
 import { createSnapshot, getChanges } from './snapshot-manager.js';
@@ -29,7 +29,7 @@ const MENTION_INTERACTION_MAX_CHARS = 4500;
 const CHAT_TRACE_PREVIEW_CHARS = 280;
 const MAX_AGENTIC_LOOP_ITERATIONS = 75;
 const MAX_TRUNCATION_CONTINUES = 3;
-const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file']);
+const FILE_MUTATION_TOOLS = new Set(['edit_file', 'create_file', 'delete_file']);
 const verboseAiDiagnostics = !app.isPackaged && /^(1|true|yes)$/i.test(String(process.env.COURSECODE_VERBOSE_AI_DIAGNOSTICS || '0'));
 const NOISY_CHAT_TRACE_STEPS = new Set([
     'stream-text-delta',
@@ -639,6 +639,8 @@ function toolReason(toolName) {
             return 'Apply targeted changes to course content';
         case 'create_file':
             return 'Create a new course file';
+        case 'delete_file':
+            return 'Remove a file from the course';
         case 'coursecode_screenshot':
             return 'Validate learner-facing visuals after edits';
 
@@ -727,7 +729,7 @@ function resolveMentions(projectPath, message, mentions = []) {
 }
 
 /** Names of the desktop-managed file tools — MCP versions are ignored. */
-const LOCAL_FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'list_files', 'search_files']);
+const LOCAL_FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'delete_file', 'list_files', 'search_files']);
 
 /** MCP tools excluded from the AI tool surface (build-only lint is redundant when preview is always running). */
 const EXCLUDED_MCP_TOOLS = new Set(['coursecode_lint']);
@@ -758,7 +760,7 @@ function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
     return merged;
 }
 
-const FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'list_files', 'search_files']);
+const FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'delete_file', 'list_files', 'search_files']);
 
 function sanitizeToolResultForModel(toolName, result, projectPath) {
     if (toolName === 'coursecode_screenshot' && result?.content && Array.isArray(result.content)) {
@@ -953,9 +955,14 @@ function waitForToolApproval(projectPath, toolUseId, webContents, tc) {
 }
 
 /**
- * Check if a tool call needs user approval based on the current toolApprovalMode setting.
+ * Check if a tool call needs user approval.
+ * delete_file always requires approval regardless of mode.
+ * Other tools depend on the toolApprovalMode setting: 'auto' (default, never), 'mutations', or 'all'.
  */
+const ALWAYS_APPROVE_TOOLS = new Set(['delete_file']);
+
 function needsApproval(toolName) {
+    if (ALWAYS_APPROVE_TOOLS.has(toolName)) return true;
     const mode = getSetting('toolApprovalMode') || 'auto';
     if (mode === 'auto') return false;
     if (mode === 'all') return true;
@@ -977,6 +984,29 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
             throw new Error(`Path must be inside the course directory: ${candidatePath}`);
         }
         return target;
+    };
+
+    /**
+     * Fetch errors/warnings from the preview server's lightweight error endpoint.
+     * Returns a compact summary: null if clean, detail for 1, count + first for multiple.
+     * Never blocks the tool result — fails silently if preview isn't running.
+     */
+    const fetchPreviewErrors = async () => {
+        try {
+            const port = getPreviewPort(projectPath);
+            if (!port) return null;
+            const resp = await fetch(`http://127.0.0.1:${port}/__lms/errors`, { signal: AbortSignal.timeout(2000) });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            const errors = [...(data.errors || []), ...(data.warnings || [])];
+            if (errors.length === 0) return null;
+            if (errors.length === 1) return errors[0];
+            // Multiple errors: return count + first error so the model knows
+            // to call coursecode_errors for the full list if needed.
+            return { count: errors.length, first: errors[0], hint: 'Call coursecode_errors for the full list.' };
+        } catch {
+            return null;
+        }
     };
 
     // File operations (paths relative to course/)
@@ -1031,7 +1061,25 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         if (occurrences > 1) return { error: `old_string matches ${occurrences} locations in ${toolInput.path}. Include more surrounding lines to uniquely identify the target.` };
         const updated = content.replace(toolInput.old_string, toolInput.new_string);
         writeFileSync(filePath, updated);
-        return { success: true, path: toolInput.path };
+
+        // Return a small window of context around the edit so the model
+        // can verify correctness without a follow-up read_file call.
+        const updatedLines = updated.split('\n');
+        const editStart = content.split(toolInput.old_string)[0].split('\n').length;
+        const newStringLines = toolInput.new_string.split('\n').length;
+        const contextStart = Math.max(0, editStart - 3);
+        const contextEnd = Math.min(updatedLines.length, editStart + newStringLines + 2);
+        const snippet = updatedLines.slice(contextStart, contextEnd)
+            .map((line, i) => `${contextStart + i + 1}: ${line}`)
+            .join('\n');
+
+        return {
+            success: true,
+            path: toolInput.path,
+            snippet,
+            totalLines: updatedLines.length,
+            previewErrors: await fetchPreviewErrors()
+        };
     }
 
     if (toolName === 'create_file') {
@@ -1042,7 +1090,15 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         const dir = dirname(filePath);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         writeFileSync(filePath, toolInput.content);
-        return { success: true, path: toolInput.path };
+        return { success: true, path: toolInput.path, previewErrors: await fetchPreviewErrors() };
+    }
+
+    if (toolName === 'delete_file') {
+        if (!toolInput?.path) return { error: 'Missing required parameter: path. Specify the file to delete.' };
+        const filePath = resolveToolPath(toolInput.path);
+        if (!existsSync(filePath)) return { error: `File not found: ${toolInput.path}. Use list_files to check available files.` };
+        unlinkSync(filePath);
+        return { success: true, path: toolInput.path, deleted: true, previewErrors: await fetchPreviewErrors() };
     }
 
     if (toolName === 'search_files') {

@@ -40,19 +40,16 @@ TOOL USE:
 1. Search first, read targeted. Use search_files to locate specific text, then read_file with start_line/end_line around those line numbers to get surrounding context. Do not read entire files when you only need a specific section.
 2. read_file truncates large files. Files over 100 lines are capped at the first 100 lines when no range is given. Always provide start_line/end_line for targeted reads. Use list_files to see line counts before reading.
 3. Read before writing. Always read the relevant section of a file before editing it.
-4. Use edit_file for targeted changes. Use create_file only for new files.
+4. Use edit_file for targeted changes. Use create_file only for new files. Use delete_file to remove files.
 5. Make small, focused edits. Multiple small edit_file calls are better than one large replacement.
 6. Never recreate an entire file with create_file when you could edit_file a few lines.
 7. Do not ask the user for permission while gathering context or making ordinary in-scope edits.
 8. Multi-file edits: use search_files to find all instances across files. For each match, read_file with start_line/end_line around the hit (±10 lines for context), then edit_file. Do NOT read entire files — the search results give you line numbers, so use them for targeted reads. Do not stop after finding the matches. Do not propose changes and wait. Complete all edits in one turn.
 
-VERIFY AFTER EVERY EDIT (mandatory):
-After changing any slide or config file, always run this cycle:
-1. Call coursecode_state to check for errors and warnings from the live preview.
-2. If errors or warnings exist, fix them immediately before continuing.
-3. Take a screenshot to verify the visual result looks correct.
-4. If anything looks wrong visually (spacing, layout, contrast), fix it.
-Never skip verification. Never report "done" without a screenshot confirming the result.
+VERIFY AFTER EDITS:
+File mutation tools (edit_file, create_file, delete_file) automatically check the live preview for errors and warnings after each operation. If previewErrors is returned in the tool result, fix the issues immediately before continuing.
+Use screenshots at your discretion to verify visual results — typically after completing a batch of related changes, not after every individual file edit. If the user asks about visual appearance, or if you made layout/styling changes where visual verification matters, take a screenshot.
+Use coursecode_state when you need full course context (TOC, interactions, engagement, slide state) — not for post-edit error checking.
 
 CATALOG TOOLS — FOR VERIFICATION AND DEEP DIVES:
 You know the common framework patterns from the Framework Essentials below. Use catalog tools when you need a class, component, or interaction NOT covered in the essentials, when lint flags an unknown class, or when you need the full schema for a specific component.
@@ -438,6 +435,18 @@ export const FILE_TOOL_DEFINITIONS = [
                 path: { type: 'string', description: 'Directory path relative to the course directory. Omit or use "." for the course root. Use "slides" to list all slide files.' }
             }
         }
+    },
+    {
+        name: 'delete_file',
+        description: 'Permanently delete a file from the course project. Requires user approval before executing. Use this to remove slides, assets, or other files that are no longer needed. Will fail if the file does not exist.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path relative to the course directory (e.g. slides/old-slide.js, assets/unused-image.png). Never prefix with src/ or course/.' },
+                reason: { type: 'string', description: 'Brief explanation of why this file should be deleted, shown to the user for approval.' }
+            },
+            required: ['path']
+        }
     }
 ];
 
@@ -452,6 +461,7 @@ export const TOOL_DEFINITIONS = FILE_TOOL_DEFINITIONS;
 export const TOOL_LABELS = {
     edit_file: 'Making changes…',
     create_file: 'Creating file…',
+    delete_file: 'Deleting file…',
     read_file: 'Reading file…',
     search_files: 'Searching files…',
     list_files: 'Browsing files…',
@@ -466,7 +476,8 @@ export const TOOL_LABELS = {
     coursecode_build: 'Building the course…',
     coursecode_workflow_status: 'Checking progress…',
     coursecode_icon_catalog: 'Looking up icons…',
-    coursecode_viewport: 'Resizing viewport…'
+    coursecode_viewport: 'Resizing viewport…',
+    coursecode_errors: 'Checking for errors…'
 };
 
 // ---------------------------------------------------------------------------
@@ -475,7 +486,8 @@ export const TOOL_LABELS = {
 
 export const PREVIEW_TOOLS = new Set([
     'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
-    'coursecode_interact', 'coursecode_reset', 'coursecode_viewport'
+    'coursecode_interact', 'coursecode_reset', 'coursecode_viewport',
+    'coursecode_errors'
 ]);
 
 // ---------------------------------------------------------------------------
@@ -488,12 +500,12 @@ export const SAFE_TOOLS = new Set([
     'coursecode_state', 'coursecode_navigate', 'coursecode_screenshot',
     'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
-    'coursecode_workflow_status', 'coursecode_viewport'
+    'coursecode_workflow_status', 'coursecode_viewport', 'coursecode_errors'
 ]);
 
 /** Tools that mutate files or course state — may require approval */
 export const MUTATION_TOOLS = new Set([
-    'edit_file', 'create_file',
+    'edit_file', 'create_file', 'delete_file',
     'coursecode_interact', 'coursecode_reset', 'coursecode_build'
 ]);
 
@@ -503,7 +515,7 @@ export const PARALLELIZABLE_TOOLS = new Set([
     'coursecode_state', 'coursecode_screenshot',
     'coursecode_component_catalog', 'coursecode_css_catalog',
     'coursecode_interaction_catalog', 'coursecode_icon_catalog',
-    'coursecode_workflow_status', 'coursecode_viewport'
+    'coursecode_workflow_status', 'coursecode_viewport', 'coursecode_errors'
 ]);
 
 // ---------------------------------------------------------------------------
