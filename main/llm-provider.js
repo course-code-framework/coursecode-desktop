@@ -174,10 +174,30 @@ async function fetchOpenAIModels(apiKey) {
     const discovered = (payload.data || [])
         .map(m => m?.id)
         .filter(id => typeof id === 'string' && (/^gpt-/.test(id) || /^o\d/.test(id)))
-        .map(id => ({ id, label: labelFromModelId(id) }));
+        .map(id => {
+            // OpenAI's /v1/models doesn't return output/context limits,
+            // so populate known values for accurate max_tokens requests.
+            const limits = OPENAI_KNOWN_LIMITS[id];
+            if (limits?.output) modelOutputLimits.set(id, limits.output);
+            if (limits?.context) modelContextWindows.set(id, limits.context);
+            return { id, label: labelFromModelId(id) };
+        });
 
     return markDefaultModel(discovered, ['gpt-4o', 'o3']);
 }
+
+/**
+ * OpenAI's /v1/models endpoint doesn't include output or context limits.
+ * These are populated from documented model capabilities to avoid falling
+ * back to the generic MAX_TOKENS (8192) default.
+ */
+const OPENAI_KNOWN_LIMITS = {
+    'gpt-4o': { output: 16384, context: 128000 },
+    'gpt-4o-mini': { output: 16384, context: 128000 },
+    'o3': { output: 100000, context: 200000 },
+    'o3-mini': { output: 65536, context: 200000 },
+    'o4-mini': { output: 100000, context: 200000 },
+};
 
 async function fetchGoogleModels(apiKey) {
     const response = await net.fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
@@ -403,6 +423,7 @@ async function createOpenAIProvider(apiKey) {
 
                 if (Array.isArray(msg.content)) {
                     const textParts = [];
+                    const toolResults = [];
 
                     for (const block of msg.content) {
                         if (!block || typeof block !== 'object') continue;
@@ -415,7 +436,7 @@ async function createOpenAIProvider(apiKey) {
                             const resultContent = typeof block.content === 'string'
                                 ? block.content
                                 : JSON.stringify(block.content || {});
-                            converted.push({
+                            toolResults.push({
                                 role: 'tool',
                                 tool_call_id: block.tool_use_id,
                                 content: resultContent
@@ -423,6 +444,10 @@ async function createOpenAIProvider(apiKey) {
                         }
                     }
 
+                    // Emit tool results first so they stay adjacent to the
+                    // preceding assistant message with tool_calls (OpenAI
+                    // requires this ordering). Text follows after.
+                    converted.push(...toolResults);
                     if (textParts.length > 0) {
                         converted.push({ role: 'user', content: textParts.join('\n\n') });
                     }
@@ -701,6 +726,7 @@ async function createGoogleProvider(apiKey) {
             let outputTokens = 0;
             let cachedTokens = 0;
             let lastFinishReason = null;
+            let hadFunctionCalls = false;
 
             while (true) {
                 const { done: readerDone, value } = await reader.read();
@@ -739,6 +765,7 @@ async function createGoogleProvider(apiKey) {
                                     yield { type: 'text', text: part.text };
                                 }
                                 if (part.functionCall) {
+                                    hadFunctionCalls = true;
                                     const callId = part.functionCall.id || `gemini_${part.functionCall.name}_${Date.now()}`;
                                     yield { type: 'tool_use_start', id: callId, name: part.functionCall.name, thought_signature: part.thoughtSignature || null };
                                     yield { type: 'tool_use_delta', json: JSON.stringify(part.functionCall.args || {}) };
@@ -755,13 +782,17 @@ async function createGoogleProvider(apiKey) {
                 }
             }
 
-            const stopReason = lastFinishReason === 'STOP' ? 'end_turn'
+            // Gemini returns STOP even when functionCall parts are present.
+            // Map to tool_use when we saw function calls so the agentic loop
+            // and trace logging accurately reflect what happened.
+            const stopReason = hadFunctionCalls ? 'tool_use'
+                : lastFinishReason === 'STOP' ? 'end_turn'
                 : lastFinishReason === 'MAX_TOKENS' ? 'max_tokens'
                 : (lastFinishReason?.toLowerCase() || 'end_turn');
 
             yield {
                 type: 'done',
-                stopReason: stopReason === 'tool_use' ? 'tool_use' : stopReason,
+                stopReason,
                 usage: { inputTokens, outputTokens, cacheReadInputTokens: cachedTokens }
             };
         },
@@ -1389,7 +1420,16 @@ async function createCloudProxyProvider(token, cloudProvider, cloudApiType) {
 
                     for (const line of lines) {
                         if (!line.startsWith('data: ')) continue;
-                        const event = JSON.parse(line.slice(6));
+                        let event;
+                        try {
+                            event = JSON.parse(line.slice(6));
+                        } catch (err) {
+                            log.debug('Cloud proxy SSE parse error, skipping line', {
+                                error: err?.message,
+                                preview: line.slice(0, 200)
+                            });
+                            continue;
+                        }
 
                         if (event.type === 'text') {
                             yield { type: 'text', text: event.content };

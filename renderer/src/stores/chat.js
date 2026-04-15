@@ -318,21 +318,12 @@ export async function sendMessage(projectPath, text, mentions = []) {
     activeTools.set([]);
     let mode;
     aiMode.subscribe(v => mode = v)();
-    try {
-        await window.api.settings.set('defaultAiMode', mode);
-        await window.api.settings.set('aiModeInitialized', true);
-        await window.api.chat.send(projectPath, text, mentions, mode);
-    } catch (err) {
-        streaming.set(false);
-        streamingText.set('');
-        activeTools.set([]);
-        pendingScreenshots = [];
-        pendingChangeSummary = null;
-        messages.update(msgs => [
-            ...msgs,
-            { role: 'assistant', content: err?.message || 'Failed to send message.', isError: true }
-        ]);
-    }
+    await window.api.settings.set('defaultAiMode', mode);
+    await window.api.settings.set('aiModeInitialized', true);
+    // Fire-and-forget: sendMessage is async on the main process side but the
+    // IPC handler doesn't await it. Errors are delivered via chat:error events,
+    // not via the IPC return path.
+    await window.api.chat.send(projectPath, text, mentions, mode);
 }
 
 export async function stopGeneration(projectPath) {

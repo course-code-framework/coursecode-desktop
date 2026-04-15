@@ -727,7 +727,7 @@ function resolveMentions(projectPath, message, mentions = []) {
 }
 
 /** Names of the desktop-managed file tools — MCP versions are ignored. */
-const LOCAL_FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'list_files', 'list_directory', 'write_file']);
+const LOCAL_FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'list_files', 'search_files']);
 
 /** MCP tools excluded from the AI tool surface (build-only lint is redundant when preview is always running). */
 const EXCLUDED_MCP_TOOLS = new Set(['coursecode_lint']);
