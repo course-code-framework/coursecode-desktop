@@ -1037,9 +1037,10 @@
                 <button class="btn-ghost btn-sm" onclick={() => toggleExpanded(changeId)}>
                   {isExpanded(changeId) ? 'Hide Files' : 'Show Files'}
                 </button>
-                {#if message.snapshotId}
-                  <button class="btn-secondary btn-sm" disabled={restoringSnapshotId === message.snapshotId} onclick={() => restoreSnapshot(message.snapshotId)}>
-                    {restoringSnapshotId === message.snapshotId ? 'Restoring…' : 'Restore Point'}
+                {#if message.restoreSnapshotId || message.snapshotId}
+                  {@const restoreId = message.restoreSnapshotId || message.snapshotId}
+                  <button class="btn-secondary btn-sm" disabled={restoringSnapshotId === restoreId} onclick={() => restoreSnapshot(restoreId)}>
+                    {restoringSnapshotId === restoreId ? 'Restoring…' : 'Restore Point'}
                   </button>
                 {/if}
               </div>
@@ -1213,26 +1214,27 @@
             </div>
           </div>
         {:else}
-          <MessageBubble {message} />
           {#if message.changeSummary?.snapshotId}
+            {@const restoreId = message.changeSummary.restoreSnapshotId || message.changeSummary.snapshotId}
             <div class="restore-marker">
               <div class="restore-marker-line"></div>
               <button
                 class="restore-marker-btn"
-                disabled={restoringSnapshotId === message.changeSummary.snapshotId}
-                onclick={() => restoreSnapshot(message.changeSummary.snapshotId)}
-                title="Revert all files to this point"
+                disabled={restoringSnapshotId === restoreId}
+                onclick={() => restoreSnapshot(restoreId)}
+                title="Revert all files to before these changes"
               >
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
                   <path d="M2 8a6 6 0 1 1 1.8 4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                   <path d="M2 12.3V8h4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
                   <path d="M8 5v3.5L10 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
-                {restoringSnapshotId === message.changeSummary.snapshotId ? 'Restoring…' : 'Restore'}
+                {restoringSnapshotId === restoreId ? 'Restoring…' : 'Restore'}
               </button>
               <div class="restore-marker-line"></div>
             </div>
           {/if}
+          <MessageBubble {message} />
         {/if}
       {/each}
 

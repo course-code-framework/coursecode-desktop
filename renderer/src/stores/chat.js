@@ -236,9 +236,9 @@ export function subscribeToChatEvents() {
         }
     });
 
-    unsubChangeSummary = window.api.chat.onChangeSummary?.(({ projectPath, label, timestamp, added, modified, deleted, snapshotId }) => {
+    unsubChangeSummary = window.api.chat.onChangeSummary?.(({ projectPath, label, timestamp, added, modified, deleted, snapshotId, restoreSnapshotId }) => {
         if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
-        pendingChangeSummary = { label, timestamp, added: added || [], modified: modified || [], deleted: deleted || [], snapshotId };
+        pendingChangeSummary = { label, timestamp, added: added || [], modified: modified || [], deleted: deleted || [], snapshotId, restoreSnapshotId };
     });
 
     unsubToolApproval = window.api.chat.onToolApproval?.(({ projectPath, toolUseId, tool, label, input, filePath }) => {
@@ -520,7 +520,8 @@ function mergeToolMessages(msgs) {
                         added: msg.added || [],
                         modified: msg.modified || [],
                         deleted: msg.deleted || [],
-                        snapshotId: msg.snapshotId
+                        snapshotId: msg.snapshotId,
+                        restoreSnapshotId: msg.restoreSnapshotId
                     };
                 }
                 // executionReceipt is dropped entirely

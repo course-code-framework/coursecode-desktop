@@ -536,6 +536,7 @@ function serializeConversation(messages = []) {
         if (m.modified) base.modified = m.modified;
         if (m.deleted) base.deleted = m.deleted;
         if (m.snapshotId) base.snapshotId = m.snapshotId;
+        if (m.restoreSnapshotId) base.restoreSnapshotId = m.restoreSnapshotId;
         return base;
     });
 }
@@ -1580,7 +1581,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         let lastStopReason = null;
         // Auto-snapshot before AI starts making changes
         const chatIndex = messages.length - 1; // Index of the user message
-        try { await createSnapshot(projectPath, 'Before AI changes', { chatIndex }); } catch (err) { log.debug('Pre-AI snapshot failed (repo may not be initialized)', err); }
+        let preSnapshotId = null;
+        try {
+            const preSnap = await createSnapshot(projectPath, 'Before AI changes', { chatIndex });
+            preSnapshotId = preSnap.id;
+        } catch (err) { log.debug('Pre-AI snapshot failed (repo may not be initialized)', err); }
 
         while (continueLoop) {
             continueLoop = false;
@@ -2261,7 +2266,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     added: changes.added,
                     modified: changes.modified,
                     deleted: changes.deleted,
-                    snapshotId: snap.id
+                    snapshotId: snap.id,
+                    restoreSnapshotId: preSnapshotId
                 };
                 messages.push(changeSummaryMsg);
 
@@ -2272,7 +2278,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                     added: changes.added,
                     modified: changes.modified,
                     deleted: changes.deleted,
-                    snapshotId: snap.id
+                    snapshotId: snap.id,
+                    restoreSnapshotId: preSnapshotId
                 });
             } else if (totalChanged > 0) {
                 log.debug('Change summary suppressed: diffs detected without successful mutation tool execution', {
@@ -2462,7 +2469,8 @@ export function loadHistory(projectPath) {
                 added: m.added || [],
                 modified: m.modified || [],
                 deleted: m.deleted || [],
-                snapshotId: m.snapshotId
+                snapshotId: m.snapshotId,
+                restoreSnapshotId: m.restoreSnapshotId
             };
         }
         return {
