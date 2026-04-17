@@ -438,7 +438,9 @@
       ...current,
       active: current.active ?? true,
       stage: data.stage || current.stage || 'building',
-      message: data.message || current.message || 'Preparing deployment...'
+      message: data.message || current.message || 'Preparing deployment...',
+      uploaded: data.uploaded ?? current.uploaded,
+      total: data.total ?? current.total,
     });
   }
 
@@ -1218,6 +1220,8 @@
       targetLabel={progress.targetLabel || 'Deploying to CourseCode Cloud'}
       dashboardUrl={progress.dashboardUrl || ''}
       previewUrl={progress.previewUrl || ''}
+      uploaded={progress.uploaded}
+      total={progress.total}
       onclose={() => clearDeployProgress(path)}
     />
   {/each}

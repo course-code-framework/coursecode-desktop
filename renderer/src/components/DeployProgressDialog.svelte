@@ -8,6 +8,8 @@
     targetLabel = 'Deploying to CourseCode Cloud',
     dashboardUrl = '',
     previewUrl = '',
+    uploaded = undefined,
+    total = undefined,
     onclose
   } = $props();
 
@@ -63,7 +65,7 @@
       {/if}
     </div>
 
-    <DeployProgress {active} {stage} {message} {targetLabel} />
+    <DeployProgress {active} {stage} {message} {targetLabel} {uploaded} {total} />
 
     {#if !active && (dashboardUrl || previewUrl)}
       <div class="deploy-links">

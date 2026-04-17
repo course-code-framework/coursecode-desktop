@@ -252,9 +252,9 @@ export async function getCloudUser() {
 export async function cloudDeploy(projectPath, webContents, options = {}) {
     if (!loadToken()) throw new Error('Not authenticated. Please sign in to CourseCode Cloud.');
 
-    const send = (stage, message, log) => {
+    const send = (stage, message, log, uploaded, total) => {
         if (webContents && !webContents.isDestroyed()) {
-            webContents.send('cloud:deployProgress', { projectPath, stage, message, log });
+            webContents.send('cloud:deployProgress', { projectPath, stage, message, log, uploaded, total });
         }
     };
 
@@ -287,9 +287,26 @@ export async function cloudDeploy(projectPath, webContents, options = {}) {
         child.stdout.on('data', data => {
             const text = data.toString();
             stdout += text;
-            // Heuristic: once we see output growing we're past the build step
-            if (stdout.length > 10) send('uploading', 'Uploading to Cloud…');
-            send(null, null, text);
+
+            // Parse structured JSON progress events from CLI --json mode
+            for (const line of text.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.startsWith('{')) continue;
+                try {
+                    const parsed = JSON.parse(trimmed);
+                    if (parsed.type === 'progress') {
+                        send(parsed.stage, parsed.stage === 'uploading'
+                            ? `Uploading ${parsed.uploaded ?? 0} / ${parsed.total ?? '?'} files…`
+                            : parsed.stage === 'building' ? 'Building course…'
+                            : parsed.stage === 'finalizing' ? 'Finalizing deployment…'
+                            : 'Deploying…',
+                            null,
+                            parsed.uploaded,
+                            parsed.total
+                        );
+                    }
+                } catch { /* not JSON — ignore */ }
+            }
         });
 
         child.stderr.on('data', data => {

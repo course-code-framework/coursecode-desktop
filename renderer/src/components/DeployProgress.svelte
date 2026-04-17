@@ -4,7 +4,9 @@
     stage = 'building',
     message = 'Preparing deployment...',
     targetLabel = 'Deploying to CourseCode Cloud',
-    compact = false
+    compact = false,
+    uploaded = undefined,
+    total = undefined
   } = $props();
 
   const stages = [
@@ -20,14 +22,28 @@
 
   function getProgressWidth(currentStage) {
     if (currentStage === 'complete') return 100;
-    if (currentStage === 'uploading') return 76;
+    if (currentStage === 'finalizing') return 90;
+    if (currentStage === 'uploading') {
+      // Real progress based on uploaded/total file counts
+      if (typeof uploaded === 'number' && typeof total === 'number' && total > 0) {
+        const pct = Math.round((uploaded / total) * 60) + 25; // 25-85% range
+        return Math.min(pct, 85);
+      }
+      return 50;
+    }
     if (currentStage === 'error') return 76;
-    return 34;
+    return 20;
   }
 
   function getStageLabel(currentStage) {
     if (currentStage === 'complete') return 'Complete';
-    if (currentStage === 'uploading') return 'Uploading';
+    if (currentStage === 'finalizing') return 'Finalizing';
+    if (currentStage === 'uploading') {
+      if (typeof uploaded === 'number' && typeof total === 'number' && total > 0) {
+        return `${uploaded}/${total}`;
+      }
+      return 'Uploading';
+    }
     if (currentStage === 'error') return 'Attention';
     return 'Building';
   }

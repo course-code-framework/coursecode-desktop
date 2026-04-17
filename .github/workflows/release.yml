@@ -70,10 +70,18 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          sha256sum *.dmg *.exe 2>/dev/null > SHA256SUMS.txt || true
+          cat SHA256SUMS.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*
+            artifacts/SHA256SUMS.txt
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
