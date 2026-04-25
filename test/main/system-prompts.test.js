@@ -122,9 +122,10 @@ describe('FILE_TOOL_DEFINITIONS', () => {
         expect(names).toContain('read_file');
         expect(names).toContain('edit_file');
         expect(names).toContain('create_file');
+        expect(names).toContain('delete_file');
         expect(names).toContain('list_files');
         expect(names).toContain('search_files');
-        expect(names.length).toBe(5);
+        expect(names.length).toBe(6);
     });
 });
 
