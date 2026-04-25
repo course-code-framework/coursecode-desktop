@@ -46,7 +46,7 @@
     "@tiptap/core": "^3.19.0",
     "@tiptap/markdown": "^3.19.0",
     "@tiptap/starter-kit": "^3.19.0",
-    "coursecode": "^0.1.35",
+    "coursecode": "^0.1.36",
     "electron-updater": "^6.3.9",
     "isomorphic-git": "^1.36.3",
     "marked": "^17.0.1",
