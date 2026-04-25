@@ -11,6 +11,7 @@
     "url": "https://github.com/course-code-framework/coursecode-desktop/issues"
   },
   "homepage": "https://coursecodedesktop.com",
+  "packageManager": "npm@11.10.0",
   "license": "MIT",
   "author": "Seth Vincent",
   "scripts": {
@@ -45,7 +46,7 @@
     "@tiptap/core": "^3.19.0",
     "@tiptap/markdown": "^3.19.0",
     "@tiptap/starter-kit": "^3.19.0",
-    "coursecode": "^0.1.25",
+    "coursecode": "^0.1.35",
     "electron-updater": "^6.3.9",
     "isomorphic-git": "^1.36.3",
     "marked": "^17.0.1",
