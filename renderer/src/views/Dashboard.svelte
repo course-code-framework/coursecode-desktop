@@ -382,7 +382,7 @@
 
     if (deployPreview) {
       return currentState === 'active'
-        ? 'Keep preview on and move it to this latest version.'
+        ? 'Keep preview on and move it to this Preview version.'
         : 'Turn preview on and point it to this version.';
     }
 
@@ -395,7 +395,7 @@
     const previewState = getCloudPreviewState(project.path);
     if (previewState === 'active') {
       return hasExistingCloudDeployment(project)
-        ? 'The preview URL is live and can stay synced to the latest deployed version.'
+        ? 'The preview URL is live and serves the current Preview version.'
         : 'The preview URL is live. You can publish this first deploy there too.';
     }
     if (previewState === 'expired') {
