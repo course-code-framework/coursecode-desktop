@@ -2,14 +2,40 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read release metadata
+        id: release
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          PRERELEASE=false
+          if [[ "$VERSION" == *alpha* || "$VERSION" == *beta* || "$VERSION" == *rc* ]]; then
+            PRERELEASE=true
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: metadata
     strategy:
       matrix:
         include:
@@ -30,12 +56,6 @@ jobs:
 
       - run: npm ci
 
-      - name: Sync app version from tag
-        shell: bash
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          npm version --no-git-tag-version --allow-same-version "$TAG_VERSION"
-
       - name: Build & Package
         run: npm run ${{ matrix.cmd }} -- --publish never
         # Code-signing env can be added here when certificates are configured:
@@ -53,7 +73,9 @@ jobs:
           if-no-files-found: warn
 
   release:
-    needs: build
+    needs:
+      - metadata
+      - build
     runs-on: ubuntu-latest
 
     steps:
@@ -70,14 +92,27 @@ jobs:
           sha256sum *.dmg *.exe 2>/dev/null > SHA256SUMS.txt || true
           cat SHA256SUMS.txt
 
-      - name: Create GitHub Release
+      - name: Align release tag to main
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "${{ needs.metadata.outputs.tag }}" "${GITHUB_SHA}"
+          git push --force origin "refs/tags/${{ needs.metadata.outputs.tag }}"
+
+      - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.metadata.outputs.tag }}
           files: |
             artifacts/**/*
             artifacts/SHA256SUMS.txt
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          prerelease: ${{ needs.metadata.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.metadata.outputs.prerelease == 'true' && 'false' || 'true' }}
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
