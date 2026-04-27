@@ -302,7 +302,7 @@
         <div class="error-icon">⚠️</div>
       {/if}
 
-      <div class="markdown-body" onclick={handleMarkdownClick}>
+      <div class="markdown-body" role="presentation" onclick={handleMarkdownClick}>
         {@html renderMarkdown(message.content)}
       </div>
 

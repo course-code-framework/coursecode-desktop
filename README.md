@@ -12,9 +12,9 @@ If you want the guided, button-based workflow, start on the Desktop site:
 
 You can download installers directly here to avoid extra steps:
 
-- **macOS (Apple Silicon + Intel, beta):** [Download `.dmg` (v0.9.0)](https://github.com/course-code-framework/coursecode-desktop/releases/download/v0.9.0/CourseCode-Desktop-v0.9.0-mac.dmg)
-- **Windows 10/11 x64 (beta):** [Download `.exe` (v0.9.0)](https://github.com/course-code-framework/coursecode-desktop/releases/download/v0.9.0/CourseCode-Desktop-v0.9.0-win.exe)
-- **Release notes + checksums:** [GitHub Release v0.9.0 (February 15, 2026)](https://github.com/course-code-framework/coursecode-desktop/releases/tag/v0.9.0)
+- **macOS (Apple Silicon + Intel, beta):** [Download `.dmg` (v0.10.0-beta.1)](https://github.com/course-code-framework/coursecode-desktop/releases/download/v0.10.0-beta.1/CourseCode-Desktop-v0.10.0-beta.1-mac.dmg)
+- **Windows 10/11 x64 (beta):** [Download `.exe` (v0.10.0-beta.1)](https://github.com/course-code-framework/coursecode-desktop/releases/download/v0.10.0-beta.1/CourseCode-Desktop-v0.10.0-beta.1-win.exe)
+- **Release notes + checksums:** [GitHub Release v0.10.0-beta.1](https://github.com/course-code-framework/coursecode-desktop/releases/tag/v0.10.0-beta.1)
 
 ## Temporary Beta Note (Unsigned Apps)
 

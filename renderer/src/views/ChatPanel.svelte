@@ -2825,7 +2825,7 @@
   @media (prefers-reduced-motion: reduce) {
     .chat-panel,
     .workflow-progress,
-    .typing-indicator span,
+    .typing-indicator-inline span,
     .cursor-blink,
     .workflow-spinner,
     .spinner {

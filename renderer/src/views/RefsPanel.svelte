@@ -243,10 +243,6 @@
     background: var(--bg-secondary);
   }
 
-  .ref-item.selected {
-    background: var(--accent-subtle);
-  }
-
   .ref-icon {
     flex-shrink: 0;
     font-size: var(--text-sm);

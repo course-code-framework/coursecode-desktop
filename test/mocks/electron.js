@@ -30,7 +30,7 @@ export const app = {
     on: vi.fn(),
     quit: vi.fn(),
     getName: vi.fn(() => 'coursecode-desktop'),
-    getVersion: vi.fn(() => '0.9.0'),
+    getVersion: vi.fn(() => '0.10.0-beta.1'),
 };
 
 export const shell = {

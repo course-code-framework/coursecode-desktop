@@ -100,6 +100,10 @@
     return '~/' + parts.slice(-3).join('/');
   }
 
+  function exportFormatId(project) {
+    return `export-format-${encodeURIComponent(project.path).replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  }
+
   $effect(() => {
     const filtered = $projects.filter(p => {
       if (searchQuery && !p.title?.toLowerCase().includes(searchQuery.toLowerCase()) && !p.name?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
@@ -955,8 +959,8 @@
                   {#if exportPopover === project.path}
                     <div class="export-popover" role="dialog" aria-label="Export options" use:popover>
                       <div class="deploy-popover-field">
-                        <label class="deploy-popover-label">Format</label>
-                        <select class="export-format-select" bind:value={exportFormat} onclick={(e) => e.stopPropagation()}>
+                        <label class="deploy-popover-label" for={exportFormatId(project)}>Format</label>
+                        <select id={exportFormatId(project)} class="export-format-select" bind:value={exportFormat} onclick={(e) => e.stopPropagation()}>
                           {#each Object.entries(formatLabels) as [value, label]}
                             <option {value}>{label}</option>
                           {/each}
@@ -1062,7 +1066,7 @@
   {#if deleteDialog}
     {@const dp = deleteDialog.project}
     <div class="dialog-backdrop" onclick={closeDeleteDialog} role="presentation">
-      <div class="dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Delete course">
+      <div class="dialog" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Delete course" tabindex="-1">
         <h2 class="dialog-title">Delete "{dp.title || dp.name}"?</h2>
         <p class="dialog-body">The project folder will be moved to Trash. This cannot be undone.</p>
         {#if dp.cloudId}
@@ -2187,10 +2191,6 @@
   }
 
   /* --- GitHub info popover (blocks production, offers preview) --- */
-  .github-info-popover {
-    gap: var(--sp-sm);
-  }
-
   .github-info-header {
     display: flex;
     align-items: center;

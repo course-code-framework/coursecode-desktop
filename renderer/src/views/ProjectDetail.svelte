@@ -727,8 +727,8 @@
         {#if exportPopoverOpen}
           <div class="export-popover" role="dialog" aria-label="Export options" use:popover>
             <div class="deploy-popover-field">
-              <label class="deploy-popover-label">Format</label>
-              <select class="export-format-select" bind:value={exportFormat}>
+              <label class="deploy-popover-label" for="project-export-format">Format</label>
+              <select id="project-export-format" class="export-format-select" bind:value={exportFormat}>
                 {#each FORMATS as fmt}
                   <option value={fmt}>{FORMAT_LABELS[fmt]}</option>
                 {/each}
@@ -879,7 +879,7 @@
   {#if deployPopoverOpen}
     <div class="deploy-dialog-backdrop" role="presentation" onclick={() => deployPopoverOpen = false}>
       {#if project?.githubLinked}
-        <div class="deploy-popover deploy-dialog-panel" role="dialog" aria-modal="true" aria-label="GitHub deploy info" onclick={(e) => e.stopPropagation()}>
+        <div class="deploy-popover deploy-dialog-panel" role="dialog" aria-modal="true" aria-label="GitHub deploy info" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
           <p class="deploy-toggle-tip">Production deploys are managed by your GitHub repository. Push to deploy.</p>
           <div class="preview-link-panel">
             <div class="preview-link-header">
@@ -919,7 +919,7 @@
           </div>
         </div>
       {:else}
-        <div class="deploy-popover deploy-dialog-panel" role="dialog" aria-modal="true" aria-label="Deploy options" onclick={(e) => e.stopPropagation()}>
+        <div class="deploy-popover deploy-dialog-panel" role="dialog" aria-modal="true" aria-label="Deploy options" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
           <div class="deploy-popover-field">
             <label class="deploy-popover-label" for="deploy-reason">Reason <span class="optional-tag">optional</span></label>
             <input

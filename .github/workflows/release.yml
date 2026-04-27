@@ -37,9 +37,8 @@ jobs:
           npm version --no-git-tag-version "$TAG_VERSION"
 
       - name: Build & Package
-        run: npm run ${{ matrix.cmd }}
+        run: npm run ${{ matrix.cmd }} -- --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Code-signing (enable when certificates are configured):
           # CSC_LINK: ${{ secrets.CSC_LINK }}
           # CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
