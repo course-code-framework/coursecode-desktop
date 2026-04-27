@@ -8,7 +8,18 @@ directories:
 
 files:
   - out/**/*
-  - "!node_modules/**/*"
+  - package.json
+  - node_modules/**/*
+  - "!node_modules/npm/**/*"
+
+extraResources:
+  - from: node_modules/npm
+    to: vendor/npm
+    filter:
+      - "**/*"
+
+asarUnpack:
+  - node_modules/coursecode/**/*
 
 mac:
   icon: build/icon.icns

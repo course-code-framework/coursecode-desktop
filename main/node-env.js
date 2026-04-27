@@ -9,6 +9,15 @@ const log = createLogger('node-env');
 /** Whether the app is running as a packaged build (not dev mode). */
 const isPackaged = app.isPackaged;
 
+function getAppNodeModulesPath() {
+    // Dev and packaged builds both execute from out/main.
+    if (isPackaged) {
+        return join(process.resourcesPath, 'app.asar.unpacked', 'node_modules');
+    }
+
+    return join(__dirname, '..', '..', 'node_modules');
+}
+
 /** Whether the app should target local Supabase (set via COURSECODE_LOCAL=1). */
 export function isLocalMode() {
     return !!process.env.COURSECODE_LOCAL;
@@ -62,10 +71,15 @@ export function getNpxPath() {
 export function getChildEnv(extraEnv = {}) {
     const nodeDir = dirname(getNodePath());
     const PATH = `${nodeDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`;
+    const npmPath = getNpmPath();
+    const npxPath = getNpxPath();
 
     return {
         ...process.env,
         PATH,
+        ...(isPackaged ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+        ...(npmPath !== 'npm' ? { COURSECODE_NPM_CLI: npmPath } : {}),
+        ...(npxPath !== 'npx' ? { COURSECODE_NPX_CLI: npxPath } : {}),
         ...extraEnv
     };
 }
@@ -143,12 +157,8 @@ export function killProcessTree(child, signal = 'SIGTERM') {
  */
 export function getCLISpawnArgs(cliArgs = []) {
     // Resolve CLI from node_modules directly (avoids Windows .cmd shim ENOENT).
-    // Dev: __dirname is out/main/, so ../../node_modules
-    // Production: __dirname is <app>/main/, so ../node_modules
-    const nmBase = isPackaged
-        ? join(__dirname, '..', 'node_modules')
-        : join(__dirname, '..', '..', 'node_modules');
-    const cliBin = join(nmBase, 'coursecode', 'bin', 'cli.js');
+    // Dev + packaged: __dirname is out/main/, so ../../node_modules.
+    const cliBin = join(getAppNodeModulesPath(), 'coursecode', 'bin', 'cli.js');
 
     if (existsSync(cliBin)) {
         const nodeCmd = isPackaged ? getNodePath() : 'node';

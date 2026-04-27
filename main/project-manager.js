@@ -19,6 +19,16 @@ const ALLOWED_LAYOUTS = new Set(['article', 'traditional', 'presentation', 'focu
  * Scan the projects directory for CourseCode projects.
  * A project is detected by the presence of course-config.js.
  */
+function findCourseConfigPath(projectPath) {
+    const canonicalPath = join(projectPath, 'course', 'course-config.js');
+    if (existsSync(canonicalPath)) return canonicalPath;
+
+    const legacyPath = join(projectPath, 'course-config.js');
+    if (existsSync(legacyPath)) return legacyPath;
+
+    return canonicalPath;
+}
+
 export async function scanProjects() {
     const projectsDir = getSetting('projectsDir');
     if (!existsSync(projectsDir)) return [];
@@ -30,7 +40,7 @@ export async function scanProjects() {
         if (!entry.isDirectory()) continue;
 
         const projectPath = join(projectsDir, entry.name);
-        const configPath = join(projectPath, 'course-config.js');
+        const configPath = findCourseConfigPath(projectPath);
         const rcPath = join(projectPath, '.coursecoderc.json');
 
         if (!existsSync(configPath) && !existsSync(rcPath)) continue;
@@ -214,7 +224,7 @@ async function ensureCLIReady() {
  * Open a project and return its full details.
  */
 export async function openProject(projectPath) {
-    const configPath = join(projectPath, 'course-config.js');
+    const configPath = findCourseConfigPath(projectPath);
     const rcPath = join(projectPath, '.coursecoderc.json');
 
     const project = {

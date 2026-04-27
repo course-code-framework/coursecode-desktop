@@ -76,6 +76,22 @@ describe('scanProjects', () => {
         expect(results[0].format).toBe('scorm2004');
     });
 
+    it('detects project with course/course-config.js', async () => {
+        const projectDir = join(tempDir, 'nested-course');
+        mkdirSync(join(projectDir, 'course'), { recursive: true });
+        writeFileSync(join(projectDir, 'course', 'course-config.js'), `
+            export default {
+                metadata: { title: 'Nested Course' },
+                format: 'lti'
+            };
+        `);
+        const results = await scanProjects();
+        expect(results).toHaveLength(1);
+        expect(results[0].name).toBe('nested-course');
+        expect(results[0].title).toBe('Nested Course');
+        expect(results[0].format).toBe('lti');
+    });
+
     it('detects project with .coursecoderc.json', async () => {
         const projectDir = join(tempDir, 'rc-project');
         mkdirSync(projectDir);
@@ -159,6 +175,20 @@ describe('openProject', () => {
         expect(project.format).toBe('lti');
         expect(project.name).toBe('open-test');
         expect(project.path).toBe(projectDir);
+    });
+
+    it('reads project metadata from course/course-config.js', async () => {
+        const projectDir = join(tempDir, 'open-nested');
+        mkdirSync(join(projectDir, 'course'), { recursive: true });
+        writeFileSync(join(projectDir, 'course', 'course-config.js'), `
+            export default {
+                metadata: { title: 'Open Nested' },
+                format: 'scorm1.2'
+            };
+        `);
+        const project = await openProject(projectDir);
+        expect(project.title).toBe('Open Nested');
+        expect(project.format).toBe('scorm1.2');
     });
 
     it('reads framework version from .coursecoderc.json', async () => {
