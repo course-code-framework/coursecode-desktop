@@ -27,6 +27,17 @@ function run(command, args) {
   execFileSync(command, args, { stdio: 'pipe' });
 }
 
+function commandExists(command) {
+  try {
+    const probe = process.platform === 'win32' ? 'where' : 'command';
+    const args = process.platform === 'win32' ? [command] : ['-v', command];
+    execFileSync(probe, args, { stdio: 'ignore', shell: process.platform !== 'win32' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resizePng(size, outputPath) {
   run('sips', ['-z', String(size), String(size), sourcePng, '--out', outputPath]);
 }
@@ -78,6 +89,15 @@ if (!existsSync(sourcePng)) {
 
 if (!existsSync(sourceSvg)) {
   throw new Error(`Missing source SVG: ${sourceSvg}`);
+}
+
+if (!commandExists('sips')) {
+  if (existsSync(icnsPath) && existsSync(icoPath)) {
+    console.log('sips is unavailable; using committed icon.icns and icon.ico.');
+    process.exit(0);
+  }
+
+  throw new Error('sips is required to generate icons when build/icon.icns or build/icon.ico is missing.');
 }
 
 const tempDir = mkdtempSync(join(tmpdir(), 'coursecode-icon-'));
