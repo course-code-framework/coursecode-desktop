@@ -102,7 +102,7 @@ jobs:
           git push --force origin "refs/tags/${{ needs.metadata.outputs.tag }}"
 
       - name: Create or update GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.metadata.outputs.tag }}
           target_commitish: ${{ github.sha }}
