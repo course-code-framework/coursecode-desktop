@@ -732,7 +732,7 @@ function resolveMentions(projectPath, message, mentions = []) {
 /** Names of the desktop-managed file tools — MCP versions are ignored. */
 const LOCAL_FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'delete_file', 'list_files', 'search_files']);
 
-/** MCP tools excluded from the AI tool surface (build-only lint is redundant when preview is always running). */
+/** MCP tools excluded from the AI tool surface (lint diagnostics already surface through previewErrors/coursecode_errors/state). */
 const EXCLUDED_MCP_TOOLS = new Set(['coursecode_lint']);
 
 function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
@@ -745,7 +745,7 @@ function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
         const name = tool?.name;
         if (!name) continue;
         if (LOCAL_FILE_TOOLS.has(name)) continue; // desktop handles file I/O
-        if (EXCLUDED_MCP_TOOLS.has(name)) continue; // build-only lint redundant with preview running
+        if (EXCLUDED_MCP_TOOLS.has(name)) continue; // Avoid duplicate lint diagnostics and redundant tool calls
         if (byName.has(name)) continue; // already present (dedup)
 
         const normalized = {
@@ -957,12 +957,13 @@ function waitForToolApproval(projectPath, toolUseId, webContents, tc) {
 
 /**
  * Check if a tool call needs user approval.
- * delete_file always requires approval regardless of mode.
+ * delete_file and real narration generation always require approval regardless of mode.
  * Other tools depend on the toolApprovalMode setting: 'auto' (default, never), 'mutations', or 'all'.
  */
 const ALWAYS_APPROVE_TOOLS = new Set(['delete_file']);
 
-function needsApproval(toolName) {
+function needsApproval(toolName, toolInput = {}) {
+    if (toolName === 'coursecode_narration' && toolInput?.dryRun !== true) return true;
     if (ALWAYS_APPROVE_TOOLS.has(toolName)) return true;
     const mode = getSetting('toolApprovalMode') || 'auto';
     if (mode === 'auto') return false;
@@ -1914,7 +1915,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             if (FILE_MUTATION_TOOLS.has(tc.name)) mutationToolAttempts += 1;
 
                             // Check if this tool needs user approval
-                            if (needsApproval(tc.name)) {
+                            if (needsApproval(tc.name, tc.input)) {
                                 webContents?.send('chat:toolUse', {
                                     projectPath, tool: tc.name, toolUseId: tc.id,
                                     label: TOOL_LABELS[tc.name] || tc.name,

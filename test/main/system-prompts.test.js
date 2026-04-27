@@ -12,7 +12,7 @@ vi.mock('../../main/settings.js', () => ({
 }));
 
 const { buildSystemPrompt } = await import('../../main/system-prompts.js');
-const { FILE_TOOL_DEFINITIONS, TOOL_LABELS, PREVIEW_TOOLS, BASE_PERSONA } = await import('../../main/ai-config.js');
+const { FILE_TOOL_DEFINITIONS, TOOL_LABELS, PREVIEW_TOOLS, BASE_PERSONA, MUTATION_TOOLS } = await import('../../main/ai-config.js');
 const settingsMock = await import('../../main/settings.js');
 
 describe('buildSystemPrompt', () => {
@@ -21,6 +21,12 @@ describe('buildSystemPrompt', () => {
         const prompt = buildSystemPrompt();
         expect(prompt).toContain('CourseCode course designer');
         expect(prompt).toContain('execution-first');
+    });
+
+    it('explains that real narration generation requires user approval', () => {
+        const prompt = buildSystemPrompt();
+        expect(prompt).toContain('generating narration audio is not an ordinary edit');
+        expect(prompt).toContain('Only run coursecode_narration without dryRun after the user explicitly approves');
     });
 
     it('always includes course-specific rules', () => {
@@ -153,6 +159,11 @@ describe('ai-config consistency', () => {
                 expect(fileToolNames.has(labelName), `${labelName} should not be in FILE_TOOL_DEFINITIONS`).toBe(false);
             }
         }
+    });
+
+    it('classifies narration generation as a labeled mutation tool', () => {
+        expect(TOOL_LABELS.coursecode_narration).toBeTruthy();
+        expect(MUTATION_TOOLS.has('coursecode_narration')).toBe(true);
     });
 
     it('required fields are actually array type', () => {

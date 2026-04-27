@@ -12,6 +12,10 @@ const estimateCost = vi.fn(() => 0.01);
 const getCloudModels = vi.fn(async () => []);
 const getProviderModels = vi.fn(() => []);
 const getModelContextWindow = vi.fn(() => null);
+const mcpCallTool = vi.fn(async () => ({ content: [] }));
+const getMcpTools = vi.fn(async () => []);
+const getMcpInstructions = vi.fn(async () => null);
+const getCurrentSlideId = vi.fn(async () => null);
 
 vi.mock('../../main/llm-provider.js', () => ({
     createProvider: providerFactory,
@@ -46,7 +50,10 @@ vi.mock('../../main/preview-manager.js', () => ({
 }));
 
 vi.mock('../../main/mcp-client.js', () => ({
-    getMcpClient: vi.fn(async () => ({ callTool: vi.fn(async () => ({ content: [] })) }))
+    getMcpClient: vi.fn(async () => ({ callTool: mcpCallTool })),
+    getMcpTools,
+    getMcpInstructions,
+    getCurrentSlideId
 }));
 
 vi.mock('../../main/ref-manager.js', () => ({
@@ -63,9 +70,11 @@ vi.mock('../../main/errors.js', () => ({
     translateChatError: vi.fn((err) => err?.message || 'error')
 }));
 
-const { sendMessage } = await import('../../main/chat-engine.js');
+const { sendMessage, resolveToolApproval } = await import('../../main/chat-engine.js');
 const settingsModule = await import('../../main/settings.js');
+const previewModule = await import('../../main/preview-manager.js');
 const getSettingMock = settingsModule.getSetting;
+const getPreviewStatusMock = previewModule.getPreviewStatus;
 
 function defaultSettingValue(key) {
     if (key === 'aiProvider') return 'anthropic';
@@ -103,6 +112,11 @@ describe('chat-engine storage and safety', () => {
 
     beforeEach(() => {
         getSettingMock.mockImplementation(defaultSettingValue);
+        getPreviewStatusMock.mockReturnValue('stopped');
+        getMcpTools.mockResolvedValue([]);
+        getMcpInstructions.mockResolvedValue(null);
+        getCurrentSlideId.mockResolvedValue(null);
+        mcpCallTool.mockResolvedValue({ content: [] });
         projectDir = mkdtempSync(join(tmpdir(), 'cc-chat-engine-test-'));
         userDataDir = createTempUserData();
         setUserDataDir(userDataDir);
@@ -287,6 +301,46 @@ describe('chat-engine storage and safety', () => {
         expect(names).toContain('slides');
         expect(names).toContain('assessments');
         expect(names).toContain('course-config.js');
+    });
+
+    it('requires approval before real narration generation even in auto mode', async () => {
+        getPreviewStatusMock.mockReturnValue('running');
+        getMcpTools.mockResolvedValue([{
+            name: 'coursecode_narration',
+            description: 'Generate narration',
+            inputSchema: { type: 'object', properties: { dryRun: { type: 'boolean' } } }
+        }]);
+
+        let callCount = 0;
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                callCount += 1;
+                if (callCount === 1) {
+                    yield { type: 'tool_use_start', id: 'tool-1', name: 'coursecode_narration' };
+                    yield { type: 'tool_use_delta', json: JSON.stringify({ dryRun: false }) };
+                    yield { type: 'content_block_stop', index: 0 };
+                    yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
+                    return;
+                }
+                yield { type: 'text', text: 'Narration generation was not run.' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 12 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        webContents.send.mockImplementation((channel, payload) => {
+            if (channel === 'chat:toolApproval') {
+                resolveToolApproval(projectDir, payload.toolUseId, false);
+            }
+        });
+
+        await sendMessage(projectDir, 'Regenerate narration', [], webContents, 'byok');
+
+        expect(webContents.send).toHaveBeenCalledWith('chat:toolUse', expect.objectContaining({
+            tool: 'coursecode_narration',
+            status: 'pending_approval'
+        }));
+        expect(mcpCallTool).not.toHaveBeenCalledWith('coursecode_narration', expect.anything());
     });
 
 });

@@ -20,6 +20,8 @@ Only ask a question when:
 
 Do not ask for confirmation for ordinary course edits, content rewrites, layout fixes, visual polish, debugging, safe read operations, or other normal in-scope CourseCode work.
 
+Exception: generating narration audio is not an ordinary edit. Real narration generation can call paid TTS providers and writes MP3 files under assets/audio. If lint reports stale narration audio, first explain that the audio must be regenerated and use coursecode_narration with dryRun: true if you need to inspect the work. Only run coursecode_narration without dryRun after the user explicitly approves the audio generation; the desktop app will also require approval for that tool call.
+
 COMMUNICATION RULES:
 - Use simple, non-technical language. The user is an instructional designer, not a developer.
 - Never show source code, file paths, diffs, or raw tool output to the user.
@@ -476,6 +478,7 @@ export const TOOL_LABELS = {
     coursecode_interact: 'Testing the interaction…',
     coursecode_reset: 'Resetting the course…',
     coursecode_build: 'Building the course…',
+    coursecode_narration: 'Generating narration audio…',
     coursecode_workflow_status: 'Checking progress…',
     coursecode_icon_catalog: 'Looking up icons…',
     coursecode_viewport: 'Resizing viewport…',
@@ -508,7 +511,8 @@ export const SAFE_TOOLS = new Set([
 /** Tools that mutate files or course state — may require approval */
 export const MUTATION_TOOLS = new Set([
     'edit_file', 'create_file', 'delete_file',
-    'coursecode_interact', 'coursecode_reset', 'coursecode_build'
+    'coursecode_interact', 'coursecode_reset', 'coursecode_build',
+    'coursecode_narration'
 ]);
 
 /** Tools that can run in parallel (no side effects, independent reads) */

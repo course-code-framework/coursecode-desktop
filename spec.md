@@ -821,7 +821,7 @@ Defined in `ai-config.js` as `FILE_TOOL_DEFINITIONS`. These execute locally via 
 
 **Search-first file reading strategy.** The system prompt and tool descriptions guide the AI toward a `search_files` → targeted `read_file` workflow instead of reading entire files. `read_file` accepts optional `start_line` / `end_line` parameters (1-based, inclusive) for targeted reads. When neither is provided and the file exceeds `READ_FILE_MAX_LINES` (100), only the first 100 lines are returned with a `hint` field directing the AI to use `search_files` or provide a line range. Files at or under 100 lines are returned in full. This keeps token usage efficient while avoiding unnecessary friction on small slide files.
 
-#### MCP Tools (framework-provided, 13 tools)
+#### MCP Tools (framework-provided)
 
 Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-RPC (`coursecode mcp --port <port>`). The MCP connection is managed by `mcp-client.js`. The desktop app assumes the MCP server is **always available** when a preview is running; MCP tools are only included in the tool list when a preview server is active.
 
@@ -836,12 +836,19 @@ Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-
 | `coursecode_viewport` | Resize the preview viewport |
 | `coursecode_build` | Trigger a course build |
 | `coursecode_workflow_status` | Check progress against the active workflow |
-
-> **Note:** The MCP server also exposes `coursecode_lint` (static build-time linting), but the desktop app excludes it from the AI tool surface. Since the preview is always running in the chat workspace, `coursecode_state` returns runtime errors and warnings, making the build-only linter redundant. `coursecode_lint` remains available for CI pipelines and CLI usage.
 | `coursecode_css_catalog` | Look up available CSS utility classes |
 | `coursecode_component_catalog` | Look up available slide components |
 | `coursecode_interaction_catalog` | Look up interaction types and configuration |
 | `coursecode_icon_catalog` | Look up available icon names |
+| `coursecode_narration` | Generate or dry-run audio narration from slide `export const narration` text. Dry runs are safe inspection; real generation writes MP3 files and requires user approval. |
+
+**Filtered MCP lint tool.** The MCP server also exposes `coursecode_lint` for static build-time linting, but the desktop app excludes it from the AI tool surface. Desktop already surfaces lint diagnostics through the tools the AI naturally uses in the chat workspace:
+- File mutation tools (`edit_file`, `create_file`, `delete_file`) run preview/error checks after changes and return `previewErrors`.
+- `coursecode_state` and `coursecode_errors` expose the live preview's current error and warning stream.
+
+Because lint warnings are already available through those tool results, exposing `coursecode_lint` separately tends to produce duplicate warnings and redundant AI tool calls. `coursecode_lint` remains available for CLI usage, CI pipelines, and non-desktop MCP clients.
+
+**Narration audio approval.** Stale narration audio detection is a lint warning and does not require approval. Regenerating narration audio does require approval because `coursecode_narration` with `dryRun` omitted or `false` may call a paid TTS provider and writes MP3 files into `course/assets/audio/`. The AI may use `coursecode_narration` with `dryRun: true` to inspect what would be regenerated without approval, but real generation must go through the Desktop approval UI.
 
 
 #### Tool Merging
