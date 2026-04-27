@@ -69,7 +69,7 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.exe
-            dist/*.yml
+            dist/latest*.yml
           if-no-files-found: warn
 
   release:
