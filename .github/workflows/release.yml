@@ -102,18 +102,39 @@ jobs:
           git push --force origin "refs/tags/${{ needs.metadata.outputs.tag }}"
 
       - name: Create or update GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ needs.metadata.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ needs.metadata.outputs.tag }}
-          files: |
-            artifacts/**/*
-            artifacts/SHA256SUMS.txt
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ needs.metadata.outputs.prerelease == 'true' }}
-          make_latest: ${{ needs.metadata.outputs.prerelease == 'true' && 'false' || 'true' }}
-          overwrite_files: true
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' files < <(find artifacts -maxdepth 1 -type f -print0)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "No release artifacts found."
+            exit 1
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            edit_args=(--title "${TAG}" --target "${GITHUB_SHA}" --draft=false)
+
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              edit_args+=(--prerelease)
+            else
+              edit_args+=(--prerelease=false --latest)
+            fi
+
+            gh release edit "${TAG}" "${edit_args[@]}"
+            gh release upload "${TAG}" "${files[@]}" --clobber
+          else
+            create_args=(--title "${TAG}" --target "${GITHUB_SHA}" --generate-notes)
+
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              create_args+=(--prerelease --latest=false)
+            else
+              create_args+=(--latest)
+            fi
+
+            gh release create "${TAG}" "${create_args[@]}" "${files[@]}"
+          fi
