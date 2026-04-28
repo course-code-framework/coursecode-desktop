@@ -10,11 +10,12 @@
   import {
     messages, streaming, streamingText, activeTools,
     sessionUsage, sessionCredits, mentionIndex, aiMode, credits,
-    conversationList,
+    conversationList, pendingApprovals,
     subscribeToChatEvents, unsubscribeFromChatEvents,
     sendMessage, stopGeneration, clearChat, loadChatHistory, loadCredits,
     refreshMentionIndex, formatTokens, formatCost,
-    loadPastConversation, deletePastConversation, deleteAllPastConversations
+    loadPastConversation, deletePastConversation, deleteAllPastConversations,
+    approveToolCall, rejectToolCall
   } from '../stores/chat.js';
 
   let { projectPath, refCount = 0, onOpenRefs, onOpenOutline, onSnapshotRestored } = $props();
@@ -1315,6 +1316,46 @@
     {/if}
   </div>
 
+  <!-- Pending tool approvals -->
+  {#if $pendingApprovals.length > 0}
+    <div class="approval-stack">
+      {#each $pendingApprovals as approval (approval.toolUseId)}
+        <div class="approval-card">
+          <div class="approval-header">
+            <span class="approval-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M8 1.5L1.5 13.5h13L8 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+                <path d="M8 6.5v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <circle cx="8" cy="11.5" r="0.6" fill="currentColor"/>
+              </svg>
+            </span>
+            <span class="approval-title">{approval.label || approval.tool}</span>
+          </div>
+          <div class="approval-body">
+            <div class="approval-tool">
+              <code>{approval.tool}</code>
+              {#if approval.filePath}
+                <span class="approval-path">{approval.filePath}</span>
+              {/if}
+            </div>
+            {#if approval.input && Object.keys(approval.input).length > 0}
+              <pre class="approval-input">{JSON.stringify(approval.input, null, 2)}</pre>
+            {/if}
+            <p class="approval-prompt">This tool requires your approval before running.</p>
+          </div>
+          <div class="approval-actions">
+            <button class="btn btn-secondary btn-sm" onclick={() => rejectToolCall(projectPath, approval.toolUseId)}>
+              Reject
+            </button>
+            <button class="btn btn-primary btn-sm" onclick={() => approveToolCall(projectPath, approval.toolUseId)}>
+              Approve
+            </button>
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
   <!-- Input area -->
   <div class="chat-input-area">
     <div class="input-footer">
@@ -2272,6 +2313,62 @@
     padding: var(--sp-sm) var(--sp-md) var(--sp-md);
     background: var(--bg-elevated);
     flex-shrink: 0;
+  }
+
+  /* Tool approval prompts */
+  .approval-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-sm);
+    padding: var(--sp-sm) var(--sp-md);
+    border-top: 1px solid var(--border);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+  .approval-card {
+    border: 1px solid var(--accent, #d97706);
+    border-radius: var(--radius-md, 8px);
+    background: var(--bg);
+    padding: var(--sp-sm) var(--sp-md);
+  }
+  .approval-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-xs);
+    color: var(--accent, #d97706);
+    font-weight: 600;
+    font-size: 0.85rem;
+    margin-bottom: var(--sp-xs);
+  }
+  .approval-icon { display: inline-flex; }
+  .approval-body { font-size: 0.8rem; color: var(--text-secondary); }
+  .approval-tool { display: flex; align-items: center; gap: var(--sp-xs); flex-wrap: wrap; margin-bottom: var(--sp-xs); }
+  .approval-tool code {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    padding: 1px 6px;
+    background: var(--bg-subtle);
+    border-radius: 4px;
+  }
+  .approval-path { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-secondary); }
+  .approval-input {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    background: var(--bg-subtle);
+    padding: var(--sp-xs) var(--sp-sm);
+    border-radius: 4px;
+    margin: var(--sp-xs) 0;
+    max-height: 140px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .approval-prompt { margin: var(--sp-xs) 0 0; }
+  .approval-actions {
+    display: flex;
+    gap: var(--sp-xs);
+    justify-content: flex-end;
+    margin-top: var(--sp-sm);
   }
 
   .input-footer {

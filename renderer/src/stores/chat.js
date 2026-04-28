@@ -52,6 +52,7 @@ let unsubError = null;
 let unsubDone = null;
 let unsubChangeSummary = null;
 let unsubToolApproval = null;
+let unsubApprovalsCleared = null;
 let unsubToolArgsDelta = null;
 let unsubStepUsage = null;
 
@@ -62,6 +63,18 @@ let pendingChangeSummary = null;
 aiMode.subscribe((mode) => {
     currentAiMode = mode;
 });
+
+/**
+ * Drop events that don't belong to the currently active project.
+ * Returns true if the caller should bail out. We require BOTH an
+ * activeProjectPath AND a matching event projectPath; events without
+ * a project path are accepted (some legacy events omit it).
+ */
+function isForeignEvent(projectPath) {
+    if (!projectPath) return false;
+    if (!activeProjectPath) return true;
+    return projectPath !== activeProjectPath;
+}
 
 function toNumberOrNull(value) {
     if (value == null) return null;
@@ -79,7 +92,7 @@ function normalizeCloudUsage(payload) {
 
 export function subscribeToChatEvents() {
     unsubStream = window.api.chat.onStream(({ projectPath, text, delta, retry }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
         if (retry) {
             streamingText.set('');
             return;
@@ -108,7 +121,7 @@ export function subscribeToChatEvents() {
             detail
         } = payload;
 
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
 
         if (status === 'running') {
             activeTools.update(t => [
@@ -143,7 +156,7 @@ export function subscribeToChatEvents() {
     });
 
     unsubToolArgsDelta = window.api.chat.onToolArgsDelta?.(({ projectPath, toolUseId, delta, accumulated }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
         activeTools.update(t => t.map(tt =>
             tt.toolUseId === toolUseId
                 ? { ...tt, streamingArgs: accumulated }
@@ -152,18 +165,19 @@ export function subscribeToChatEvents() {
     });
 
     unsubScreenshot = window.api.chat.onScreenshot(({ projectPath, imageData }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
         if (!imageData) return;
         pendingScreenshots = [...pendingScreenshots, imageData];
     });
 
     unsubError = window.api.chat.onError(({ projectPath, message }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
         streaming.set(false);
         streamingText.set('');
         activeTools.set([]);
         pendingScreenshots = [];
         pendingChangeSummary = null;
+        pendingApprovals.set([]);
         messages.update(msgs => [
             ...msgs,
             { role: 'assistant', content: message, isError: true }
@@ -171,7 +185,7 @@ export function subscribeToChatEvents() {
     });
 
     unsubDone = window.api.chat.onDone(({ projectPath, message, usage, execution }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
         // Finalize the streaming message
         let streamText = '';
         streamingText.subscribe(v => streamText = v)();
@@ -200,6 +214,7 @@ export function subscribeToChatEvents() {
         activeTools.set([]);
         pendingChangeSummary = null;
         pendingScreenshots = [];
+        pendingApprovals.set([]);
 
         // Usage is accumulated incrementally via stepUsage events.
         // Here we only run end-of-message checks (cost warnings, credit refresh).
@@ -237,17 +252,22 @@ export function subscribeToChatEvents() {
     });
 
     unsubChangeSummary = window.api.chat.onChangeSummary?.(({ projectPath, label, timestamp, added, modified, deleted, snapshotId, restoreSnapshotId }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
         pendingChangeSummary = { label, timestamp, added: added || [], modified: modified || [], deleted: deleted || [], snapshotId, restoreSnapshotId };
     });
 
     unsubToolApproval = window.api.chat.onToolApproval?.(({ projectPath, toolUseId, tool, label, input, filePath }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
         pendingApprovals.update(list => [...list, { toolUseId, tool, label, input, filePath }]);
     });
 
+    unsubApprovalsCleared = window.api.chat.onApprovalsCleared?.(({ projectPath }) => {
+        if (isForeignEvent(projectPath)) return;
+        pendingApprovals.set([]);
+    });
+
     unsubStepUsage = window.api.chat.onStepUsage?.(({ projectPath, usage, creditsCharged, estimatedCost }) => {
-        if (activeProjectPath && projectPath && projectPath !== activeProjectPath) return;
+        if (isForeignEvent(projectPath)) return;
         if (usage) {
             sessionUsage.update(s => ({
                 inputTokens: s.inputTokens + (usage.inputTokens || 0),
@@ -294,6 +314,7 @@ export function unsubscribeFromChatEvents() {
     unsubDone?.();
     unsubChangeSummary?.();
     unsubToolApproval?.();
+    unsubApprovalsCleared?.();
     unsubStepUsage?.();
 }
 

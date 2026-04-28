@@ -227,6 +227,11 @@ contextBridge.exposeInMainWorld('api', {
             ipcRenderer.on('chat:toolApproval', handler);
             return () => ipcRenderer.removeListener('chat:toolApproval', handler);
         },
+        onApprovalsCleared: (callback) => {
+            const handler = (_event, data) => callback(data);
+            ipcRenderer.on('chat:approvalsCleared', handler);
+            return () => ipcRenderer.removeListener('chat:approvalsCleared', handler);
+        },
         onNewChat: (callback) => {
             const handler = () => callback();
             ipcRenderer.on('chat:newChat', handler);

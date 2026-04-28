@@ -509,10 +509,25 @@ function loadConversation(projectPath) {
 function saveConversation(projectPath, messages, session) {
     const chatDir = getChatDir(projectPath);
     if (!existsSync(chatDir)) mkdirSync(chatDir, { recursive: true });
-    writeFileSync(
+    atomicWriteFile(
         getConversationPath(projectPath),
         JSON.stringify({ messages, session: normalizeSessionContext(session), savedAt: new Date().toISOString() }, null, 2)
     );
+}
+
+/**
+ * Write a file atomically by writing to a temp sibling and renaming.
+ * Prevents partial/corrupt JSON if the process crashes mid-write.
+ */
+function atomicWriteFile(targetPath, contents) {
+    const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+        writeFileSync(tmpPath, contents);
+        renameSync(tmpPath, targetPath);
+    } catch (err) {
+        try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw err;
+    }
 }
 
 function serializeConversation(messages = []) {
@@ -578,7 +593,7 @@ function loadConversationsIndex(projectPath) {
 function saveConversationsIndex(projectPath, index) {
     const dir = getConversationsDir(projectPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(getConversationsIndexPath(projectPath), JSON.stringify(index, null, 2));
+    atomicWriteFile(getConversationsIndexPath(projectPath), JSON.stringify(index, null, 2));
 }
 
 function deriveConversationTitle(messages) {
@@ -938,11 +953,35 @@ export function resolveToolApproval(projectPath, toolUseId, approved) {
 
 /**
  * Wait for user approval of a tool call. Returns true if approved, false if rejected.
+ * If `abortSignal` aborts (e.g., user clicks Stop or chat errors out), resolves false
+ * and clears the pending entry so a stale approval can't resolve a recycled toolUseId.
  */
-function waitForToolApproval(projectPath, toolUseId, webContents, tc) {
+function waitForToolApproval(projectPath, toolUseId, webContents, tc, abortSignal) {
     return new Promise((resolve) => {
         const key = `${projectPath}:${toolUseId}`;
-        pendingApprovals.set(key, { resolve });
+        let settled = false;
+
+        const cleanup = () => {
+            pendingApprovals.delete(key);
+            if (abortSignal && onAbort) abortSignal.removeEventListener('abort', onAbort);
+        };
+        const settle = (value) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(value);
+        };
+
+        const onAbort = abortSignal ? () => settle(false) : null;
+        if (abortSignal) {
+            if (abortSignal.aborted) {
+                resolve(false);
+                return;
+            }
+            abortSignal.addEventListener('abort', onAbort, { once: true });
+        }
+
+        pendingApprovals.set(key, { resolve: settle });
 
         webContents?.send('chat:toolApproval', {
             projectPath,
@@ -953,6 +992,21 @@ function waitForToolApproval(projectPath, toolUseId, webContents, tc) {
             filePath: tc.input?.path || undefined
         });
     });
+}
+
+/**
+ * Reject and remove every pending approval for a project. Used when the chat
+ * loop aborts or errors so the renderer's approval cards don't dangle and the
+ * Map doesn't leak entries.
+ */
+function clearPendingApprovalsForProject(projectPath) {
+    const prefix = `${projectPath}:`;
+    for (const [key, pending] of pendingApprovals) {
+        if (key.startsWith(prefix)) {
+            pendingApprovals.delete(key);
+            try { pending.resolve(false); } catch { /* ignore */ }
+        }
+    }
 }
 
 /**
@@ -1836,7 +1890,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         const parallelBatch = [];
                         const sequentialQueue = [];
                         for (const tc of currentToolCalls) {
-                            if (PARALLELIZABLE_TOOLS.has(tc.name) && !needsApproval(tc.name)) {
+                            if (PARALLELIZABLE_TOOLS.has(tc.name) && !needsApproval(tc.name, tc.input)) {
                                 parallelBatch.push(tc);
                             } else {
                                 sequentialQueue.push(tc);
@@ -1927,7 +1981,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     input: tc.input
                                 });
 
-                                const approved = await waitForToolApproval(projectPath, tc.id, webContents, tc);
+                                const approved = await waitForToolApproval(projectPath, tc.id, webContents, tc, controller.signal);
                                 if (!approved) {
                                     webContents?.send('chat:toolUse', {
                                         projectPath, tool: tc.name, toolUseId: tc.id,
@@ -2371,6 +2425,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         webContents?.send('chat:error', { projectPath, message: userMessage });
     } finally {
         abortControllers.delete(projectPath);
+        clearPendingApprovalsForProject(projectPath);
+        webContents?.send('chat:approvalsCleared', { projectPath });
     }
 }
 
@@ -2380,6 +2436,7 @@ export function stopGeneration(projectPath) {
         controller.abort();
         abortControllers.delete(projectPath);
     }
+    clearPendingApprovalsForProject(projectPath);
 }
 
 export function clearConversation(projectPath) {
