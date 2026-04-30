@@ -1068,7 +1068,12 @@
     <div class="dialog-backdrop" onclick={closeDeleteDialog} role="presentation">
       <div class="dialog" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Delete course" tabindex="-1">
         <h2 class="dialog-title">Delete "{dp.title || dp.name}"?</h2>
-        <p class="dialog-body">The project folder will be moved to Trash. This cannot be undone.</p>
+        <p class="dialog-body">
+          The local project folder will be moved to your system Trash.
+          {#if deleteDialog.deleteFromCloud}
+            Removing the course from Cloud cannot be undone.
+          {/if}
+        </p>
         {#if dp.cloudId}
           <div class="dialog-cloud-row">
             <label class="dialog-cloud-label">
