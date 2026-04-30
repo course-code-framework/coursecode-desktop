@@ -43,10 +43,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
     "@electron-toolkit/utils": "^4.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tiptap/core": "^3.22.4",
     "@tiptap/markdown": "^3.22.4",
     "@tiptap/starter-kit": "^3.22.4",
-    "coursecode": "^0.1.43",
+    "coursecode": "^0.1.46",
     "electron-updater": "^6.3.9",
     "isomorphic-git": "^1.37.6",
     "marked": "^18.0.2",

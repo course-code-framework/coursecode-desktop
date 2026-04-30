@@ -1403,6 +1403,15 @@ async function executeTool(toolName, toolInput, projectPath, webContents) {
         if (result?.content && Array.isArray(result.content)) {
             // Check for error responses
             if (result.isError) {
+                const structuredError = result.structuredContent?.error;
+                if (structuredError && typeof structuredError === 'object') {
+                    return {
+                        error: structuredError.message || result.structuredContent.message || 'Tool returned an error',
+                        code: structuredError.code || result.structuredContent.code,
+                        hint: structuredError.hint || result.structuredContent.hint,
+                        details: structuredError.details || result.structuredContent.details
+                    };
+                }
                 const text = result.content.map(c => c.text || '').join('');
                 return { error: text || 'Tool returned an error' };
             }

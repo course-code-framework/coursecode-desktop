@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { app } from 'electron';
+import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { getProjectCLISpawnArgs, getChildEnv, killProcessTree } from './node-env.js';
 import { getPreviewPort } from './preview-manager.js';
 import { createLogger } from './logger.js';
@@ -172,7 +173,7 @@ class McpConnection {
 
         this.initPromise = (async () => {
             const result = await this.request('initialize', {
-                protocolVersion: '2024-11-05',
+                protocolVersion: LATEST_PROTOCOL_VERSION,
                 capabilities: {},
                 clientInfo: { name: 'coursecode-desktop', version: app.getVersion() }
             });

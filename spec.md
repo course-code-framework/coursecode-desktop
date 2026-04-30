@@ -73,7 +73,8 @@ A standalone Electron app that gives instructional designers a native GUI for Co
   - GitHub Release artifact names must match the website download metadata naming convention (`CourseCode-Desktop-v<version>-mac.dmg`, `CourseCode-Desktop-v<version>-win.exe`)
 - Runtime version reporting rules:
   - App UI "About" and update checks must use Electron `app.getVersion()`
-  - MCP client handshake version must use the app runtime version, not a hardcoded string
+  - MCP client metadata must send Electron `app.getVersion()` as the Desktop runtime version
+  - MCP protocol negotiation must use the SDK's current `LATEST_PROTOCOL_VERSION`, not a hardcoded protocol date
 - Changelogs should distinguish:
   - Desktop app changes (open source)
   - Framework/CLI changes (open source)
@@ -823,7 +824,7 @@ Defined in `ai-config.js` as `FILE_TOOL_DEFINITIONS`. These execute locally via 
 
 #### MCP Tools (framework-provided)
 
-Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-RPC (`coursecode mcp --port <port>`). The MCP connection is managed by `mcp-client.js`. The desktop app assumes the MCP server is **always available** when a preview is running; MCP tools are only included in the tool list when a preview server is active.
+Discovered at runtime from the CourseCode framework's MCP server via stdio JSON-RPC (`coursecode mcp --port <port>`). The MCP connection is managed by `mcp-client.js`. The desktop app assumes the MCP server is **always available** when a preview is running; MCP tools are only included in the tool list when a preview server is active. Desktop depends directly on `@modelcontextprotocol/sdk` so the client can negotiate with the SDK's current `LATEST_PROTOCOL_VERSION` while still sending the Electron app version as client metadata. Framework MCP tools return `structuredContent` for machine-readable results while keeping text content for compatibility. When MCP tools fail, Desktop preserves structured fields such as `code`, `hint`, and `details` so the AI can recover from tool errors without parsing prose.
 
 | Tool | Purpose |
 |---|---|
