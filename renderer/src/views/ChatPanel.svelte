@@ -1215,7 +1215,7 @@
             </div>
           </div>
         {:else}
-          {#if message.changeSummary?.snapshotId}
+          {#if message.changeSummary?.snapshotId && (!message.changeSummary.restoreSnapshotId || $messages[idx - 1]?.restoreSnapshotId !== message.changeSummary.restoreSnapshotId)}
             {@const restoreId = message.changeSummary.restoreSnapshotId || message.changeSummary.snapshotId}
             <div class="restore-marker">
               <div class="restore-marker-line"></div>
@@ -1236,6 +1236,26 @@
             </div>
           {/if}
           <MessageBubble {message} />
+          {#if message.restoreSnapshotId}
+            {@const restoreId = message.restoreSnapshotId}
+            <div class="restore-marker">
+              <div class="restore-marker-line"></div>
+              <button
+                class="restore-marker-btn"
+                disabled={restoringSnapshotId === restoreId}
+                onclick={() => restoreSnapshot(restoreId)}
+                title="Revert all files to before this chat turn"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <path d="M2 8a6 6 0 1 1 1.8 4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                  <path d="M2 12.3V8h4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M8 5v3.5L10 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                {restoringSnapshotId === restoreId ? 'Restoring…' : 'Restore'}
+              </button>
+              <div class="restore-marker-line"></div>
+            </div>
+          {/if}
         {/if}
       {/each}
 

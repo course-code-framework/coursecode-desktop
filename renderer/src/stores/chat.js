@@ -51,6 +51,7 @@ let unsubScreenshot = null;
 let unsubError = null;
 let unsubDone = null;
 let unsubChangeSummary = null;
+let unsubRestorePoint = null;
 let unsubToolApproval = null;
 let unsubApprovalsCleared = null;
 let unsubToolArgsDelta = null;
@@ -256,6 +257,26 @@ export function subscribeToChatEvents() {
         pendingChangeSummary = { label, timestamp, added: added || [], modified: modified || [], deleted: deleted || [], snapshotId, restoreSnapshotId };
     });
 
+    unsubRestorePoint = window.api.chat.onRestorePoint?.(({ projectPath, chatIndex, snapshotId }) => {
+        if (isForeignEvent(projectPath)) return;
+        if (!snapshotId) return;
+
+        messages.update(msgs => {
+            const next = [...msgs];
+            const targetIndex = Number.isInteger(chatIndex) ? chatIndex : -1;
+            const candidateIndex = next[targetIndex]?.role === 'user'
+                ? targetIndex
+                : next.findLastIndex(msg => msg.role === 'user' && !msg.restoreSnapshotId);
+
+            if (candidateIndex < 0) return msgs;
+            next[candidateIndex] = {
+                ...next[candidateIndex],
+                restoreSnapshotId: snapshotId
+            };
+            return next;
+        });
+    });
+
     unsubToolApproval = window.api.chat.onToolApproval?.(({ projectPath, toolUseId, tool, label, input, filePath }) => {
         if (isForeignEvent(projectPath)) return;
         pendingApprovals.update(list => [...list, { toolUseId, tool, label, input, filePath }]);
@@ -313,6 +334,7 @@ export function unsubscribeFromChatEvents() {
     unsubError?.();
     unsubDone?.();
     unsubChangeSummary?.();
+    unsubRestorePoint?.();
     unsubToolApproval?.();
     unsubApprovalsCleared?.();
     unsubStepUsage?.();

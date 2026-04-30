@@ -778,7 +778,11 @@ function mergeToolDefinitions(fileTools = [], discoveredTools = []) {
 
 const FILE_TOOLS = new Set(['read_file', 'edit_file', 'create_file', 'delete_file', 'list_files', 'search_files']);
 
-function sanitizeToolResultForModel(toolName, result, projectPath) {
+function sanitizeToolResultForModel(toolName, result, projectPath, toolInput) {
+    if (result && typeof result === 'object' && result.error && !result.success) {
+        return JSON.stringify(buildToolErrorResult(toolName, result.error, { result, input: toolInput }));
+    }
+
     if (toolName === 'coursecode_screenshot' && result?.content && Array.isArray(result.content)) {
         const imageBlock = result.content.find(b => b.type === 'image');
         const textBlocks = result.content.filter(b => b.type === 'text');
@@ -832,6 +836,104 @@ function sanitizeToolResultForModel(toolName, result, projectPath) {
 
     if (safeJson.length <= TOOL_RESULT_MAX_CHARS) return safeJson;
     return safeJson.slice(0, TOOL_RESULT_MAX_CHARS) + MCP_TOOL_TRUNCATION_NOTE;
+}
+
+function recoveryForToolError(toolName, errorMessage = '') {
+    const lower = String(errorMessage).toLowerCase();
+
+    switch (toolName) {
+        case 'read_file':
+            return {
+                retryable: true,
+                suggestedTools: ['list_files', 'search_files', 'read_file'],
+                guidance: lower.includes('not found')
+                    ? 'Discover the correct course-relative path with list_files or search_files, then retry read_file.'
+                    : 'Check the requested path and retry read_file with a valid range.'
+            };
+        case 'edit_file':
+            return {
+                retryable: true,
+                suggestedTools: ['read_file', 'search_files', 'edit_file'],
+                guidance: lower.includes('old_string')
+                    ? 'Read the current file around the target text, then retry edit_file with an exact unique old_string including surrounding lines.'
+                    : 'Inspect the current file state, then retry edit_file with a smaller targeted replacement.'
+            };
+        case 'create_file':
+            return {
+                retryable: true,
+                suggestedTools: lower.includes('already exists')
+                    ? ['read_file', 'edit_file']
+                    : ['list_files', 'create_file'],
+                guidance: lower.includes('already exists')
+                    ? 'The file already exists. Read it and use edit_file instead of create_file.'
+                    : 'Check the destination directory with list_files, then retry create_file with a course-relative path.'
+            };
+        case 'delete_file':
+            return {
+                retryable: true,
+                suggestedTools: ['list_files', 'delete_file'],
+                guidance: 'Confirm the file path with list_files, then retry delete_file only if deletion is still required.'
+            };
+        case 'search_files':
+            return {
+                retryable: true,
+                suggestedTools: lower.includes('regex') ? ['search_files'] : ['list_files', 'search_files'],
+                guidance: lower.includes('regex')
+                    ? 'Fix the regex or search literally with is_regex false.'
+                    : 'Check the search path with list_files, then retry search_files.'
+            };
+        case 'list_files':
+            return {
+                retryable: true,
+                suggestedTools: ['list_files'],
+                guidance: 'Retry list_files from "." or another known directory such as "slides".'
+            };
+        case 'coursecode_css_catalog':
+            return {
+                retryable: true,
+                suggestedTools: ['coursecode_css_catalog'],
+                guidance: 'Call coursecode_css_catalog without a category to discover valid categories, then retry with an exact category.'
+            };
+        case 'coursecode_screenshot':
+        case 'coursecode_navigate':
+        case 'coursecode_state':
+        case 'coursecode_errors':
+            return {
+                retryable: true,
+                suggestedTools: ['coursecode_state', 'coursecode_errors'],
+                guidance: 'Refresh course state or error diagnostics, then continue with the most specific tool.'
+            };
+        default:
+            return {
+                retryable: true,
+                suggestedTools: ['coursecode_state', 'list_files', 'search_files'],
+                guidance: 'Use the available read or state tools to inspect current state, then retry with corrected input.'
+            };
+    }
+}
+
+function summarizeFailedToolInput(input = {}) {
+    if (!input || typeof input !== 'object') return undefined;
+    const summary = {};
+    for (const key of ['path', 'slideId', 'pattern', 'category', 'type']) {
+        if (input[key] != null) summary[key] = input[key];
+    }
+    if (input.old_string != null) summary.oldStringChars = String(input.old_string).length;
+    if (input.new_string != null) summary.newStringChars = String(input.new_string).length;
+    if (input.content != null) summary.contentChars = String(input.content).length;
+    return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function buildToolErrorResult(toolName, errorMessage, options = {}) {
+    const result = {
+        success: false,
+        error: String(errorMessage || 'Tool failed'),
+        recovery: recoveryForToolError(toolName, errorMessage)
+    };
+    const attemptedInput = summarizeFailedToolInput(options.input);
+    if (attemptedInput) result.attemptedInput = attemptedInput;
+    if (options.result?.hint) result.hint = options.result.hint;
+    return result;
 }
 
 function toPreviewText(value, maxChars = CHAT_TRACE_PREVIEW_CHARS) {
@@ -1549,7 +1651,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
     // Resolve mentions and append user message
     const resolvedMessage = resolveMentions(projectPath, userMessage, mentions);
-    messages.push({ role: 'user', content: resolvedMessage, _display: userMessage, _mentions: mentions });
+    const userTurn = { role: 'user', content: resolvedMessage, _display: userMessage, _mentions: mentions };
+    messages.push(userTurn);
     persistConversation(projectPath, messages, sessionContext);
     trace('user-message-appended', {
         mode: sessionContext.mode,
@@ -1640,6 +1743,15 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         try {
             const preSnap = await createSnapshot(projectPath, 'Before AI changes', { chatIndex });
             preSnapshotId = preSnap.id;
+            userTurn.restoreSnapshotId = preSnapshotId;
+            persistConversation(projectPath, messages, sessionContext);
+            webContents?.send('chat:restorePoint', {
+                projectPath,
+                chatIndex,
+                snapshotId: preSnapshotId,
+                label: preSnap.label,
+                timestamp: preSnap.timestamp
+            });
         } catch (err) { log.debug('Pre-AI snapshot failed (repo may not be initialized)', err); }
 
         while (continueLoop) {
@@ -1936,7 +2048,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     return {
                                         meta: { id: tc.id, name: tc.name, status: isToolError ? 'error' : 'done', elapsedMs, filePath: tc.input?.path, detail: tc.input?.path || tc.input?.slideId, reason: toolReason(tc.name) },
                                         type: 'tool_result', tool_use_id: tc.id,
-                                    content: sanitizeToolResultForModel(tc.name, result, projectPath),
+                                    content: sanitizeToolResultForModel(tc.name, result, projectPath, tc.input),
                                         is_error: isToolError || undefined
                                     };
                                 } catch (err) {
@@ -1953,7 +2065,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     return {
                                         meta: { id: tc.id, name: tc.name, status: 'error', elapsedMs, filePath: tc.input?.path, reason: toolReason(tc.name) },
                                         type: 'tool_result', tool_use_id: tc.id,
-                                        content: JSON.stringify({ error: err.message }), is_error: true
+                                        content: JSON.stringify(buildToolErrorResult(tc.name, err.message, { input: tc.input })), is_error: true
                                     };
                                 }
                             }));
@@ -2066,7 +2178,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     },
                                     type: 'tool_result',
                                     tool_use_id: tc.id,
-                                    content: sanitizeToolResultForModel(tc.name, result, projectPath),
+                                    content: sanitizeToolResultForModel(tc.name, result, projectPath, tc.input),
                                     is_error: isToolError || undefined
                                 });
                             } catch (err) {
@@ -2107,7 +2219,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                                     },
                                     type: 'tool_result',
                                     tool_use_id: tc.id,
-                                    content: JSON.stringify({ error: err.message }),
+                                    content: JSON.stringify(buildToolErrorResult(tc.name, err.message, { input: tc.input })),
                                     is_error: true
                                 });
                             }
@@ -2536,7 +2648,8 @@ export function loadHistory(projectPath) {
             content: m._display || m.content,
             toolCalls: m._toolCalls?.map(tc => ({ ...tc, tool: tc.tool || tc.name })),
             usage: m._usage,
-            mentions: m._mentions
+            mentions: m._mentions,
+            restoreSnapshotId: m.restoreSnapshotId
         };
     }).filter(m => m.role === 'user' || m.role === 'assistant' || (m.role === 'system' && m.type === 'changeSummary'));
 }

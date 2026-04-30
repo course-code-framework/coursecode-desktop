@@ -222,6 +222,11 @@ contextBridge.exposeInMainWorld('api', {
             ipcRenderer.on('chat:changeSummary', handler);
             return () => ipcRenderer.removeListener('chat:changeSummary', handler);
         },
+        onRestorePoint: (callback) => {
+            const handler = (_event, data) => callback(data);
+            ipcRenderer.on('chat:restorePoint', handler);
+            return () => ipcRenderer.removeListener('chat:restorePoint', handler);
+        },
         onToolApproval: (callback) => {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('chat:toolApproval', handler);

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createTempUserData, setUserDataDir } from '../mocks/electron.js';
@@ -70,11 +70,13 @@ vi.mock('../../main/errors.js', () => ({
     translateChatError: vi.fn((err) => err?.message || 'error')
 }));
 
-const { sendMessage, resolveToolApproval } = await import('../../main/chat-engine.js');
+const { sendMessage, resolveToolApproval, loadHistory } = await import('../../main/chat-engine.js');
 const settingsModule = await import('../../main/settings.js');
 const previewModule = await import('../../main/preview-manager.js');
+const snapshotModule = await import('../../main/snapshot-manager.js');
 const getSettingMock = settingsModule.getSetting;
 const getPreviewStatusMock = previewModule.getPreviewStatus;
+const createSnapshotMock = snapshotModule.createSnapshot;
 
 function defaultSettingValue(key) {
     if (key === 'aiProvider') return 'anthropic';
@@ -149,6 +151,61 @@ describe('chat-engine storage and safety', () => {
         expect(chatFiles.some(file => file.endsWith('conversation.json'))).toBe(true);
     });
 
+    it('emits and persists the pre-chat restore point as soon as it is created', async () => {
+        createSnapshotMock.mockResolvedValueOnce({
+            id: 'pre-chat-snap',
+            label: 'Before AI changes',
+            timestamp: '2026-04-30T12:00:00.000Z'
+        });
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                yield { type: 'text', text: 'Working on it.' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 10, outputTokens: 20 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'Make a change', [], webContents, 'byok');
+
+        expect(webContents.send).toHaveBeenCalledWith('chat:restorePoint', expect.objectContaining({
+            projectPath: projectDir,
+            chatIndex: 0,
+            snapshotId: 'pre-chat-snap'
+        }));
+        expect(loadHistory(projectDir)[0]).toEqual(expect.objectContaining({
+            role: 'user',
+            restoreSnapshotId: 'pre-chat-snap'
+        }));
+    });
+
+    it('keeps the pre-chat restore point available when generation is cancelled', async () => {
+        createSnapshotMock.mockResolvedValueOnce({
+            id: 'cancel-snap',
+            label: 'Before AI changes',
+            timestamp: '2026-04-30T12:00:00.000Z'
+        });
+        const abortErr = new Error('cancelled');
+        abortErr.name = 'AbortError';
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                throw abortErr;
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'Start then cancel', [], webContents, 'byok');
+
+        const history = loadHistory(projectDir);
+        expect(history[0]).toEqual(expect.objectContaining({
+            role: 'user',
+            restoreSnapshotId: 'cancel-snap'
+        }));
+        expect(webContents.send).toHaveBeenCalledWith('chat:restorePoint', expect.objectContaining({
+            snapshotId: 'cancel-snap'
+        }));
+        expect(webContents.send).not.toHaveBeenCalledWith('chat:error', expect.anything());
+    });
+
     it('blocks path traversal for edit_file tool calls', async () => {
         const outsidePath = join(projectDir, '..', 'evil.txt');
         let callCount = 0;
@@ -200,8 +257,43 @@ describe('chat-engine storage and safety', () => {
         await sendMessage(projectDir, 'Edit the file', [], webContents, 'byok');
 
         // File should be unchanged
-        const { readFileSync } = await import('fs');
         expect(readFileSync(join(projectDir, 'course', 'test.js'), 'utf-8')).toBe('const x = 1;');
+    });
+
+    it('returns structured recovery guidance for failed tool calls', async () => {
+        const { mkdirSync } = await import('fs');
+        mkdirSync(join(projectDir, 'course'), { recursive: true });
+        writeFileSync(join(projectDir, 'course', 'test.js'), 'const x = 1;');
+
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                yield { type: 'tool_use_start', id: 'tool-1', name: 'edit_file' };
+                yield { type: 'tool_use_delta', json: JSON.stringify({ path: 'test.js', old_string: 'missing', new_string: 'updated' }) };
+                yield { type: 'content_block_stop', index: 0 };
+                yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } };
+            }
+        });
+
+        const webContents = createWebContentsMock();
+        await sendMessage(projectDir, 'Edit the file', [], webContents, 'byok');
+
+        const conversationFile = listFilesRecursive(join(userDataDir, 'chat-history'))
+            .find(file => file.endsWith('conversation.json'));
+        const conversation = JSON.parse(readFileSync(conversationFile, 'utf-8'));
+        const toolMessage = conversation.messages.find(msg => msg.role === 'tool' && msg.tool_use_id === 'tool-1');
+        const toolResult = JSON.parse(toolMessage.content);
+
+        expect(toolResult).toEqual(expect.objectContaining({
+            success: false,
+            recovery: expect.objectContaining({
+                suggestedTools: expect.arrayContaining(['read_file', 'search_files', 'edit_file'])
+            }),
+            attemptedInput: expect.objectContaining({
+                path: 'test.js',
+                oldStringChars: 7,
+                newStringChars: 7
+            })
+        }));
     });
 
     it('edit_file rejects when old_string matches multiple times', async () => {
