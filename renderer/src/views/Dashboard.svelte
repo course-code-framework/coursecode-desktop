@@ -8,10 +8,12 @@
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import Icon from '../components/Icon.svelte';
   import DeployProgressDialog from '../components/DeployProgressDialog.svelte';
+  import PreviewPasswordControl from '../components/PreviewPasswordControl.svelte';
   import VersionModal from '../components/VersionModal.svelte';
   import { showToast } from '../stores/toast.js';
   import { popover } from '../actions/popover.js';
   import { getDisplayErrorMessage } from '../lib/errors.js';
+  import { generatePreviewPassword } from '../lib/preview-password.js';
 
   let { onCreateNew, onOpenProject, onCloseProject } = $props();
 
@@ -29,6 +31,8 @@
   let deployReason = $state('');
   let deployPromote = $state(false);
   let deployPreview = $state(false);
+  let previewRequirePassword = $state(true);
+  let previewPassword = $state(generatePreviewPassword());
   let exportPopover = $state(null);
   let exportFormat = $state('');
   let deleteDialog = $state(null); // { project, deleteFromCloud: bool }
@@ -316,6 +320,8 @@
     deployReason = '';
     deployPromote = false;
     deployPreview = project ? getCloudPreviewState(project.path) === 'active' : false;
+    previewRequirePassword = true;
+    previewPassword = generatePreviewPassword();
   }
 
   function getCloudStatus(path) {
@@ -336,6 +342,33 @@
 
   function isPreviewLinkBusy(path) {
     return actionInProgress[path] === 'preview-link';
+  }
+
+  function previewLinkNeedsPassword(path) {
+    const link = getCloudStatus(path)?.previewLink;
+    return !link?.exists || link.state === 'expired' || !link.hasPassword;
+  }
+
+  function shouldShowPreviewPasswordControl(project, enabled = deployPreview) {
+    return enabled && previewLinkNeedsPassword(project.path);
+  }
+
+  function buildPreviewLinkOptions(project, enabled) {
+    const link = getCloudStatus(project.path)?.previewLink;
+    const options = enabled ? { enable: true } : { disable: true };
+    if (enabled && (!link?.exists || link?.state === 'expired')) {
+      options.expiresInDays = 7;
+    }
+    if (enabled && previewLinkNeedsPassword(project.path)) {
+      if (previewRequirePassword) {
+        const password = previewPassword.trim();
+        if (password.length < 4) throw new Error('Preview password must be at least 4 characters.');
+        options.password = password;
+      } else if (link?.hasPassword) {
+        options.removePassword = true;
+      }
+    }
+    return options;
   }
 
   function getDeployProgress(path) {
@@ -462,11 +495,7 @@
     e?.stopPropagation?.();
     actionInProgress = { ...actionInProgress, [project.path]: 'preview-link' };
     try {
-      const previewLink = getCloudStatus(project.path)?.previewLink;
-      const options = enabled ? { enable: true } : { disable: true };
-      if (enabled && (!previewLink?.exists || previewLink?.state === 'expired')) {
-        options.expiresInDays = 7;
-      }
+      const options = buildPreviewLinkOptions(project, enabled);
 
       await window.api.cloud.updatePreviewLink(project.path, options);
       await refreshCloudStatuses();
@@ -489,14 +518,21 @@
     }
   }
 
-  function getDeployOptions(repairBinding = false, overrides = {}) {
+  function getDeployOptions(project, repairBinding = false, overrides = {}) {
     const options = {};
     const message = Object.prototype.hasOwnProperty.call(overrides, 'message') ? overrides.message : deployReason.trim();
     const promote = Object.prototype.hasOwnProperty.call(overrides, 'promote') ? overrides.promote : deployPromote;
     const preview = Object.prototype.hasOwnProperty.call(overrides, 'preview') ? overrides.preview : deployPreview;
     if (message) options.message = message;
     if (promote) options.promote = true;
-    if (preview) options.preview = true;
+    if (preview) {
+      options.preview = true;
+      if (!hasExistingCloudDeployment(project) && previewRequirePassword) {
+        const password = previewPassword.trim();
+        if (password.length < 4) throw new Error('Preview password must be at least 4 characters.');
+        options.password = password;
+      }
+    }
     if (repairBinding) options.repairBinding = true;
     return Object.keys(options).length ? options : undefined;
   }
@@ -562,20 +598,18 @@
     const initialPreviewState = getCloudPreviewState(project.path);
     let enabledPreviewForAttempt = false;
     try {
-      if (desiredPreviewEnabled && initialPreviewState !== 'active' && hasExistingCloudDeployment(project)) {
+      if (desiredPreviewEnabled && hasExistingCloudDeployment(project) && (initialPreviewState !== 'active' || previewLinkNeedsPassword(project.path))) {
         setDeployProgress(project.path, {
           ...(getDeployProgress(project.path) || {}),
-          message: 'Turning on preview link...'
+          message: initialPreviewState === 'active' ? 'Updating preview link...' : 'Turning on preview link...'
         });
-        const previewLink = getCloudStatus(project.path)?.previewLink;
-        const enableOptions = { enable: true };
-        if (!previewLink?.exists || previewLink?.state === 'expired') enableOptions.expiresInDays = 7;
+        const enableOptions = buildPreviewLinkOptions(project, true);
         await window.api.cloud.updatePreviewLink(project.path, enableOptions);
         enabledPreviewForAttempt = true;
         await refreshCloudStatuses();
       }
 
-      const result = await window.api.cloud.deploy(project.path, getDeployOptions(repairBinding, overrides));
+      const result = await window.api.cloud.deploy(project.path, getDeployOptions(project, repairBinding, overrides));
       // Refresh so cloud icon appears immediately after first deploy
       await refreshProjects();
       await refreshCloudStatuses();
@@ -1151,6 +1185,14 @@
               <button class="preview-link-btn subtle" onclick={(e) => openCloudPreview(e, project)}>Open Link</button>
             {/if}
           </div>
+          {#if cloudPreviewState !== 'active' && previewLinkNeedsPassword(project.path)}
+            <PreviewPasswordControl
+              id="dashboard-github-preview-password"
+              bind:requirePassword={previewRequirePassword}
+              bind:password={previewPassword}
+              disabled={isPreviewLinkBusy(project.path)}
+            />
+          {/if}
         </div>
         <p class="github-info-body">You can still update the <strong>Preview pointer</strong> directly:</p>
         <div class="deploy-popover-actions">
@@ -1184,6 +1226,14 @@
             <span>{getPreviewToggleLabel(project)}</span>
           </label>
         </div>
+        {#if shouldShowPreviewPasswordControl(project)}
+          <PreviewPasswordControl
+            id="dashboard-preview-password"
+            bind:requirePassword={previewRequirePassword}
+            bind:password={previewPassword}
+            disabled={actionInProgress[project.path] === 'deploying'}
+          />
+        {/if}
         {#if hasExistingCloudDeployment(project)}
         <div class="preview-link-panel compact">
           <div class="preview-link-header">

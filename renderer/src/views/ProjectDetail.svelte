@@ -14,7 +14,9 @@
   import { marked } from 'marked';
   import Icon from '../components/Icon.svelte';
   import DeployProgressDialog from '../components/DeployProgressDialog.svelte';
+  import PreviewPasswordControl from '../components/PreviewPasswordControl.svelte';
   import { getDisplayErrorMessage } from '../lib/errors.js';
+  import { generatePreviewPassword } from '../lib/preview-password.js';
 
   let { projectPath } = $props();
 
@@ -28,6 +30,8 @@
   let deployReason = $state('');
   let deployPromote = $state(false);
   let deployPreview = $state(false);
+  let previewRequirePassword = $state(true);
+  let previewPassword = $state(generatePreviewPassword());
   let deployBtnEl = $state(null);
   let startingPreview = $state(false);
   let exportPopoverOpen = $state(false);
@@ -44,6 +48,15 @@
   let chatReloadKey = $state(0);
   let previewFrameKey = $state(0);
   let cloudStatus = $state(null);
+  let cloudPanelOpen = $state(false);
+  let cloudHistory = $state(null);
+  let cloudHistoryLoading = $state(false);
+  let cloudActionBusy = $state('');
+  let cloudLinkPasswordEditing = $state(false);
+  let cloudLinkRequirePassword = $state(true);
+  let cloudLinkPassword = $state(generatePreviewPassword());
+  let cloudLinkExpiryAction = $state('keep');
+  let promoteReason = $state('');
   let staleBindingPrompt = $state(null);
   let checkedBindingKey = $state('');
   let checkingBinding = $state(false);
@@ -303,6 +316,168 @@
     return 'Preview';
   }
 
+  function formatCloudDate(value) {
+    if (!value) return 'None';
+    try {
+      return new Date(value).toLocaleString([], {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit'
+      });
+    } catch {
+      return value;
+    }
+  }
+
+  function formatCloudBytes(value) {
+    if (!Number.isFinite(value)) return '0 KB';
+    if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+    return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function shortDeploymentId(id) {
+    return id ? id.slice(0, 8) : 'none';
+  }
+
+  function getDeploymentRows() {
+    return cloudHistory?.deployments || [];
+  }
+
+  function getDeploymentFlag(deployment) {
+    const flags = [];
+    if (deployment.id === cloudHistory?.production_deployment_id || deployment.id === cloudStatus?.production_deployment_id) flags.push('Production');
+    if (deployment.id === cloudHistory?.preview_deployment_id || deployment.id === cloudStatus?.preview_deployment_id) flags.push('Preview');
+    if (deployment.preview_only) flags.push('Preview-only');
+    return flags;
+  }
+
+  function getDeploymentSourceLabel(deployment) {
+    if (deployment.source === 'github') return 'GitHub';
+    if (deployment.source === 'cli') return 'Desktop/CLI';
+    return deployment.source || 'Cloud';
+  }
+
+  function canPromoteToProduction(deployment) {
+    return !project?.githubLinked && !deployment.preview_only && deployment.id !== cloudStatus?.production_deployment_id;
+  }
+
+  function canPromoteToPreview(deployment) {
+    return deployment.id !== cloudStatus?.preview_deployment_id;
+  }
+
+  function resetCloudLinkControls() {
+    const link = cloudStatus?.previewLink;
+    cloudLinkPasswordEditing = !link?.hasPassword;
+    cloudLinkRequirePassword = !link?.hasPassword;
+    cloudLinkPassword = generatePreviewPassword();
+    cloudLinkExpiryAction = 'keep';
+  }
+
+  async function refreshDeploymentHistory() {
+    if (!$user || !project?.cloudId) return;
+    cloudHistoryLoading = true;
+    try {
+      cloudHistory = await window.api.cloud.listDeployments(projectPath);
+    } catch (err) {
+      showToast({ type: 'error', message: `Could not load deployments: ${getDisplayErrorMessage(err)}` });
+    } finally {
+      cloudHistoryLoading = false;
+    }
+  }
+
+  async function openCloudPanel() {
+    if (!$user) {
+      showToast({ type: 'warning', message: 'Sign in to CourseCode Cloud to manage deployments.' });
+      return;
+    }
+    if (!project?.cloudId) {
+      showToast({ type: 'warning', message: 'Deploy this course before managing Cloud versions.' });
+      return;
+    }
+    cloudPanelOpen = true;
+    resetCloudLinkControls();
+    await refreshCloudStatus();
+    await refreshDeploymentHistory();
+    resetCloudLinkControls();
+  }
+
+  function closeCloudPanel() {
+    cloudPanelOpen = false;
+    cloudActionBusy = '';
+  }
+
+  async function saveCloudLinkSettings() {
+    const link = cloudStatus?.previewLink;
+    const options = { enable: true };
+    if (!link?.exists || link?.state === 'expired') options.expiresInDays = 7;
+    if (cloudLinkExpiryAction === 'extend7') options.expiresInDays = 7;
+    if (cloudLinkPasswordEditing) {
+      if (cloudLinkRequirePassword) {
+        const password = cloudLinkPassword.trim();
+        if (password.length < 4) {
+          showToast({ type: 'error', message: 'Preview password must be at least 4 characters.' });
+          return;
+        }
+        options.password = password;
+      } else if (link?.hasPassword) {
+        options.removePassword = true;
+      }
+    }
+
+    cloudActionBusy = 'preview-link';
+    try {
+      await window.api.cloud.updatePreviewLink(projectPath, options);
+      await refreshCloudStatus();
+      resetCloudLinkControls();
+      showToast({ type: 'success', message: 'Preview link updated.' });
+    } catch (err) {
+      showToast({ type: 'error', message: `Preview link update failed: ${getDisplayErrorMessage(err)}` });
+    } finally {
+      cloudActionBusy = '';
+    }
+  }
+
+  async function disableCloudPreviewLink() {
+    cloudActionBusy = 'preview-link';
+    try {
+      await window.api.cloud.updatePreviewLink(projectPath, { disable: true });
+      await refreshCloudStatus();
+      resetCloudLinkControls();
+      showToast({ type: 'success', message: 'Preview link disabled.' });
+    } catch (err) {
+      showToast({ type: 'error', message: `Preview link update failed: ${getDisplayErrorMessage(err)}` });
+    } finally {
+      cloudActionBusy = '';
+    }
+  }
+
+  async function copyPreviewUrl() {
+    const url = cloudStatus?.previewLink?.url;
+    if (!url) return;
+    window.api.clipboard.writeText(url);
+    showToast({ type: 'success', message: 'Preview URL copied.' });
+  }
+
+  async function promoteDeploymentPointer(deployment, target) {
+    const targetLabel = target === 'production' ? 'Production' : 'Preview';
+    cloudActionBusy = `${target}:${deployment.id}`;
+    try {
+      await window.api.cloud.promoteDeployment(projectPath, {
+        target,
+        deploymentId: deployment.id,
+        message: promoteReason.trim() || `Set ${targetLabel} pointer from Desktop`
+      });
+      await refreshCloudStatus();
+      await refreshDeploymentHistory();
+      showToast({ type: 'success', message: `${targetLabel} pointer updated.` });
+    } catch (err) {
+      showToast({ type: 'error', message: `${targetLabel} update failed: ${getDisplayErrorMessage(err)}` });
+    } finally {
+      cloudActionBusy = '';
+    }
+  }
+
   function setDeployProgress(nextValue) {
     deployProgress = nextValue;
   }
@@ -409,14 +584,36 @@
     return deploying === 'preview-link';
   }
 
+  function previewLinkNeedsPassword(link = cloudStatus?.previewLink) {
+    return !link?.exists || link.state === 'expired' || !link.hasPassword;
+  }
+
+  function shouldShowPreviewPasswordControl(enabled = deployPreview) {
+    return enabled && previewLinkNeedsPassword();
+  }
+
+  function buildPreviewLinkOptions(enabled, link = cloudStatus?.previewLink) {
+    const options = enabled ? { enable: true } : { disable: true };
+    if (enabled && (!link?.exists || link?.state === 'expired')) {
+      options.expiresInDays = 7;
+    }
+    if (enabled && previewLinkNeedsPassword(link)) {
+      if (previewRequirePassword) {
+        const password = previewPassword.trim();
+        if (password.length < 4) throw new Error('Preview password must be at least 4 characters.');
+        options.password = password;
+      } else if (link?.hasPassword) {
+        options.removePassword = true;
+      }
+    }
+    return options;
+  }
+
   async function setPreviewLinkState(enabled, { autoSelectPreview = false } = {}) {
     deploying = 'preview-link';
     try {
       const previewLink = cloudStatus?.previewLink;
-      const options = enabled ? { enable: true } : { disable: true };
-      if (enabled && (!previewLink?.exists || previewLink?.state === 'expired')) {
-        options.expiresInDays = 7;
-      }
+      const options = buildPreviewLinkOptions(enabled, previewLink);
 
       await window.api.cloud.updatePreviewLink(projectPath, options);
       await refreshCloudStatus();
@@ -508,7 +705,14 @@
     const preview = Object.prototype.hasOwnProperty.call(overrides, 'preview') ? overrides.preview : deployPreview;
     if (message) options.message = message;
     if (promote) options.promote = true;
-    if (preview) options.preview = true;
+    if (preview) {
+      options.preview = true;
+      if (!hasExistingCloudDeployment() && previewRequirePassword) {
+        const password = previewPassword.trim();
+        if (password.length < 4) throw new Error('Preview password must be at least 4 characters.');
+        options.password = password;
+      }
+    }
     if (repairBinding) options.repairBinding = true;
     return Object.keys(options).length ? options : undefined;
   }
@@ -522,14 +726,13 @@
     const initialPreviewState = getCloudPreviewState();
     let enabledPreviewForAttempt = false;
     try {
-      if (desiredPreviewEnabled && initialPreviewState !== 'active' && hasExistingCloudDeployment()) {
+      if (desiredPreviewEnabled && hasExistingCloudDeployment() && (initialPreviewState !== 'active' || previewLinkNeedsPassword())) {
         setDeployProgress({
           ...(deployProgress || {}),
-          message: 'Turning on preview link...'
+          message: initialPreviewState === 'active' ? 'Updating preview link...' : 'Turning on preview link...'
         });
         const previewLink = cloudStatus?.previewLink;
-        const enableOptions = { enable: true };
-        if (!previewLink?.exists || previewLink?.state === 'expired') enableOptions.expiresInDays = 7;
+        const enableOptions = buildPreviewLinkOptions(true, previewLink);
         await window.api.cloud.updatePreviewLink(projectPath, enableOptions);
         enabledPreviewForAttempt = true;
         await refreshCloudStatus();
@@ -603,6 +806,8 @@
     deployReason = '';
     deployPromote = false;
     deployPreview = getCloudPreviewState() === 'active';
+    previewRequirePassword = true;
+    previewPassword = generatePreviewPassword();
   }
 
   function dismissStaleBindingPrompt() {
@@ -766,6 +971,19 @@
           </Icon>
         </button>
       {/if}
+
+      {#if project?.cloudId}
+        <button class="tool-btn" onclick={openCloudPanel} title="Manage Cloud deployments and preview link">
+          <Icon>
+            <path d="M3 7h18"/>
+            <path d="M3 12h18"/>
+            <path d="M3 17h18"/>
+            <circle cx="7" cy="7" r="1"/>
+            <circle cx="7" cy="12" r="1"/>
+            <circle cx="7" cy="17" r="1"/>
+          </Icon>
+        </button>
+      {/if}
     </div>
 
     <div class="toolbar-separator"></div>
@@ -862,6 +1080,172 @@
     />
   {/if}
 
+  {#if cloudPanelOpen}
+    <div class="cloud-panel-backdrop" role="presentation" onclick={closeCloudPanel}>
+      <div class="cloud-panel" role="dialog" aria-modal="true" aria-label="Cloud deployment management" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+        <div class="cloud-panel-header">
+          <div>
+            <h2>Cloud Deployments</h2>
+            <p>{project?.title || project?.name} · {cloudStatus?.orgName || 'CourseCode Cloud'}</p>
+          </div>
+          <button class="tool-btn" onclick={closeCloudPanel} title="Close">
+            <Icon><path d="M18 6 6 18"/><path d="m6 6 12 12"/></Icon>
+          </button>
+        </div>
+
+        <div class="cloud-panel-grid">
+          <section class="cloud-manage-section">
+            <div class="section-heading">
+              <div>
+                <h3>Main Preview Link</h3>
+                <p>The shared URL follows the Preview pointer.</p>
+              </div>
+              <span class="preview-link-state" class:active={getCloudPreviewState() === 'active'} class:disabled={getCloudPreviewState() === 'disabled'} class:expired={getCloudPreviewState() === 'expired'} class:missing={getCloudPreviewState() === 'missing'}>{getCloudPreviewLabel() || 'Checking…'}</span>
+            </div>
+
+            <div class="cloud-link-summary">
+              <div>
+                <span class="cloud-label">Password</span>
+                <strong>{cloudStatus?.previewLink?.hasPassword ? 'Required' : 'Not required'}</strong>
+              </div>
+              <div>
+                <span class="cloud-label">Expires</span>
+                <strong>{formatCloudDate(cloudStatus?.previewLink?.expiresAt)}</strong>
+              </div>
+              <div>
+                <span class="cloud-label">Format</span>
+                <strong>{cloudStatus?.previewLink?.format || project?.format || 'cmi5'}</strong>
+              </div>
+            </div>
+
+            {#if cloudStatus?.previewLink?.url}
+              <div class="cloud-url-row">
+                <code>{cloudStatus.previewLink.url}</code>
+                <button class="preview-link-btn subtle" onclick={copyPreviewUrl}>Copy</button>
+                {#if getCloudPreviewState() === 'active'}
+                  <button class="preview-link-btn subtle" onclick={openCloudPreview}>Open</button>
+                {/if}
+              </div>
+            {/if}
+
+            <div class="cloud-link-controls">
+              <label class="deploy-toggle-label">
+                <input type="checkbox" bind:checked={cloudLinkPasswordEditing} />
+                <span>{cloudStatus?.previewLink?.hasPassword ? 'Change password settings' : 'Require password'}</span>
+              </label>
+              {#if cloudLinkPasswordEditing}
+                <PreviewPasswordControl
+                  id="cloud-panel-preview-password"
+                  bind:requirePassword={cloudLinkRequirePassword}
+                  bind:password={cloudLinkPassword}
+                  disabled={cloudActionBusy === 'preview-link'}
+                />
+              {/if}
+              <label class="cloud-select-label" for="cloud-link-expiry">
+                <span>Expiry</span>
+                <select id="cloud-link-expiry" bind:value={cloudLinkExpiryAction} disabled={cloudActionBusy === 'preview-link'}>
+                  <option value="keep">Keep current expiry</option>
+                  <option value="extend7">Extend 7 days</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="cloud-actions">
+              <button class="preview-link-btn" disabled={cloudActionBusy === 'preview-link'} onclick={saveCloudLinkSettings}>
+                {cloudActionBusy === 'preview-link' ? 'Saving…' : cloudStatus?.previewLink?.exists ? 'Save Preview Link' : 'Create Preview Link'}
+              </button>
+              {#if getCloudPreviewState() === 'active'}
+                <button class="preview-link-btn subtle" disabled={cloudActionBusy === 'preview-link'} onclick={disableCloudPreviewLink}>Turn Off</button>
+              {/if}
+            </div>
+          </section>
+
+          <section class="cloud-manage-section">
+            <div class="section-heading">
+              <div>
+                <h3>Current Pointers</h3>
+                <p>Production is live for learners. Preview is what the main preview link opens.</p>
+              </div>
+            </div>
+            <div class="pointer-list">
+              <div class="pointer-row">
+                <span>Production</span>
+                <strong>{cloudStatus?.production ? formatCloudDate(cloudStatus.production.createdAt) : 'None'}</strong>
+                <code>{shortDeploymentId(cloudStatus?.production_deployment_id)}</code>
+              </div>
+              <div class="pointer-row">
+                <span>Preview</span>
+                <strong>{cloudStatus?.previewPointer ? formatCloudDate(cloudStatus.previewPointer.createdAt) : 'None'}</strong>
+                <code>{shortDeploymentId(cloudStatus?.preview_deployment_id)}</code>
+              </div>
+            </div>
+            <label class="cloud-reason-field" for="promote-reason">
+              <span>Reason for pointer changes</span>
+              <input id="promote-reason" type="text" bind:value={promoteReason} placeholder="e.g. Stakeholder review approved" />
+            </label>
+          </section>
+        </div>
+
+        <section class="cloud-manage-section deployments-section">
+          <div class="section-heading">
+            <div>
+              <h3>Recent Deployments</h3>
+              <p>Move only the pointer. Files are not rebuilt.</p>
+            </div>
+            <button class="preview-link-btn subtle" disabled={cloudHistoryLoading} onclick={refreshDeploymentHistory}>
+              {cloudHistoryLoading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </div>
+
+          {#if cloudHistoryLoading && getDeploymentRows().length === 0}
+            <div class="deployments-empty">Loading deployments…</div>
+          {:else if getDeploymentRows().length === 0}
+            <div class="deployments-empty">No deployments yet.</div>
+          {:else}
+            <div class="deployment-table">
+              {#each getDeploymentRows() as deployment (deployment.id)}
+                {@const flags = getDeploymentFlag(deployment)}
+                <div class="deployment-row">
+                  <div class="deployment-main">
+                    <div class="deployment-title">
+                      <strong>{formatCloudDate(deployment.created_at)}</strong>
+                      {#each flags as flag}
+                        <span class="deployment-flag">{flag}</span>
+                      {/each}
+                    </div>
+                    <div class="deployment-meta">
+                      <span>{getDeploymentSourceLabel(deployment)}</span>
+                      <span>{deployment.file_count} files</span>
+                      <span>{formatCloudBytes(deployment.total_size)}</span>
+                      <code>{shortDeploymentId(deployment.id)}</code>
+                    </div>
+                  </div>
+                  <div class="deployment-actions">
+                    <button
+                      class="preview-link-btn subtle"
+                      disabled={!canPromoteToPreview(deployment) || cloudActionBusy === `preview:${deployment.id}`}
+                      onclick={() => promoteDeploymentPointer(deployment, 'preview')}
+                    >
+                      {cloudActionBusy === `preview:${deployment.id}` ? 'Setting…' : 'Set Preview'}
+                    </button>
+                    <button
+                      class="preview-link-btn subtle"
+                      disabled={!canPromoteToProduction(deployment) || cloudActionBusy === `production:${deployment.id}`}
+                      title={project?.githubLinked ? 'Production is managed by GitHub' : deployment.preview_only ? 'Preview-only deployments cannot become Production' : 'Set as Production'}
+                      onclick={() => promoteDeploymentPointer(deployment, 'production')}
+                    >
+                      {cloudActionBusy === `production:${deployment.id}` ? 'Setting…' : 'Set Production'}
+                    </button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      </div>
+    </div>
+  {/if}
+
   {#if deployPopoverOpen}
     <div class="deploy-dialog-backdrop" role="presentation" onclick={() => deployPopoverOpen = false}>
       {#if project?.githubLinked}
@@ -897,6 +1281,14 @@
                 <button class="preview-link-btn subtle" onclick={openCloudPreview}>Open Link</button>
               {/if}
             </div>
+            {#if getCloudPreviewState() !== 'active' && previewLinkNeedsPassword()}
+              <PreviewPasswordControl
+                id="project-github-preview-password"
+                bind:requirePassword={previewRequirePassword}
+                bind:password={previewPassword}
+                disabled={isPreviewLinkBusy()}
+              />
+            {/if}
           </div>
           <p class="deploy-toggle-tip">You can still update the Preview pointer directly from Desktop.</p>
           <div class="deploy-popover-actions">
@@ -932,6 +1324,14 @@
               <span>{getPreviewToggleLabel()}</span>
             </label>
           </div>
+          {#if shouldShowPreviewPasswordControl()}
+            <PreviewPasswordControl
+              id="project-preview-password"
+              bind:requirePassword={previewRequirePassword}
+              bind:password={previewPassword}
+              disabled={!!deploying}
+            />
+          {/if}
           {#if hasExistingCloudDeployment()}
           <div class="preview-link-panel compact">
             <div class="preview-link-header">
@@ -1638,6 +2038,272 @@
     font-weight: 400;
     color: var(--text-tertiary);
     font-style: italic;
+  }
+
+  .cloud-panel-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: color-mix(in srgb, var(--bg-primary) 58%, transparent);
+  }
+
+  .cloud-panel {
+    width: min(960px, calc(100vw - 48px));
+    max-height: min(780px, calc(100vh - 48px));
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+    overflow: hidden;
+  }
+
+  .cloud-panel-header,
+  .section-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .cloud-panel-header h2,
+  .section-heading h3 {
+    margin: 0;
+    color: var(--text-primary);
+  }
+
+  .cloud-panel-header h2 {
+    font-size: 18px;
+  }
+
+  .section-heading h3 {
+    font-size: 13px;
+  }
+
+  .cloud-panel-header p,
+  .section-heading p {
+    margin: 3px 0 0;
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    line-height: 1.4;
+  }
+
+  .cloud-panel-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.75fr);
+    gap: 12px;
+  }
+
+  .cloud-manage-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+  }
+
+  .deployments-section {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .cloud-link-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .cloud-link-summary > div,
+  .pointer-row {
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-primary);
+  }
+
+  .cloud-label,
+  .cloud-select-label span,
+  .cloud-reason-field span {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .cloud-link-summary strong,
+  .pointer-row strong {
+    display: block;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cloud-url-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .cloud-url-row code,
+  .pointer-row code,
+  .deployment-meta code {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cloud-url-row code {
+    padding: 7px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-primary);
+  }
+
+  .cloud-link-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .cloud-select-label select,
+  .cloud-reason-field input {
+    width: 100%;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+  }
+
+  .cloud-reason-field input {
+    padding: 0 10px;
+  }
+
+  .cloud-actions,
+  .deployment-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .pointer-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .pointer-row {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) 70px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .pointer-row span {
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    font-weight: 700;
+  }
+
+  .deployment-table {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-primary);
+  }
+
+  .deployment-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .deployment-row:last-child {
+    border-bottom: 0;
+  }
+
+  .deployment-main {
+    min-width: 0;
+  }
+
+  .deployment-title,
+  .deployment-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .deployment-title strong {
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+  }
+
+  .deployment-meta {
+    margin-top: 4px;
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+  }
+
+  .deployment-flag {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .deployments-empty {
+    padding: 24px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    color: var(--text-tertiary);
+    font-size: var(--text-sm);
+    text-align: center;
+  }
+
+  @media (max-width: 860px) {
+    .cloud-panel-grid,
+    .cloud-link-summary,
+    .deployment-row {
+      grid-template-columns: 1fr;
+    }
+
+    .deployment-actions {
+      justify-content: flex-start;
+    }
   }
 
   .deploy-popover-input {

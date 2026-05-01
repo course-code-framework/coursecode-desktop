@@ -3,7 +3,7 @@ import { getAllSettings, saveSetting } from './settings.js';
 import { scanProjects, createProject, openProject, deleteProject, clearCloudBinding, upgradeProject } from './project-manager.js';
 import { startPreview, stopPreview, getPreviewStatus, getPreviewPort, getAllPreviewStatuses } from './preview-manager.js';
 import { exportBuild } from './build-manager.js';
-import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus, updatePreviewLink } from './cloud-client.js';
+import { cloudLogin, cloudLogout, getCloudUser, cloudDeploy, getDeployStatus, updatePreviewLink, listDeployments, promoteDeployment } from './cloud-client.js';
 import { getSetupStatus, installCLI, getDownloadUrl, getLatestFrameworkVersion } from './cli-installer.js';
 import {
     sendMessage, stopGeneration, clearConversation, loadHistory,
@@ -61,6 +61,8 @@ export function registerIpcHandlers() {
     handle('cloud:deploy', (e, projectPath, options) => cloudDeploy(projectPath, e.sender, options));
     handle('cloud:getDeployStatus', (_e, projectPath, options) => getDeployStatus(projectPath, options));
     handle('cloud:updatePreviewLink', (_e, projectPath, options) => updatePreviewLink(projectPath, options));
+    handle('cloud:listDeployments', (_e, projectPath) => listDeployments(projectPath));
+    handle('cloud:promoteDeployment', (_e, projectPath, options) => promoteDeployment(projectPath, options));
 
     // --- Settings ---
     handle('settings:get', () => getAllSettings());

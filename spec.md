@@ -257,8 +257,11 @@ All communication between renderer and main process flows through typed IPC chan
 - `api.cloud.login()` → `{ success, user }` — Spawn `coursecode login` (opens browser, nonce-based auth). Sends progress events during polling.
 - `api.cloud.logout()` → `void` — Spawn `coursecode logout` to clear credentials.
 - `api.cloud.getUser()` → `User | null` — Spawn `coursecode whoami --json` to get current auth state.
-- `api.cloud.deploy(projectPath, options?)` → `{ success, timestamp }` — Spawn `coursecode deploy`. Sends structured progress events. Options: `{ message?: string, promote?: boolean, preview?: boolean }`. `message` is appended to the audit log via `-m`. `promote` passes `--promote` (force go live). `preview` passes `--preview` (update preview link).
+- `api.cloud.deploy(projectPath, options?)` → `{ success, timestamp }` — Spawn `coursecode deploy`. Sends structured progress events. Options: `{ message?: string, promote?: boolean, preview?: boolean, password?: string }`. `message` is appended to the audit log via `-m`. `promote` passes `--promote` (force go live). `preview` passes `--preview` (update preview pointer). `password` passes `--password` and is used only when a preview link is being created or updated.
 - `api.cloud.getDeployStatus(projectPath)` → `DeployStatus` — Spawn `coursecode status --json`.
+- `api.cloud.updatePreviewLink(projectPath, options)` → `PreviewLinkResult` — Spawn `coursecode preview-link --json` to create, enable, disable, password-protect, remove password, or extend the main preview pointer link.
+- `api.cloud.listDeployments(projectPath)` → `DeploymentHistory` — Resolve the linked Cloud course and fetch recent immutable deployments from the CLI-compatible Cloud versions API.
+- `api.cloud.promoteDeployment(projectPath, options)` → `PromoteResult` — Resolve the linked Cloud course and move the `production` or `preview` pointer to an existing deployment. Options: `{ target: 'production' | 'preview', deploymentId: string, message?: string }`.
 - `api.cloud.onLoginProgress(callback)` → `unsubscribe` — Stream login progress: `{ stage, message, user }`.
 - `api.cloud.onDeployProgress(callback)` → `unsubscribe` — Stream deploy progress: `{ stage, message, log }`.
 
@@ -537,7 +540,7 @@ Orchestrates course builds by invoking the `coursecode` build pipeline programma
 
 ### `cloud-client.js` — CourseCode Cloud Integration
 
-A thin wrapper that delegates all cloud operations to the `coursecode` CLI. No direct API calls or Electron-specific auth logic.
+A thin wrapper around the `coursecode` CLI and the CLI-compatible Cloud API. Build-sensitive operations (`deploy`, `status`, `preview-link`) use the project CLI so they respect the course framework version. Lightweight management operations that should not require every project to have the newest framework installed (`listDeployments`, `promoteDeployment`) call the token-authenticated Cloud API directly after resolving the linked course through status.
 
 **Authentication**: Credentials are managed solely by the CLI at `~/.coursecode/credentials.json`. The desktop reads this file to check auth status. Login spawns `coursecode login`, which opens the browser for nonce-based authentication and writes the token to the credential file on success.
 
@@ -547,7 +550,11 @@ A thin wrapper that delegates all cloud operations to the `coursecode` CLI. No d
 
 **User info**: Spawns `coursecode whoami --json` and returns parsed JSON.
 
-**Deploy status**: Spawns `coursecode status --json` in the project directory. The response includes `source.type` and `source.githubRepo` fields which the UI uses to detect GitHub-linked courses and lock the deploy button to preview-only mode.
+**Deploy status**: Spawns `coursecode status --json` in the project directory. The response includes `source.type`, `source.githubRepo`, production/preview pointer summaries, and main preview link state. The UI uses those fields to detect GitHub-linked courses, lock the deploy button to preview-only mode, and show preview link/pointer status.
+
+**Preview link management**: Spawns `coursecode preview-link --json` in the project directory. The Desktop UI can create or enable the main preview link, disable it, add/change/remove a password, and extend expiry. Password-protected previews are the default for newly created or unprotected preview links, but users can explicitly opt out.
+
+**Deployment history and pointer management**: Fetches recent deployments from the Cloud versions API and can move the Production or Preview pointer to an existing deployment. The Desktop subset is intentionally compact: it shows current Production/Preview pointers, recent deployments, `Set Preview`, `Set Production`, preview-link password/expiry controls, copy/open preview URL, and an "Open in Cloud" path for deeper Cloud-only workflows.
 
 **Cloud project linking**: On first deploy, the CLI stamps a `cloudId` into `.coursecoderc.json`. For GitHub-linked courses, the cloud also stamps `sourceType` and `githubRepo`. Team members who clone the repo get these fields automatically.
 
@@ -713,6 +720,7 @@ The desktop app delegates all deployment to the `coursecode deploy` CLI command.
 - **Reason** (optional text) — stored as a deploy audit log entry via `-m`
 - **Update Production** checkbox (off by default) — when checked, passes `--promote` to force the deployment live immediately, overriding the Cloud `deploy_mode` setting
 - **Update Preview** checkbox (off by default) — when checked, passes `--preview` to move the preview link to the new version
+- **Require password** control — shown when the main preview link is missing, expired, or currently unprotected. It defaults on and suggests a locally generated password. Users can uncheck it to create or keep the preview passwordless.
 
 After confirming, the desktop spawns `coursecode deploy` (plus flags) → CLI builds the project, uploads to CourseCode Cloud, and reports status → structured progress events are sent to the renderer.
 
@@ -729,8 +737,21 @@ After confirming, the desktop spawns `coursecode deploy` (plus flags) → CLI bu
 **Desktop UI**: The Project Detail view shows:
 - **Deploy reason popover**: Clicking the Deploy button opens a small popover with an optional text input for a deploy reason (e.g., "Fixed accessibility issues on slide 3"). The user can type a reason and click "Deploy" to confirm, or leave it blank and deploy without a reason. Pressing Enter confirms; Escape cancels. The reason is passed to the CLI via the `-m` flag, which appends it as the `reason` field in the deploy audit log. If omitted, the server's default message is used.
 - Deploy progress (Building → Uploading → Live)
-- Last deploy timestamp and URL
-- "View on Cloud" link (if `cloudId` is present in `.coursecoderc.json`)
+- Main Preview Link status badge and open action when active
+- Cloud Deployments panel (if `cloudId` is present in `.coursecoderc.json`) with current Production/Preview pointers, recent deployments, preview link password/expiry controls, copy/open preview URL, and pointer actions.
+
+**Cloud Deployments panel**: Available from the Project Detail toolbar for linked Cloud courses. It provides the Desktop-supported subset of Cloud deployment management:
+- Create/enable/disable the main preview link.
+- Add, change, or remove the preview password.
+- Extend preview expiry by seven days.
+- Copy or open the active preview URL.
+- View the current Production and Preview pointer versions.
+- View recent immutable deployments.
+- Move the Preview pointer to a selected deployment.
+- Move the Production pointer to a selected deployment unless the course is GitHub-linked or the target deployment is preview-only.
+- Record an optional reason for pointer changes.
+
+Advanced Cloud workflows such as multiple pinned stakeholder preview links, cleanup, analytics, and full audit exploration remain in the Cloud web app.
 
 ### GitHub Deploy Guard
 
@@ -740,7 +761,8 @@ When a course is deployed to CourseCode Cloud via GitHub (GitHub Actions integra
 
 **UI behavior when `githubLinked` is `true`**:
 - The Deploy button tooltip indicates production deploys are managed via GitHub.
-- Production deploy is blocked — only preview deploys are allowed from the Desktop.
+- Production deploy is blocked — Desktop can still create preview-only deployments, move the Preview pointer, and manage the main preview link.
+- The Cloud Deployments panel disables `Set Production`; Preview pointer and main preview link management remain available.
 - The project card shows a GitHub badge.
 
 **CLI-side guard**: The CLI `deploy()` command also checks `sourceType` in `.coursecoderc.json` before building. If `sourceType === 'github'` and `--preview` is not passed, the CLI blocks with exit code 1 and a `github_source_blocked` error.

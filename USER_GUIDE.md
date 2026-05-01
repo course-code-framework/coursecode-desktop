@@ -74,6 +74,7 @@ Typical actions:
 - `Preview` (start/stop local preview server)
 - `Export` (build LMS package locally)
 - `Deploy` (publish to CourseCode Cloud, optional)
+- Cloud deployment management for linked courses
 - open in editor / reveal in Finder / open terminal
 
 ### Settings
@@ -114,7 +115,9 @@ Cloud is most helpful when you want to spend less time on packaging and file sha
 
 What Cloud gives you:
 - a hosted course version you can access online after deploy
-- shareable preview links for reviewers and stakeholders
+- a main preview link for reviewers and stakeholders
+- password-protected preview sharing by default, with passwordless sharing as an explicit choice
+- Production and Preview pointers so you can stage review versions without changing what learners see
 - LMS format downloads later (SCORM/cmi5) from the same uploaded build
 - simpler updates (redeploy once, then use Cloud for future downloads/sharing)
 - cloud-managed runtime services (reporting/channel) without manual endpoint setup
@@ -150,9 +153,39 @@ If you sign in to CourseCode Cloud, Desktop can also support:
 Typical non-technical workflow:
 1. Build and test in Desktop with `Preview`
 2. Click `Deploy` to publish to Cloud
-3. Share the Cloud preview link with reviewers
-4. Make fixes in Desktop and deploy again
-5. Download the LMS package you need from Cloud when approved
+3. Keep `Require password` on for the main preview link unless you intentionally want a passwordless review URL
+4. Share the Cloud preview link with reviewers
+5. Make fixes in Desktop and deploy again
+6. Use the Cloud Deployments panel to move the Preview pointer for review or Production pointer when approved
+7. Download the LMS package you need from Cloud when approved
+
+### Managing Cloud Deployments in Desktop
+
+For a linked Cloud course, Project Detail includes a Cloud Deployments panel. It is a focused Desktop subset of the Cloud web app.
+
+Use it to:
+- create, enable, disable, copy, or open the main preview link
+- add, change, or remove the preview password
+- extend preview expiry by seven days
+- see the current Production and Preview pointer versions
+- view recent deployments
+- move the Preview pointer to a selected deployment
+- move the Production pointer to a selected deployment when the course is not GitHub-linked
+
+The main preview link follows the Preview pointer. That means the shared URL can stay the same while you choose which deployment reviewers see.
+
+Desktop keeps advanced Cloud workflows in the Cloud web app, including multiple pinned stakeholder preview links, cleanup, analytics, and detailed audit exploration.
+
+### GitHub-Linked Courses
+
+If a course is linked to a GitHub repository, production deploys are managed by GitHub. Push to the repo to update Production.
+
+Desktop still supports:
+- preview-only deploys
+- Preview pointer changes
+- main preview link password/expiry management
+
+Desktop disables Production pointer changes for GitHub-linked courses to avoid conflicting with the repository workflow.
 
 Cloud features should always be labeled optional in Desktop UI/docs.
 

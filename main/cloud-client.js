@@ -6,6 +6,7 @@ import { getChildEnv, isLocalMode, getCLISpawnArgs, getProjectCLISpawnArgs } fro
 import { createLogger } from './logger.js';
 
 const log = createLogger('cloud');
+const CLOUD_BASE_URL = isLocalMode() ? 'http://localhost:3000' : 'https://www.coursecodecloud.com';
 
 /**
  * Strip ANSI escape codes from a string.
@@ -86,6 +87,31 @@ function createCloudCliError(message, extra = {}) {
     const err = new Error(message);
     Object.assign(err, extra);
     return err;
+}
+
+async function cloudApiFetch(path, options = {}) {
+    const token = loadToken();
+    if (!token) throw new Error('Not authenticated. Please sign in to CourseCode Cloud.');
+    const res = await fetch(`${CLOUD_BASE_URL}${path}`, {
+        ...options,
+        headers: {
+            Authorization: `Bearer ${token}`,
+            ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+            ...(options.headers || {})
+        }
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(typeof data?.error === 'string' ? data.error : `Cloud request failed (${res.status})`);
+    }
+    return data;
+}
+
+async function getCloudCourseRef(projectPath) {
+    const status = await getDeployStatus(projectPath);
+    if (!status?.slug) throw new Error('This project is not linked to a Cloud course.');
+    const orgQuery = status.orgId ? `?orgId=${encodeURIComponent(status.orgId)}` : '';
+    return { slug: status.slug, orgQuery };
 }
 
 // CLI manages credentials at ~/.coursecode/credentials.json (or credentials.local.json in local mode)
@@ -276,6 +302,7 @@ export async function cloudDeploy(projectPath, webContents, options = {}) {
         if (options.message) args.push('-m', options.message);
         if (options.promote) args.push('--promote');
         if (options.preview) args.push('--preview');
+        if (options.password) args.push('--password', options.password);
         if (options.repairBinding) args.push('--repair-binding');
         const { command, args: cliArgs } = getProjectCLISpawnArgs(projectPath, args);
         const useShell = process.platform === 'win32' && command === 'coursecode';
@@ -446,6 +473,35 @@ export async function updatePreviewLink(projectPath, options = {}) {
     if (isLocalMode()) args.push('--local');
 
     return runCLI(args, { cwd: projectPath, projectPath });
+}
+
+/**
+ * List recent immutable deployments for a linked Cloud course.
+ */
+export async function listDeployments(projectPath) {
+    if (!loadToken()) throw new Error('Not authenticated. Please sign in to CourseCode Cloud.');
+    const { slug, orgQuery } = await getCloudCourseRef(projectPath);
+    return cloudApiFetch(`/api/cli/courses/${encodeURIComponent(slug)}/versions${orgQuery}`);
+}
+
+/**
+ * Move the production or preview pointer to an existing deployment.
+ */
+export async function promoteDeployment(projectPath, options = {}) {
+    if (!loadToken()) throw new Error('Not authenticated. Please sign in to CourseCode Cloud.');
+    if (!options.deploymentId) throw new Error('Deployment ID is required.');
+    if (options.target !== 'production' && options.target !== 'preview') {
+        throw new Error('Promotion target must be production or preview.');
+    }
+    const { slug } = await getCloudCourseRef(projectPath);
+    return cloudApiFetch(`/api/cli/courses/${encodeURIComponent(slug)}/promote`, {
+        method: 'POST',
+        body: JSON.stringify({
+            deployment_id: options.deploymentId,
+            target: options.target,
+            reason: options.message || `Promoted to ${options.target} from Desktop`
+        })
+    });
 }
 
 /**

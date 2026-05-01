@@ -59,6 +59,8 @@ contextBridge.exposeInMainWorld('api', {
         deploy: (projectPath, options) => ipcRenderer.invoke('cloud:deploy', projectPath, options),
         getDeployStatus: (projectId, options) => ipcRenderer.invoke('cloud:getDeployStatus', projectId, options),
         updatePreviewLink: (projectPath, options) => ipcRenderer.invoke('cloud:updatePreviewLink', projectPath, options),
+        listDeployments: (projectPath) => ipcRenderer.invoke('cloud:listDeployments', projectPath),
+        promoteDeployment: (projectPath, options) => ipcRenderer.invoke('cloud:promoteDeployment', projectPath, options),
         onLoginProgress: (callback) => {
             const handler = (_event, data) => callback(data);
             ipcRenderer.on('cloud:loginProgress', handler);
