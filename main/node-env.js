@@ -10,12 +10,20 @@ const log = createLogger('node-env');
 const isPackaged = app.isPackaged;
 
 function getAppNodeModulesPath() {
-    // Dev and packaged builds both execute from out/main.
     if (isPackaged) {
         return join(process.resourcesPath, 'app.asar.unpacked', 'node_modules');
     }
 
-    return join(__dirname, '..', '..', 'node_modules');
+    // The app runs from out/main, while unit tests import main/ directly.
+    const bundledPath = join(__dirname, '..', '..', 'node_modules');
+    if (existsSync(bundledPath)) return bundledPath;
+
+    return join(__dirname, '..', 'node_modules');
+}
+
+function getAppNpmCliPath(binName) {
+    const npmCli = join(getAppNodeModulesPath(), 'npm', 'bin', binName);
+    return existsSync(npmCli) ? npmCli : null;
 }
 
 /** Whether the app should target local Supabase (set via COURSECODE_LOCAL=1). */
@@ -40,10 +48,11 @@ export function getNodePath() {
 
 /**
  * Get the path to the bundled npm CLI script.
- * In dev mode, uses the system npm. In production, uses the vendored copy.
+ * In dev mode, prefers the app's npm dependency. In production, uses the
+ * vendored copy.
  */
 export function getNpmPath() {
-    if (!isPackaged) return 'npm';
+    if (!isPackaged) return getAppNpmCliPath('npm-cli.js') || 'npm';
 
     const vendorNpm = join(process.resourcesPath, 'vendor', 'npm', 'bin', 'npm-cli.js');
     if (existsSync(vendorNpm)) return vendorNpm;
@@ -56,7 +65,7 @@ export function getNpmPath() {
  * Get the path to the bundled npx CLI script.
  */
 export function getNpxPath() {
-    if (!isPackaged) return 'npx';
+    if (!isPackaged) return getAppNpmCliPath('npx-cli.js') || 'npx';
 
     const vendorNpx = join(process.resourcesPath, 'vendor', 'npm', 'bin', 'npx-cli.js');
     if (existsSync(vendorNpx)) return vendorNpx;
@@ -73,11 +82,12 @@ export function getChildEnv(extraEnv = {}) {
     const PATH = `${nodeDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`;
     const npmPath = getNpmPath();
     const npxPath = getNpxPath();
+    const usesElectronAsNode = isPackaged || npmPath !== 'npm' || npxPath !== 'npx';
 
     return {
         ...process.env,
         PATH,
-        ...(isPackaged ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+        ...(usesElectronAsNode ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
         ...(npmPath !== 'npm' ? { COURSECODE_NPM_CLI: npmPath } : {}),
         ...(npxPath !== 'npx' ? { COURSECODE_NPX_CLI: npxPath } : {}),
         ...extraEnv
@@ -89,11 +99,12 @@ export function getChildEnv(extraEnv = {}) {
  * Returns { command, args } suitable for child_process.spawn.
  */
 export function npmSpawnArgs(npmArgs) {
-    if (!isPackaged) {
-        return { command: 'npm', args: npmArgs };
+    const npmPath = getNpmPath();
+
+    if (npmPath === 'npm') {
+        return { command: process.platform === 'win32' ? 'npm.cmd' : 'npm', args: npmArgs };
     }
 
-    const npmPath = getNpmPath();
     return {
         command: getNodePath(),
         args: [npmPath, ...npmArgs]

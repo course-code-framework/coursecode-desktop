@@ -28,14 +28,14 @@ describe('node-env (dev mode)', () => {
     });
 
     describe('getNpmPath', () => {
-        it('returns "npm" in dev mode', () => {
-            expect(getNpmPath()).toBe('npm');
+        it('returns the app npm CLI in dev mode when available', () => {
+            expect(getNpmPath()).toMatch(/node_modules[\\/]npm[\\/]bin[\\/]npm-cli\.js$/);
         });
     });
 
     describe('getNpxPath', () => {
-        it('returns "npx" in dev mode', () => {
-            expect(getNpxPath()).toBe('npx');
+        it('returns the app npx CLI in dev mode when available', () => {
+            expect(getNpxPath()).toMatch(/node_modules[\\/]npm[\\/]bin[\\/]npx-cli\.js$/);
         });
     });
 
@@ -60,24 +60,27 @@ describe('node-env (dev mode)', () => {
     });
 
     describe('npmSpawnArgs', () => {
-        it('returns npm as command in dev mode', () => {
+        it('runs the app npm CLI through Node in dev mode', () => {
             const { command, args } = npmSpawnArgs(['install']);
-            expect(command).toBe('npm');
-            expect(args).toEqual(['install']);
+            expect(command).toBe(process.execPath);
+            expect(args[0]).toMatch(/node_modules[\\/]npm[\\/]bin[\\/]npm-cli\.js$/);
+            expect(args.slice(1)).toEqual(['install']);
         });
     });
 
     describe('getCLISpawnArgs', () => {
-        it('returns coursecode as command in dev mode', () => {
+        it('returns the bundled coursecode CLI in dev mode when available', () => {
             const { command, args } = getCLISpawnArgs(['build', '--format', 'cmi5']);
-            expect(command).toBe('coursecode');
-            expect(args).toEqual(['build', '--format', 'cmi5']);
+            expect(command).toBe('node');
+            expect(args[0]).toMatch(/node_modules[\\/]coursecode[\\/]bin[\\/]cli\.js$/);
+            expect(args.slice(1)).toEqual(['build', '--format', 'cmi5']);
         });
 
         it('returns empty args by default', () => {
             const { command, args } = getCLISpawnArgs();
-            expect(command).toBe('coursecode');
-            expect(args).toEqual([]);
+            expect(command).toBe('node');
+            expect(args[0]).toMatch(/node_modules[\\/]coursecode[\\/]bin[\\/]cli\.js$/);
+            expect(args.slice(1)).toEqual([]);
         });
     });
 });
