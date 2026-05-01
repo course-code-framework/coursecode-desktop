@@ -314,11 +314,11 @@
   function getDeployTargetLabel(repairBinding = false, overrides = {}) {
     const preview = Object.prototype.hasOwnProperty.call(overrides, 'preview') ? overrides.preview : deployPreview;
     const promote = Object.prototype.hasOwnProperty.call(overrides, 'promote') ? overrides.promote : deployPromote;
-    if (repairBinding && preview) return 'Repairing link and updating preview';
-    if (preview) return 'Updating cloud preview';
+    if (repairBinding && preview) return 'Repairing link and updating Preview';
+    if (preview) return 'Updating Preview pointer';
     if (repairBinding) return 'Repairing cloud link';
     if (promote) return 'Deploying to production';
-    if (project?.githubLinked) return 'Updating cloud preview';
+    if (project?.githubLinked) return 'Updating Preview pointer';
     return 'Deploying to CourseCode Cloud';
   }
 
@@ -331,28 +331,41 @@
   }
 
   function getPreviewToggleLabel() {
-    return hasExistingCloudDeployment() ? 'Preview Link On' : 'Also Turn On Preview';
+    return hasExistingCloudDeployment() ? 'Update Preview pointer' : 'Create main preview link';
   }
 
   function getPreviewPanelCopy() {
     if (getCloudPreviewState() === 'active') {
       return hasExistingCloudDeployment()
-        ? 'The preview URL is live and serves the current Preview version.'
+        ? 'The main preview URL is live and follows the Preview pointer.'
         : 'The preview URL is live. You can publish this first deploy there too.';
     }
     if (getCloudPreviewState() === 'expired') {
       return hasExistingCloudDeployment()
-        ? 'The preview URL expired. Turn it back on if you want preview to resume tracking new deploys.'
+        ? 'The main preview URL expired. Turn it back on before sharing the Preview pointer.'
         : 'The preview URL expired. Turn it back on before publishing this first deploy there.';
     }
     if (getCloudPreviewState() === 'disabled') {
       return hasExistingCloudDeployment()
-        ? 'The preview URL is off. Turn it on if you want preview to track this deploy.'
+        ? 'The main preview URL is off. Turn it on when you want stakeholders to open the Preview pointer.'
         : 'The preview URL is off. Turn it on to publish a preview URL with this deploy.';
     }
     return hasExistingCloudDeployment()
       ? 'No preview URL exists yet. Turn it on to create one.'
       : 'No preview URL exists yet. Turn it on to create one for this deploy.';
+  }
+
+  function getDeployResultMessage(result) {
+    if (result?.promoted && result?.previewPromoted) return 'Production and Preview updated.';
+    if (result?.promoted) return 'Production updated.';
+    if (result?.previewPromoted) return 'Preview updated.';
+    return 'Deployment staged in CourseCode Cloud.';
+  }
+
+  function getDeployCompleteMessage(result, previewUrl) {
+    const summary = getDeployResultMessage(result);
+    if (previewUrl) return `${summary} You can open the preview or cloud dashboard below.`;
+    return `${summary} You can review it in CourseCode Cloud.`;
   }
 
   function canShowPreviewOpenAction() {
@@ -523,14 +536,6 @@
       }
 
       const result = await window.api.cloud.deploy(projectPath, getDeployOptions(repairBinding, overrides));
-      if (!desiredPreviewEnabled && initialPreviewState === 'active' && hasExistingCloudDeployment()) {
-        setDeployProgress({
-          ...(deployProgress || {}),
-          message: 'Turning off preview link...'
-        });
-        await window.api.cloud.updatePreviewLink(projectPath, { disable: true });
-        await refreshCloudStatus();
-      }
       const previewUrl = desiredPreviewEnabled
         ? (result?.previewUrl || cloudStatus?.previewLink?.url || null)
         : null;
@@ -542,7 +547,7 @@
         type: 'success',
         message: repairBinding
           ? (overrides.preview ? 'Cleared the missing cloud link and updated the preview deployment.' : 'Cleared the missing cloud link and redeployed.')
-          : 'Deployed to CourseCode Cloud!',
+          : getDeployResultMessage(result),
         actions,
         duration: 8000
       });
@@ -550,7 +555,7 @@
         ...(deployProgress || {}),
         active: false,
         stage: 'complete',
-        message: previewUrl ? 'Deployment finished. You can open the preview or cloud dashboard below.' : 'Deployment finished. You can review it in CourseCode Cloud.',
+        message: getDeployCompleteMessage(result, previewUrl),
         targetLabel: deployProgress?.targetLabel || getDeployTargetLabel(repairBinding, overrides),
         dashboardUrl: result?.dashboardUrl || '',
         previewUrl: previewUrl || ''
@@ -864,18 +869,18 @@
           <p class="deploy-toggle-tip">Production deploys are managed by your GitHub repository. Push to deploy.</p>
           <div class="preview-link-panel">
             <div class="preview-link-header">
-              <span class="preview-link-title">Preview Link</span>
+              <span class="preview-link-title">Main Preview Link</span>
               <span class="preview-link-state" class:active={getCloudPreviewState() === 'active'} class:disabled={getCloudPreviewState() === 'disabled'} class:expired={getCloudPreviewState() === 'expired'} class:missing={getCloudPreviewState() === 'missing'}>{getCloudPreviewLabel() || 'Checking…'}</span>
             </div>
             <p class="preview-link-copy">
               {#if getCloudPreviewState() === 'active'}
-                Stakeholders can open the cloud preview now.
+                Stakeholders can open the main preview now.
               {:else if getCloudPreviewState() === 'expired'}
-                The preview link expired. Turn it back on before deploying a new preview pointer.
+                The main preview link expired. Turn it back on before sharing the Preview pointer.
               {:else if getCloudPreviewState() === 'disabled'}
-                The preview link is off. Turn it on to publish a preview URL.
+                The main preview link is off. Turn it on to publish a preview URL.
               {:else}
-                No preview link exists yet. Turn it on to create one.
+                No main preview link exists yet. Turn it on to create one.
               {/if}
             </p>
             <div class="preview-link-actions">
@@ -893,7 +898,7 @@
               {/if}
             </div>
           </div>
-          <p class="deploy-toggle-tip">You can still update the preview link directly from Desktop.</p>
+          <p class="deploy-toggle-tip">You can still update the Preview pointer directly from Desktop.</p>
           <div class="deploy-popover-actions">
             <button class="deploy-popover-cancel" onclick={() => deployPopoverOpen = false}>Dismiss</button>
             <button class="deploy-popover-confirm" disabled={!canUpdatePreviewPointer() || isPreviewLinkBusy()} onclick={() => deploy(false, { preview: true, promote: false })}>Deploy Preview</button>
@@ -930,7 +935,7 @@
           {#if hasExistingCloudDeployment()}
           <div class="preview-link-panel compact">
             <div class="preview-link-header">
-              <span class="preview-link-title">Preview Link</span>
+              <span class="preview-link-title">Main Preview Link</span>
               <span class="preview-link-state" class:active={getCloudPreviewState() === 'active'} class:disabled={getCloudPreviewState() === 'disabled'} class:expired={getCloudPreviewState() === 'expired'} class:missing={getCloudPreviewState() === 'missing'}>{getCloudPreviewLabel() || 'Checking…'}</span>
             </div>
             <p class="preview-link-copy">{getPreviewPanelCopy()}</p>

@@ -63,15 +63,23 @@ function extractCliError(stderr) {
 }
 
 function parseCliJson(stdout) {
-    const trimmed = stdout.trim();
-    if (!trimmed) return null;
+    const lines = stdout.split('\n').map(line => line.trim()).filter(Boolean);
+    if (lines.length === 0) return null;
 
-    try {
-        return JSON.parse(trimmed);
-    } catch (err) {
-        log.debug('Failed to parse CLI JSON output', { error: err?.message, preview: trimmed.slice(0, 200) });
-        return null;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i];
+        if (!line.startsWith('{')) continue;
+        try {
+            const parsed = JSON.parse(line);
+            if (parsed?.type === 'progress') continue;
+            return parsed;
+        } catch (err) {
+            log.debug('Failed to parse CLI JSON line', { error: err?.message, preview: line.slice(0, 200) });
+        }
     }
+
+    log.debug('No result JSON found in CLI output', { preview: stdout.trim().slice(0, 200) });
+    return null;
 }
 
 function createCloudCliError(message, extra = {}) {
@@ -341,10 +349,14 @@ export async function cloudDeploy(projectPath, webContents, options = {}) {
             // Parse JSON result emitted by --json flag
             let dashboardUrl = null;
             let previewUrl = null;
+            let promoted = null;
+            let previewPromoted = null;
             try {
                 if (!parsed) throw new Error('No JSON payload');
                 dashboardUrl = parsed.dashboardUrl || null;
-                previewUrl = parsed.url || null;
+                previewUrl = parsed.previewUrl || parsed.url || null;
+                promoted = typeof parsed.promoted === 'boolean' ? parsed.promoted : null;
+                previewPromoted = typeof parsed.previewPromoted === 'boolean' ? parsed.previewPromoted : null;
             } catch (err) {
                 log.debug('Deploy success payload was not valid JSON; continuing without URLs', {
                     error: err?.message,
@@ -352,7 +364,7 @@ export async function cloudDeploy(projectPath, webContents, options = {}) {
                 });
             }
             send('complete', 'Deployed!');
-            resolve({ success: true, timestamp: new Date().toISOString(), dashboardUrl, previewUrl });
+            resolve({ success: true, timestamp: new Date().toISOString(), dashboardUrl, previewUrl, promoted, previewPromoted });
         });
 
         child.on('error', reject);
