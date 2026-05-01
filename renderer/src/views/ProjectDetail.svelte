@@ -334,25 +334,6 @@
     return hasExistingCloudDeployment() ? 'Preview Link On' : 'Also Turn On Preview';
   }
 
-  function getPreviewToggleCopy() {
-    const currentState = getCloudPreviewState();
-    if (!hasExistingCloudDeployment()) {
-      return deployPreview
-        ? 'Create a preview link and include it when this first deploy finishes.'
-        : 'Deploy without creating a cloud preview link.';
-    }
-
-    if (deployPreview) {
-      return currentState === 'active'
-        ? 'Keep preview on and move it to this Preview version.'
-        : 'Turn preview on and point it to this version.';
-    }
-
-    return currentState === 'active'
-      ? 'Turn preview off after this deploy completes.'
-      : 'Leave preview off.';
-  }
-
   function getPreviewPanelCopy() {
     if (getCloudPreviewState() === 'active') {
       return hasExistingCloudDeployment()
@@ -673,7 +654,7 @@
   function handleDeployKeydown(e) {
     if (e.key === 'Escape') {
       deployPopoverOpen = false;
-    } else if (e.key === 'Enter' && !e.shiftKey) {
+    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       deploy();
     }
@@ -922,14 +903,14 @@
         <div class="deploy-popover deploy-dialog-panel" role="dialog" aria-modal="true" aria-label="Deploy options" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
           <div class="deploy-popover-field">
             <label class="deploy-popover-label" for="deploy-reason">Reason <span class="optional-tag">optional</span></label>
-            <input
+            <textarea
               id="deploy-reason"
-              type="text"
               class="deploy-popover-input"
+              rows="2"
               placeholder="e.g. Fixed quiz on slide 3"
               bind:value={deployReason}
               onkeydown={handleDeployKeydown}
-            />
+            ></textarea>
           </div>
           {#if canShowProductionUpdate()}
             <div class="deploy-toggle-row">
@@ -945,7 +926,6 @@
               <input type="checkbox" bind:checked={deployPreview} />
               <span>{getPreviewToggleLabel()}</span>
             </label>
-            <span class="deploy-toggle-tip">{getPreviewToggleCopy()}</span>
           </div>
           {#if hasExistingCloudDeployment()}
           <div class="preview-link-panel compact">
@@ -1657,13 +1637,16 @@
 
   .deploy-popover-input {
     width: 100%;
+    min-height: calc(2lh + 14px);
     padding: 6px 10px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg-secondary);
     color: var(--text-primary);
     font-size: var(--text-sm);
+    line-height: 1.45;
     outline: none;
+    resize: vertical;
     transition: border-color var(--duration-fast) var(--ease);
   }
 

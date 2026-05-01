@@ -376,25 +376,6 @@
     return hasExistingCloudDeployment(project) ? 'Preview Link On' : 'Also Turn On Preview';
   }
 
-  function getPreviewToggleCopy(project) {
-    const currentState = getCloudPreviewState(project.path);
-    if (!hasExistingCloudDeployment(project)) {
-      return deployPreview
-        ? 'Create a preview link and include it when this first deploy finishes.'
-        : 'Deploy without creating a cloud preview link.';
-    }
-
-    if (deployPreview) {
-      return currentState === 'active'
-        ? 'Keep preview on and move it to this Preview version.'
-        : 'Turn preview on and point it to this version.';
-    }
-
-    return currentState === 'active'
-      ? 'Turn preview off after this deploy completes.'
-      : 'Leave preview off.';
-  }
-
   function getPreviewPanelCopy(project) {
     const previewState = getCloudPreviewState(project.path);
     if (previewState === 'active') {
@@ -694,7 +675,7 @@
       e.stopPropagation();
       deployPopover = null;
       deployAnchorEl = null;
-    } else if (e.key === 'Enter' && !e.shiftKey) {
+    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       // Only confirm if this isn't a GitHub-linked course (those block non-preview deploys)
       if (!project.githubLinked) confirmDeploy(e, project);
@@ -1174,14 +1155,14 @@
       {:else}
         <div class="deploy-popover-field">
           <label class="deploy-popover-label" for="deploy-reason-root">Reason <span class="optional-tag">optional</span></label>
-          <input
+          <textarea
             id="deploy-reason-root"
-            type="text"
             class="deploy-popover-input"
+            rows="2"
             placeholder="e.g. Fixed quiz on slide 3"
             bind:value={deployReason}
             onkeydown={(e) => handleDeployPopoverKeydown(e, project)}
-          />
+          ></textarea>
         </div>
         {#if canShowProductionUpdate(project)}
           <div class="deploy-toggle-row">
@@ -1197,7 +1178,6 @@
             <input type="checkbox" bind:checked={deployPreview} />
             <span>{getPreviewToggleLabel(project)}</span>
           </label>
-          <span class="deploy-toggle-tip">{getPreviewToggleCopy(project)}</span>
         </div>
         {#if hasExistingCloudDeployment(project)}
         <div class="preview-link-panel compact">
@@ -1937,13 +1917,16 @@
 
   .deploy-popover-input {
     width: 100%;
+    min-height: calc(2lh + 14px);
     padding: 6px 10px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg-secondary);
     color: var(--text-primary);
     font-size: var(--text-sm);
+    line-height: 1.45;
     outline: none;
+    resize: vertical;
     transition: border-color var(--duration-fast) var(--ease);
   }
 
