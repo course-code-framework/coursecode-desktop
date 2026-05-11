@@ -270,6 +270,7 @@
       } else if (isTabOpen(path)) {
         onCloseProject?.(path);
       } else {
+        await window.api.preview.start(path, { openBrowser: false });
         onOpenProject?.(path, project.title);
       }
     } catch (err) {

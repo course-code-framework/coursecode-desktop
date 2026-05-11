@@ -122,17 +122,7 @@
       handleDeployProgress(data);
     });
 
-    // Auto-start preview for chat workspace only.
-    if (chatPanelVisible) {
-      try {
-        startingPreview = true;
-        await startPreview({ openBrowser: false });
-      } catch (err) {
-        showToast({ type: 'error', message: `Failed to auto-start preview: ${err.message}` });
-      } finally {
-        startingPreview = false;
-      }
-    }
+    if (rightTab === 'preview' || chatPanelVisible) await ensurePreviewRunning();
 
     // Listen for openfile events from tool pills
     document.addEventListener('openfile', handleOpenFile);
@@ -660,6 +650,25 @@
     previewFrameKey += 1;
   }
 
+  async function ensurePreviewRunning() {
+    if (previewStatus === 'running' || startingPreview) return;
+    startingPreview = true;
+    try {
+      await startPreview({ openBrowser: false });
+    } catch (err) {
+      previewStatus = 'stopped';
+      previewPort = null;
+      showToast({ type: 'error', message: `Failed to start preview: ${getDisplayErrorMessage(err)}` });
+    } finally {
+      startingPreview = false;
+    }
+  }
+
+  async function showPreviewTab() {
+    rightTab = 'preview';
+    await ensurePreviewRunning();
+  }
+
 
 
   const FORMAT_LABELS = { cmi5: 'cmi5', scorm2004: 'SCORM 2004', 'scorm1.2': 'SCORM 1.2', lti: 'LTI' };
@@ -1065,7 +1074,7 @@
 
     <div class="toolbar-group">
       <div class="view-toggle">
-        <button class="toggle-option" class:active={rightTab === 'preview'} onclick={() => rightTab = 'preview'} data-testid="tab-preview">Preview</button>
+        <button class="toggle-option" class:active={rightTab === 'preview'} onclick={showPreviewTab} data-testid="tab-preview">Preview</button>
         <button class="toggle-option" class:active={rightTab === 'editor'} onclick={() => rightTab = 'editor'} data-testid="tab-editor">Editor</button>
       </div>
     </div>
