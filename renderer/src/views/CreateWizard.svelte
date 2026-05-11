@@ -3,6 +3,7 @@
   import Icon from '../components/Icon.svelte';
   import { settings } from '../stores/settings.js';
   import { refreshProjects } from '../stores/projects.js';
+  import { projectLocationPreview, toProjectDirectoryName } from '../lib/project-names.js';
 
   let { onClose, onCreated, onOpenSetup = null } = $props();
 
@@ -31,7 +32,8 @@
     { id: 'focused', label: 'Focused', desc: 'Immersive, distraction-free content.' }
   ];
 
-  const nameValid = $derived(name.trim().length > 0 && !/[<>:"/\\|?*]/.test(name));
+  const previewPath = $derived(projectLocationPreview(location, name));
+  const nameValid = $derived(name.trim().length > 0 && toProjectDirectoryName(name).length > 0);
 
   async function pickLocation() {
     const folder = await window.api.dialog.pickFolder(location);
@@ -111,13 +113,13 @@
             onkeydown={(e) => e.key === 'Enter' && nameValid && (step = 2)}
           />
           {#if name && !nameValid}
-            <p class="error-text">Name cannot contain special characters: {'< > : " / \\ | ? *'}</p>
+            <p class="error-text">Use at least one letter or number.</p>
           {/if}
 
           <div class="location-row mt-lg">
             <span class="field-label">Location</span>
             <div class="location-picker">
-              <span class="location-path">{location}/{name || '...'}</span>
+              <span class="location-path">{previewPath}</span>
               <button class="btn-ghost btn-sm" onclick={pickLocation}>Browse…</button>
             </div>
           </div>
