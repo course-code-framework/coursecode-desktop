@@ -356,6 +356,10 @@
   function buildPreviewLinkOptions(project, enabled) {
     const link = getCloudStatus(project.path)?.previewLink;
     const options = enabled ? { enable: true } : { disable: true };
+    const format = getPreviewLinkFormat(project);
+    if (enabled && format) {
+      options.format = format;
+    }
     if (enabled && (!link?.exists || link?.state === 'expired')) {
       options.expiresInDays = 7;
     }
@@ -369,6 +373,17 @@
       }
     }
     return options;
+  }
+
+  function getPreviewLinkFormat(project) {
+    return ['cmi5', 'scorm2004', 'scorm1.2'].includes(project?.format) ? project.format : null;
+  }
+
+  function previewLinkFormatMismatch(project) {
+    const desiredFormat = getPreviewLinkFormat(project);
+    if (!desiredFormat) return false;
+    const currentFormat = getCloudStatus(project.path)?.previewLink?.format;
+    return !!currentFormat && currentFormat !== desiredFormat;
   }
 
   function getDeployProgress(path) {
@@ -595,10 +610,11 @@
     beginDeployProgress(project, repairBinding, overrides);
     actionInProgress = { ...actionInProgress, [project.path]: 'deploying' };
     const desiredPreviewEnabled = Object.prototype.hasOwnProperty.call(overrides, 'preview') ? !!overrides.preview : deployPreview;
+    const hadCloudDeployment = hasExistingCloudDeployment(project);
     const initialPreviewState = getCloudPreviewState(project.path);
     let enabledPreviewForAttempt = false;
     try {
-      if (desiredPreviewEnabled && hasExistingCloudDeployment(project) && (initialPreviewState !== 'active' || previewLinkNeedsPassword(project.path))) {
+      if (desiredPreviewEnabled && hadCloudDeployment && (initialPreviewState !== 'active' || previewLinkNeedsPassword(project.path) || previewLinkFormatMismatch(project))) {
         setDeployProgress(project.path, {
           ...(getDeployProgress(project.path) || {}),
           message: initialPreviewState === 'active' ? 'Updating preview link...' : 'Turning on preview link...'
@@ -613,6 +629,10 @@
       // Refresh so cloud icon appears immediately after first deploy
       await refreshProjects();
       await refreshCloudStatuses();
+      if (desiredPreviewEnabled && !hadCloudDeployment && getPreviewLinkFormat(project)) {
+        await window.api.cloud.updatePreviewLink(project.path, buildPreviewLinkOptions(project, true));
+        await refreshCloudStatuses();
+      }
       const previewUrl = desiredPreviewEnabled
         ? (result?.previewUrl || getCloudStatus(project.path)?.previewLink?.url || null)
         : null;

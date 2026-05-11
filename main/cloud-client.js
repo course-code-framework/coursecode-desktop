@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawn } from 'child_process';
+import { net } from 'electron';
 import { getChildEnv, isLocalMode, getCLISpawnArgs, getProjectCLISpawnArgs } from './node-env.js';
 import { createLogger } from './logger.js';
 
@@ -92,7 +93,7 @@ function createCloudCliError(message, extra = {}) {
 async function cloudApiFetch(path, options = {}) {
     const token = loadToken();
     if (!token) throw new Error('Not authenticated. Please sign in to CourseCode Cloud.');
-    const res = await fetch(`${CLOUD_BASE_URL}${path}`, {
+    const res = await net.fetch(`${CLOUD_BASE_URL}${path}`, {
         ...options,
         headers: {
             Authorization: `Bearer ${token}`,

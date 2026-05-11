@@ -21,6 +21,7 @@ import { join } from 'path';
 import { wrapIpcHandler } from './errors.js';
 import { createLogger } from './logger.js';
 import { checkForUpdates, getUpdateStatus, installDownloadedUpdate } from './update-manager.js';
+import { injectSystemCerts } from './cloud-certs.js';
 
 const log = createLogger('ipc');
 
@@ -66,7 +67,12 @@ export function registerIpcHandlers() {
 
     // --- Settings ---
     handle('settings:get', () => getAllSettings());
-    handle('settings:set', (_e, key, value) => saveSetting(key, value));
+    handle('settings:set', async (_e, key, value) => {
+        saveSetting(key, value);
+        if (key === 'trustSystemCertificates' && value) {
+            await injectSystemCerts();
+        }
+    });
 
     // --- Setup & Tools ---
     handle('setup:getStatus', () => getSetupStatus());
@@ -146,7 +152,7 @@ export function registerIpcHandlers() {
     });
     handle('ai:removeApiKey', (_e, provider) => removeApiKey(provider));
     handle('ai:setCustomInstructions', (_e, text) => saveSetting('aiCustomInstructions', text));
-    handle('ai:getProviders', () => getProviders());
+    handle('ai:getProviders', (_e, options) => getProviders(options));
     handle('ai:getCloudModels', async () => {
         const token = loadToken();
         if (!token) return [];

@@ -70,7 +70,7 @@ A standalone Electron app that gives instructional designers a native GUI for Co
   - Pushing `main` triggers the release workflow.
   - CI reads `package.json`, builds installers, force-aligns tag `v<version>` to the pushed `main` commit, and creates or updates the matching GitHub Release.
   - Versions containing `alpha`, `beta`, or `rc` are marked as prereleases automatically.
-  - GitHub Release artifact names must match the website download metadata naming convention (`CourseCode-Desktop-v<version>-mac.dmg`, `CourseCode-Desktop-v<version>-win.exe`)
+  - GitHub Release artifact names must match the website download metadata naming convention (`CourseCode-Desktop-v<version>-mac.dmg`, `CourseCode-Desktop-v<version>-mac.zip`, `CourseCode-Desktop-v<version>-win.exe`)
 - Runtime version reporting rules:
   - App UI "About" and update checks must use Electron `app.getVersion()`
   - MCP client metadata must send Electron `app.getVersion()` as the Desktop runtime version
@@ -220,6 +220,8 @@ Resolves paths to Electron's bundled Node binary and a bundled copy of npm. All 
 **Two-tier CLI resolution:**
 - `getCLISpawnArgs(cliArgs)` — Resolves the `coursecode` CLI from the **app's** `node_modules` (the bundled copy). Used for app-scoped operations that don't have a project context: `coursecode create`, `--version`, login/logout/whoami.
 - `getProjectCLISpawnArgs(projectPath, cliArgs)` — Resolves the CLI from the **project's** `node_modules/coursecode/bin/cli.js` first, falling back to the bundled CLI if not found. Used for all project-scoped operations: `preview`, `build`, `deploy`, `status`, `mcp`, `convert`. This ensures that preview, build, and deploy use the framework version the course depends on, not the version bundled with the desktop app — critical for version upgrade correctness.
+
+**Framework version policy:** Desktop bundles a known-good `coursecode` baseline so creation and fallback workflows work offline. New course creation then makes a best-effort attempt to install the latest published `coursecode` package into the new project using the bundled npm. If the registry is unavailable, creation still succeeds with the bundled baseline and the normal per-course upgrade indicator prompts the user when a newer framework is available.
 
 **PATH injection:** When spawning child processes for project operations, the module prepends Electron's Node binary directory to the child's `PATH` environment variable. This ensures that `node`, `npm`, and `npx` resolve to the bundled versions, not the system (which may not exist).
 
@@ -378,7 +380,7 @@ A multi-step modal or full-view wizard for creating a new course project.
 - **Presentation** — "Full-screen slides, like PowerPoint."
 - **Focused** — "Immersive, distraction-free content."
 
-**Creation process**: On "Create", the wizard shows a spinner ("Creating your course..."). Delegates to `coursecode create <name>` via the CLI, which handles template scaffolding and `npm install`. On success, navigates to the Project Detail view.
+**Creation process**: On "Create", the wizard shows a spinner ("Creating your course..."). Delegates to the bundled `coursecode create <name>` CLI, which handles template scaffolding and initial dependency installation. After the CLI succeeds, Desktop identifies the actual created project directory (the CLI may normalize the display name into a directory-safe folder), makes a best-effort `npm install coursecode@latest` inside the new project, stamps `.coursecoderc.json` with the installed framework version when successful, applies the selected format/layout, and navigates to the Project Detail view. If the latest-framework install fails because npm is unavailable or offline, the course still opens with the bundled framework baseline.
 
 If creation fails, the error is shown inline with a "Try Again" button.
 
@@ -499,7 +501,7 @@ Central registry that imports all domain modules and maps IPC channel names to h
 
 Returns an array of `Project` objects sorted by last modified (newest first).
 
-**Creation**: Delegates to `coursecode create <name>` via the CLI. Accepts options: `name`, `blank` (creates without example slides), and `location` (custom parent directory, defaults to configured projects dir). The CLI handles all template scaffolding and dependency installation.
+**Creation**: Delegates to the bundled `coursecode create <name>` CLI. Accepts options: `name`, `blank` (creates without example slides), and `location` (custom parent directory, defaults to configured projects dir). The CLI handles template scaffolding and initial dependency installation. Desktop then discovers the actual created directory, installs `coursecode@latest` into the project when npm is reachable, stamps `.coursecoderc.json` with the actual installed framework version, applies selected format/layout preferences, and falls back to the bundled framework if latest installation is unavailable.
 
 **Validation**: Before creation, validates that the target directory doesn't already exist and that the project name produces a valid directory name.
 
@@ -597,7 +599,7 @@ Ensures CourseCode tools are available with a bundled-first strategy for non-tec
 4. Streams progress/status to the renderer via IPC events.
 5. Stores detected CLI version in settings.
 
-**Update flow**: On app launch, compares the installed CLI version against the stored version in settings. Update flow (checking for newer versions, one-click update) is scaffolded for future implementation.
+**Update flow**: Desktop app updates and course framework updates are separate. The app shell updates through Electron auto-update and GitHub Releases. Course framework updates are per-project: newly created courses get the latest published framework when npm is reachable, existing courses show the Version Modal when their `.coursecoderc.json` `frameworkVersion` is behind npm latest, and the one-click upgrade runs `npm install coursecode@latest` inside that course.
 
 ### `tool-integrations.js` — External Tool Discovery
 
@@ -1664,7 +1666,7 @@ Uses `electron-updater` with GitHub Releases as the update source.
 3. The update downloads in the background.
 4. When the user clicks "Restart", calls `autoUpdater.quitAndInstall()`.
 
-**Configuration**: The update feed URL points to the GitHub Releases API for the `coursecode-desktop` repo. Release assets include platform-specific files (`latest-mac.yml`, `latest.yml`) that `electron-updater` uses for differential updates.
+**Configuration**: The update feed URL points to the GitHub Releases API for the `coursecode-desktop` repo. Release assets include platform-specific files (`latest-mac.yml`, `latest.yml`) that `electron-updater` uses for differential updates. macOS releases must include both `.dmg` and `.zip`; Squirrel.Mac uses the zip package for auto-update even though users download the dmg installer.
 
 ---
 
@@ -1675,7 +1677,7 @@ Uses `electron-updater` with GitHub Releases as the update source.
 `electron-builder.yml` defines the packaging targets:
 
 **macOS**:
-- Target: `.dmg` with drag-to-Applications layout.
+- Targets: `.dmg` with drag-to-Applications layout and `.zip` for auto-update.
 - Architecture: Universal binary (Intel + Apple Silicon).
 - Category: `public.app-category.developer-tools`.
 - Hardened runtime enabled.
@@ -1706,7 +1708,7 @@ A `.github/workflows/release.yml` workflow automates builds:
 - Force-aligns the matching `v<version>` tag to the pushed `main` commit.
 - Matrix build: macOS (universal) and Windows (x64).
 - Runs `electron-vite build` + `electron-builder`.
-- Produces versioned installer filenames (`CourseCode-Desktop-v<version>-mac.dmg`, `CourseCode-Desktop-v<version>-win.exe`) plus update metadata files (`latest*.yml`).
+- Produces versioned installer/update filenames (`CourseCode-Desktop-v<version>-mac.dmg`, `CourseCode-Desktop-v<version>-mac.zip`, `CourseCode-Desktop-v<version>-win.exe`) plus update metadata files (`latest*.yml`).
 - Creates or updates a GitHub Release with the built artifacts (marked prerelease automatically for `alpha` / `beta` / `rc` versions).
 - Maintainer verifies artifacts/checksums and confirms desktop-site release data loads from the GitHub Releases API.
 

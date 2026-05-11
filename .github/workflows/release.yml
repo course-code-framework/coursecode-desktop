@@ -90,7 +90,7 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd artifacts
-          sha256sum *.dmg *.exe 2>/dev/null > SHA256SUMS.txt || true
+          sha256sum *.dmg *.zip *.exe 2>/dev/null > SHA256SUMS.txt || true
           cat SHA256SUMS.txt
 
       - name: Align release tag to main

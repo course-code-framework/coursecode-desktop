@@ -2,9 +2,11 @@ import { execSync } from 'child_process';
 import { app } from 'electron';
 import { join, dirname } from 'path';
 import { existsSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { createLogger } from './logger.js';
 
 const log = createLogger('node-env');
+const moduleDir = dirname(fileURLToPath(import.meta.url));
 
 /** Whether the app is running as a packaged build (not dev mode). */
 const isPackaged = app.isPackaged;
@@ -15,15 +17,31 @@ function getAppNodeModulesPath() {
     }
 
     // The app runs from out/main, while unit tests import main/ directly.
-    const bundledPath = join(__dirname, '..', '..', 'node_modules');
-    if (existsSync(bundledPath)) return bundledPath;
+    return getAppNodeModulesCandidates().find((candidate) => existsSync(candidate)) || join(process.cwd(), 'node_modules');
+}
 
-    return join(__dirname, '..', 'node_modules');
+function getAppNodeModulesCandidates() {
+    return [
+        join(moduleDir, '..', '..', 'node_modules'),
+        join(moduleDir, '..', 'node_modules'),
+        join(process.cwd(), 'node_modules')
+    ];
+}
+
+function findAppNodeModulePath(...segments) {
+    const candidates = isPackaged
+        ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')]
+        : getAppNodeModulesCandidates();
+
+    for (const candidate of candidates) {
+        const target = join(candidate, ...segments);
+        if (existsSync(target)) return target;
+    }
+    return null;
 }
 
 function getAppNpmCliPath(binName) {
-    const npmCli = join(getAppNodeModulesPath(), 'npm', 'bin', binName);
-    return existsSync(npmCli) ? npmCli : null;
+    return findAppNodeModulePath('npm', 'bin', binName);
 }
 
 /** Whether the app should target local Supabase (set via COURSECODE_LOCAL=1). */
@@ -169,9 +187,9 @@ export function killProcessTree(child, signal = 'SIGTERM') {
 export function getCLISpawnArgs(cliArgs = []) {
     // Resolve CLI from node_modules directly (avoids Windows .cmd shim ENOENT).
     // Dev + packaged: __dirname is out/main/, so ../../node_modules.
-    const cliBin = join(getAppNodeModulesPath(), 'coursecode', 'bin', 'cli.js');
+    const cliBin = findAppNodeModulePath('coursecode', 'bin', 'cli.js');
 
-    if (existsSync(cliBin)) {
+    if (cliBin) {
         const nodeCmd = isPackaged ? getNodePath() : 'node';
         return { command: nodeCmd, args: [cliBin, ...cliArgs] };
     }

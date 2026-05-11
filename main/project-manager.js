@@ -102,11 +102,7 @@ export async function scanProjects() {
  */
 export async function createProject({ name, format, layout, blank, location }) {
     const projectsDir = location || getSetting('projectsDir');
-    const targetDir = join(projectsDir, name);
-
-    if (existsSync(targetDir)) {
-        throw new Error(`Project directory already exists: ${targetDir}`);
-    }
+    const beforeEntries = new Set(await listProjectDirectoryNames(projectsDir));
 
     await ensureCLIReady();
 
@@ -135,8 +131,11 @@ export async function createProject({ name, format, layout, blank, location }) {
                 return;
             }
 
+            const targetDir = await findCreatedProjectDir(projectsDir, beforeEntries);
+
             // Initialize snapshot tracking for the new project
             try {
+                await installLatestFrameworkForNewProject(targetDir);
                 await applyProjectPreferences(targetDir, { format, layout });
                 await initRepo(targetDir);
                 await createSnapshot(targetDir, 'Project created');
@@ -153,6 +152,118 @@ export async function createProject({ name, format, layout, blank, location }) {
 
         child.on('error', reject);
     });
+}
+
+async function listProjectDirectoryNames(projectsDir) {
+    if (!existsSync(projectsDir)) return [];
+    const entries = await readdir(projectsDir, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+}
+
+async function findCreatedProjectDir(projectsDir, beforeEntries) {
+    const afterEntries = await listProjectDirectoryNames(projectsDir);
+    const createdEntries = afterEntries.filter((entryName) => !beforeEntries.has(entryName));
+
+    if (createdEntries.length === 1) {
+        return join(projectsDir, createdEntries[0]);
+    }
+
+    const projectDirs = [];
+    for (const entryName of createdEntries) {
+        const projectPath = join(projectsDir, entryName);
+        const configPath = findCourseConfigPath(projectPath);
+        const rcPath = join(projectPath, '.coursecoderc.json');
+        if (existsSync(configPath) || existsSync(rcPath)) projectDirs.push(projectPath);
+    }
+
+    if (projectDirs.length === 1) return projectDirs[0];
+
+    throw new Error('Course was created, but Desktop could not identify the new project directory.');
+}
+
+async function installLatestFrameworkForNewProject(projectDir) {
+    try {
+        const result = await installFrameworkPackage(projectDir, 'coursecode@latest');
+        if (!result.version) return;
+
+        await stampFrameworkVersion(projectDir, result.version);
+        log.info('Installed latest CourseCode framework for new project', {
+            projectDir,
+            version: result.version
+        });
+    } catch (err) {
+        log.warn('Could not install latest CourseCode framework for new project; using bundled framework fallback', {
+            projectDir,
+            error: err?.message
+        });
+    }
+}
+
+function installFrameworkPackage(projectDir, packageSpec, onProgress = null) {
+    const { command, args } = npmSpawnArgs(['install', packageSpec]);
+    const env = getChildEnv();
+
+    return new Promise((resolve, reject) => {
+        onProgress?.('installing', `Installing ${packageSpec}…`);
+
+        const child = spawn(command, args, {
+            cwd: projectDir,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+
+        let stderrBuffer = '';
+
+        child.stdout.on('data', (data) => {
+            onProgress?.('installing', data.toString());
+        });
+
+        child.stderr.on('data', (data) => {
+            stderrBuffer += data.toString();
+            onProgress?.('installing', data.toString());
+        });
+
+        child.on('exit', async (code) => {
+            if (code !== 0) {
+                const detail = stderrBuffer
+                    .split(/\r?\n/)
+                    .map(line => line.trim())
+                    .filter(Boolean)
+                    .slice(-6)
+                    .join('\n');
+                reject(new Error(`npm install failed (exit code ${code}).${detail ? `\n${detail}` : ''}`));
+                return;
+            }
+
+            resolve({ version: await readInstalledFrameworkVersion(projectDir) });
+        });
+
+        child.on('error', reject);
+    });
+}
+
+async function readInstalledFrameworkVersion(projectDir) {
+    try {
+        const pkgPath = join(projectDir, 'node_modules', 'coursecode', 'package.json');
+        if (!existsSync(pkgPath)) return null;
+        const pkg = JSON.parse(await readFile(pkgPath, 'utf-8'));
+        return pkg.version || null;
+    } catch (err) {
+        log.debug('Could not read installed framework version', { projectDir, error: err?.message });
+        return null;
+    }
+}
+
+async function stampFrameworkVersion(projectDir, version) {
+    if (!version) return;
+
+    const rcPath = join(projectDir, '.coursecoderc.json');
+    let rc = {};
+    if (existsSync(rcPath)) {
+        rc = JSON.parse(await readFile(rcPath, 'utf-8'));
+    }
+    rc.frameworkVersion = version;
+    await writeFile(rcPath, JSON.stringify(rc, null, 2) + '\n', 'utf-8');
 }
 
 async function applyProjectPreferences(projectDir, { format, layout }) {
@@ -343,9 +454,6 @@ export async function clearCloudBinding(projectPath) {
  * Streams progress events to the renderer via webContents.
  */
 export async function upgradeProject(projectPath, webContents) {
-    const { command, args } = npmSpawnArgs(['install', 'coursecode@latest']);
-    const env = getChildEnv();
-
     return new Promise((resolve, reject) => {
         const sendProgress = (phase, text) => {
             if (webContents && !webContents.isDestroyed()) {
@@ -355,58 +463,10 @@ export async function upgradeProject(projectPath, webContents) {
 
         sendProgress('installing', 'Upgrading CourseCode framework…');
 
-        const child = spawn(command, args, {
-            cwd: projectPath,
-            env,
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-
-        let stderrBuffer = '';
-
-        child.stdout.on('data', (data) => {
-            sendProgress('installing', data.toString());
-        });
-
-        child.stderr.on('data', (data) => {
-            stderrBuffer += data.toString();
-            sendProgress('installing', data.toString());
-        });
-
-        child.on('exit', async (code) => {
-            if (code !== 0) {
-                const detail = stderrBuffer
-                    .split(/\r?\n/)
-                    .map(line => line.trim())
-                    .filter(Boolean)
-                    .slice(-6)
-                    .join('\n');
-                sendProgress('error', `Upgrade failed (exit code ${code})`);
-                reject(new Error(`Framework upgrade failed (exit code ${code}).${detail ? `\n${detail}` : ''}`));
-                return;
-            }
-
-            // Read the newly installed version from the package
-            let newVersion = null;
-            try {
-                const pkgPath = join(projectPath, 'node_modules', 'coursecode', 'package.json');
-                if (existsSync(pkgPath)) {
-                    const pkg = JSON.parse(await readFile(pkgPath, 'utf-8'));
-                    newVersion = pkg.version;
-                }
-            } catch (err) {
-                log.debug('Could not read new framework version after upgrade', err);
-            }
-
-            // Stamp the new version into .coursecoderc.json
+        installFrameworkPackage(projectPath, 'coursecode@latest', sendProgress).then(async ({ version: newVersion }) => {
             if (newVersion) {
                 try {
-                    const rcPath = join(projectPath, '.coursecoderc.json');
-                    let rc = {};
-                    if (existsSync(rcPath)) {
-                        rc = JSON.parse(await readFile(rcPath, 'utf-8'));
-                    }
-                    rc.frameworkVersion = newVersion;
-                    await writeFile(rcPath, JSON.stringify(rc, null, 2) + '\n', 'utf-8');
+                    await stampFrameworkVersion(projectPath, newVersion);
                 } catch (err) {
                     log.warn('Failed to update frameworkVersion in .coursecoderc.json', err);
                 }
@@ -415,11 +475,9 @@ export async function upgradeProject(projectPath, webContents) {
             sendProgress('complete', `Upgraded to CourseCode ${newVersion || 'latest'}`);
             log.info('Project framework upgraded', { projectPath, newVersion });
             resolve({ success: true, version: newVersion });
-        });
-
-        child.on('error', (err) => {
-            sendProgress('error', `Upgrade failed: ${err.message}`);
-            reject(err);
+        }).catch((err) => {
+            sendProgress('error', err.message || 'Upgrade failed');
+            reject(new Error(`Framework upgrade failed.${err?.message ? `\n${err.message}` : ''}`));
         });
     });
 }

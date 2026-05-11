@@ -43,5 +43,28 @@ test.describe('Navigation & Tabs', () => {
         await app.close();
     });
 
+    test('macOS titlebar tab strip keeps empty space draggable', async () => {
+        test.skip(process.platform !== 'darwin', 'macOS titlebar drag region only');
+
+        const { app, window } = await launchApp();
+
+        await expect(window.locator('.titlebar-drag')).toBeVisible();
+        await expect(window.locator('.titlebar-drag .tab-bar')).toBeVisible();
+
+        const regions = await window.evaluate(() => ({
+            titlebarTabs: getComputedStyle(document.querySelector('.titlebar-tabs')).webkitAppRegion,
+            tabBar: getComputedStyle(document.querySelector('.titlebar-drag .tab-bar')).webkitAppRegion,
+            tab: getComputedStyle(document.querySelector('.titlebar-drag .tab')).webkitAppRegion,
+            action: getComputedStyle(document.querySelector('.titlebar-drag .tab-action-btn')).webkitAppRegion
+        }));
+
+        expect(regions.titlebarTabs).not.toBe('no-drag');
+        expect(regions.tabBar).toBe('drag');
+        expect(regions.tab).toBe('no-drag');
+        expect(regions.action).toBe('no-drag');
+
+        await app.close();
+    });
+
 
 });

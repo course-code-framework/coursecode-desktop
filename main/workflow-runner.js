@@ -200,7 +200,7 @@ async function runBuildCourse(projectPath, config, emit, signal) {
 async function runLLMConversation({ systemPrompt, userMessage, signal, onStream }) {
     const settings = getAllSettings();
     const providerName = settings.aiProvider || DEFAULT_PROVIDER;
-    const providerCatalog = await getProviders();
+    const providerCatalog = await getProviders({ includeModels: true });
     const providerModels = providerCatalog.find(p => p.id === providerName)?.models || [];
     const configuredModel = settings.aiModel;
     const modelId = providerModels.some(m => m.id === configuredModel)

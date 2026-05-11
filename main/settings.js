@@ -30,7 +30,8 @@ const DEFAULTS = {
     aiModeInitialized: false,
     toolApprovalMode: 'auto',  // 'auto' | 'mutations' | 'all' — controls whether tools need user approval
     cloudAiModel: null,
-    cloudModelCache: []
+    cloudModelCache: [],
+    trustSystemCertificates: false
 };
 
 let settings = { ...DEFAULTS };

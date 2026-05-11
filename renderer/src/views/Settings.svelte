@@ -5,8 +5,10 @@
   import { credits, loadCredits } from '../stores/chat.js';
   import { showToast } from '../stores/toast.js';
   import ToolCard from '../components/ToolCard.svelte';
+  import ConfirmDialog from '../components/ConfirmDialog.svelte';
 
   let signingIn = $state(false);
+  const isMac = navigator.platform.includes('Mac');
   let deviceStage = $state(null); // null | 'requesting' | 'device' | 'approved' | 'complete' | 'error'
   let deviceUserCode = $state(null);
   let deviceVerificationUri = $state(null);
@@ -31,6 +33,8 @@
   let cloudModelLoadError = $state('');
   let attemptedCloudRefresh = $state(false);
   let unsubUpdateStatus = null;
+  let keychainNotice = $state(null);
+  let keychainNoticeResolve = null;
 
   let aiMode = $derived(($settings.defaultAiMode || 'byok'));
   let selectedByokProvider = $derived(aiProviders.find(p => p.id === ($settings.aiProvider || 'anthropic')));
@@ -69,7 +73,7 @@
     }
     if (effectiveCloudModels.length > 0 || refreshingModels || attemptedCloudRefresh) return;
     attemptedCloudRefresh = true;
-    refreshAvailableModels();
+    refreshAvailableModels(false);
   });
 
   $effect(() => {
@@ -83,7 +87,7 @@
     setupStatus = await window.api.setup.getStatus();
     appVersion = await window.api.app.getVersion();
     updateStatus = await window.api.app.getUpdateStatus();
-    await refreshAvailableModels();
+    await refreshAvailableModels(false);
 
     unsubUpdateStatus = window.api.app.onUpdateStatus((status) => {
       updateStatus = status;
@@ -169,11 +173,60 @@
     keySuccess = '';
   }
 
-  async function refreshAvailableModels() {
+  function showKeychainNotice(kind) {
+    if (!isMac) return Promise.resolve(true);
+
+    const notices = {
+      apiKey: {
+        title: 'macOS Keychain Access',
+        message: 'macOS may ask CourseCode to use Keychain.',
+        detail: 'CourseCode uses Keychain-backed encryption to store your API key locally. Your key is not shown again after it is saved.',
+        confirmLabel: 'Continue'
+      },
+      apiKeyModels: {
+        title: 'macOS Keychain Access',
+        message: 'macOS may ask CourseCode to use Keychain.',
+        detail: 'CourseCode needs to decrypt your saved API key locally to refresh provider models or use your selected AI provider.',
+        confirmLabel: 'Continue'
+      },
+      certificates: {
+        title: 'macOS Keychain Access',
+        message: 'macOS may ask CourseCode to read certificates.',
+        detail: 'This exports trusted system certificates for corporate or MDM-managed networks so command-line cloud operations can connect successfully.',
+        confirmLabel: 'Enable Access'
+      }
+    };
+
+    return new Promise((resolve) => {
+      keychainNoticeResolve = resolve;
+      keychainNotice = notices[kind];
+    });
+  }
+
+  function closeKeychainNotice(confirmed) {
+    keychainNotice = null;
+    keychainNoticeResolve?.(confirmed);
+    keychainNoticeResolve = null;
+  }
+
+  async function setSystemCertificateAccess(enabled) {
+    if (enabled) {
+      const confirmed = await showKeychainNotice('certificates');
+      if (!confirmed) return;
+    }
+    await updateSetting('trustSystemCertificates', enabled);
+  }
+
+  async function refreshAvailableModels(includeByokModels = true, { explainKeychain = true } = {}) {
+    if (includeByokModels && explainKeychain && aiConfig?.hasKey) {
+      const confirmed = await showKeychainNotice('apiKeyModels');
+      if (!confirmed) return;
+    }
+
     refreshingModels = true;
     cloudModelLoadError = '';
     try {
-      aiProviders = await window.api.ai.getProviders();
+      aiProviders = await window.api.ai.getProviders({ includeModels: includeByokModels });
       aiConfig = await window.api.ai.getConfig();
       if ($cloudReady) {
         try {
@@ -231,6 +284,9 @@
 
   async function saveApiKey() {
     if (!apiKeyInput.trim()) return;
+    const confirmed = await showKeychainNotice('apiKey');
+    if (!confirmed) return;
+
     savingKey = true;
     keyError = '';
     keySuccess = '';
@@ -239,7 +295,7 @@
       if (result.valid) {
         keySuccess = 'API key saved and verified!';
         apiKeyInput = '';
-        await refreshAvailableModels();
+        await refreshAvailableModels(true, { explainKeychain: false });
       } else {
         keyError = result.error || 'Invalid API key';
       }
@@ -251,7 +307,7 @@
 
   async function removeKey() {
     await window.api.ai.removeApiKey($settings.aiProvider);
-    await refreshAvailableModels();
+    await refreshAvailableModels(false);
     keySuccess = '';
   }
 
@@ -390,6 +446,25 @@
           </label>
         </div>
       </div>
+
+      {#if isMac}
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">System Certificate Access</span>
+            <span class="setting-desc">Allow macOS certificate export for corporate network compatibility.</span>
+          </div>
+          <div class="setting-control">
+            <label class="toggle-check">
+              <input
+                type="checkbox"
+                checked={$settings.trustSystemCertificates === true}
+                onchange={(e) => setSystemCertificateAccess(e.target.checked)}
+              />
+              <span>{$settings.trustSystemCertificates === true ? 'Enabled' : 'Disabled'}</span>
+            </label>
+          </div>
+        </div>
+      {/if}
     </section>
 
     <!-- Appearance -->
@@ -612,7 +687,7 @@
                 {/each}
               </select>
             {/if}
-            <button class="btn-secondary btn-sm" onclick={refreshAvailableModels} disabled={refreshingModels}>
+            <button class="btn-secondary btn-sm" onclick={() => refreshAvailableModels(aiMode !== 'cloud')} disabled={refreshingModels}>
               {refreshingModels ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>
@@ -730,6 +805,18 @@
     </section>
   </div>
 </div>
+
+{#if keychainNotice}
+  <ConfirmDialog
+    title={keychainNotice.title}
+    message={keychainNotice.message}
+    detail={keychainNotice.detail}
+    confirmLabel={keychainNotice.confirmLabel}
+    cancelLabel="Cancel"
+    onconfirm={() => closeKeychainNotice(true)}
+    oncancel={() => closeKeychainNotice(false)}
+  />
+{/if}
 
 <style>
   .settings-view {

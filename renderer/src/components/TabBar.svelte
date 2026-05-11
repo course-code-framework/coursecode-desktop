@@ -144,6 +144,7 @@
   /* When inside the titlebar, drop the border — the titlebar owns the region */
   :global(.titlebar-drag) .tab-bar {
     border-bottom: none;
+    -webkit-app-region: drag;
   }
 
   .tab-list::-webkit-scrollbar {
@@ -167,6 +168,7 @@
     transition: all var(--duration-fast) var(--ease);
     border-radius: var(--radius-md) var(--radius-md) 0 0;
     margin-top: 2px;
+    -webkit-app-region: no-drag;
   }
 
   .tab:hover {
@@ -210,6 +212,7 @@
     flex-shrink: 0;
     opacity: 0.5;
     transition: all var(--duration-fast) var(--ease);
+    -webkit-app-region: no-drag;
   }
 
   .tab:hover .tab-close {
@@ -243,6 +246,7 @@
     color: var(--text-secondary);
     cursor: pointer;
     transition: all var(--duration-fast) var(--ease);
+    -webkit-app-region: no-drag;
   }
 
   .tab-action-btn:hover {

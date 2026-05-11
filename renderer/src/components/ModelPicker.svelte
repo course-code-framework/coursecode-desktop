@@ -3,29 +3,54 @@
   import { settings, updateSetting } from '../stores/settings.js';
   import { aiMode, loadCredits } from '../stores/chat.js';
   import { user, cloudReady } from '../stores/auth.js';
+  import ConfirmDialog from './ConfirmDialog.svelte';
 
   let { onClose } = $props();
 
+  const isMac = navigator.platform.includes('Mac');
   let providers = $state([]);
   let cloudModels = $state([]);
   let cloudLoading = $state(false);
   let open = $state(false);
+  let refreshedWhileOpen = $state(false);
+  let keychainNotice = $state(false);
+  let keychainNoticeResolve = null;
 
   let configuredProviders = $derived(providers.filter(p => p.hasKey));
   let hasAnyKey = $derived(configuredProviders.length > 0);
 
   onMount(async () => {
-    await refreshAvailableModels();
+    providers = await window.api.ai.getProviders();
   });
 
   $effect(() => {
-    if (open) {
-      refreshAvailableModels();
+    if (open && !refreshedWhileOpen) {
+      refreshedWhileOpen = true;
+      refreshAvailableModels($aiMode !== 'cloud');
+    } else if (!open) {
+      refreshedWhileOpen = false;
     }
   });
 
-  async function refreshAvailableModels() {
-    providers = await window.api.ai.getProviders();
+  function showKeychainNotice(includeByokModels) {
+    if (!isMac || !includeByokModels || !hasAnyKey) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      keychainNoticeResolve = resolve;
+      keychainNotice = true;
+    });
+  }
+
+  function closeKeychainNotice(confirmed) {
+    keychainNotice = false;
+    keychainNoticeResolve?.(confirmed);
+    keychainNoticeResolve = null;
+  }
+
+  async function refreshAvailableModels(includeByokModels = true) {
+    const confirmed = await showKeychainNotice(includeByokModels);
+    if (!confirmed) return;
+
+    providers = await window.api.ai.getProviders({ includeModels: includeByokModels });
     if ($cloudReady) {
       await fetchCloudModels();
     }
@@ -51,7 +76,7 @@
     const provider = providers.find(p => p.id === $settings.aiProvider);
     const model = provider?.models?.find(m => m.id === $settings.aiModel);
     const fallback = provider?.models?.find(m => m.default) || provider?.models?.[0];
-    return model?.label || fallback?.label || 'Select model';
+    return model?.label || fallback?.label || $settings.aiModel || 'Select model';
   }
 
   function selectByokModel(providerId, modelId) {
@@ -206,6 +231,18 @@
     </div>
   {/if}
 </div>
+
+{#if keychainNotice}
+  <ConfirmDialog
+    title="macOS Keychain Access"
+    message="macOS may ask CourseCode to use Keychain."
+    detail="CourseCode needs to decrypt your saved API key locally to refresh provider models or use your selected AI provider."
+    confirmLabel="Continue"
+    cancelLabel="Cancel"
+    onconfirm={() => closeKeychainNotice(true)}
+    oncancel={() => closeKeychainNotice(false)}
+  />
+{/if}
 
 <style>
   .model-picker {

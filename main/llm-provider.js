@@ -111,7 +111,8 @@ export function removeApiKey(provider) {
 }
 
 export function hasApiKey(provider) {
-    return !!loadApiKey(provider);
+    const keyPath = join(getKeysDir(), `${provider}.key`);
+    return existsSync(keyPath);
 }
 
 // --- Provider Info ---
@@ -220,13 +221,13 @@ async function fetchGoogleModels(apiKey) {
     return markDefaultModel(discovered, ['gemini-2.5-pro', 'gemini-2.5-flash']);
 }
 
-export async function getProviders() {
+export async function getProviders({ includeModels = false } = {}) {
     const entries = await Promise.all(Object.entries(providers).map(async ([id, p]) => {
         const hasKey = hasApiKey(id);
         let models = [];
         let modelFetchFailed = false;
         let modelFetchError = null;
-        const key = loadApiKey(id);
+        const key = includeModels ? loadApiKey(id) : null;
 
         if (key) {
             try {

@@ -10,6 +10,7 @@ vi.mock('electron', () => import('../mocks/electron.js'));
 vi.mock('../../main/node-env.js', () => ({
     getChildEnv: vi.fn(() => ({ ...process.env })),
     getCLISpawnArgs: vi.fn((args) => ({ command: 'echo', args })),
+    npmSpawnArgs: vi.fn((args) => ({ command: 'echo', args })),
     isLocalMode: vi.fn(() => false),
 }));
 
@@ -31,14 +32,17 @@ vi.mock('../../main/settings.js', async () => {
     };
 });
 
-const { scanProjects, openProject, clearCloudBinding } = await import('../../main/project-manager.js');
+const { scanProjects, openProject, createProject, clearCloudBinding } = await import('../../main/project-manager.js');
 const settingsMod = await import('../../main/settings.js');
+const nodeEnvMod = await import('../../main/node-env.js');
 
 let tempDir;
 
 beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'cc-projects-test-'));
     settingsMod._setProjectsDir(tempDir);
+    nodeEnvMod.getCLISpawnArgs.mockImplementation((args) => ({ command: 'echo', args }));
+    nodeEnvMod.npmSpawnArgs.mockImplementation((args) => ({ command: 'echo', args }));
 });
 
 afterEach(() => {
@@ -156,6 +160,87 @@ describe('scanProjects', () => {
         settingsMod._setProjectsDir('/tmp/cc-nonexistent-dir-xyz');
         const results = await scanProjects();
         expect(results).toEqual([]);
+    });
+});
+
+describe('createProject', () => {
+    it('opens the directory created by the CLI when it normalizes the display name', async () => {
+        const fakeCliPath = join(tempDir, 'fake-coursecode-create.mjs');
+        writeFileSync(fakeCliPath, `
+            import { mkdirSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+
+            const projectDir = join(process.cwd(), 'coursecode_demo');
+            mkdirSync(join(projectDir, 'course'), { recursive: true });
+            writeFileSync(join(projectDir, '.coursecoderc.json'), JSON.stringify({ frameworkVersion: '0.1.48' }));
+            writeFileSync(join(projectDir, 'course', 'course-config.js'), "export const courseConfig = {\\n  metadata: { title: 'CourseCode Demo' },\\n  layout: 'article',\\n};\\n");
+        `);
+        const fakeNpmPath = join(tempDir, 'fake-npm-install.mjs');
+        writeFileSync(fakeNpmPath, `
+            import { mkdirSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+
+            const packageDir = join(process.cwd(), 'node_modules', 'coursecode');
+            mkdirSync(packageDir, { recursive: true });
+            writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ version: '0.1.49' }));
+        `);
+        nodeEnvMod.getCLISpawnArgs.mockImplementation((args) => {
+            if (args[0] === '--version') return { command: 'echo', args: ['0.1.48'] };
+            return { command: process.execPath, args: [fakeCliPath] };
+        });
+        nodeEnvMod.npmSpawnArgs.mockImplementation(() => ({ command: process.execPath, args: [fakeNpmPath] }));
+
+        const project = await createProject({
+            name: 'CourseCode Demo',
+            format: 'cmi5',
+            layout: 'focused',
+            blank: false,
+            location: tempDir
+        });
+
+        expect(project.name).toBe('coursecode_demo');
+        expect(project.path).toBe(join(tempDir, 'coursecode_demo'));
+        expect(project.title).toBe('CourseCode Demo');
+
+        const config = readFileSync(join(tempDir, 'coursecode_demo', 'course', 'course-config.js'), 'utf-8');
+        expect(config).toContain("layout: 'focused'");
+        expect(config).toContain("format: 'cmi5'");
+
+        const rc = JSON.parse(readFileSync(join(tempDir, 'coursecode_demo', '.coursecoderc.json'), 'utf-8'));
+        expect(rc.frameworkVersion).toBe('0.1.49');
+    });
+
+    it('still opens a created course when latest framework install is unavailable', async () => {
+        const fakeCliPath = join(tempDir, 'fake-coursecode-create-offline.mjs');
+        writeFileSync(fakeCliPath, `
+            import { mkdirSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+
+            const projectDir = join(process.cwd(), 'offline_course');
+            mkdirSync(join(projectDir, 'course'), { recursive: true });
+            writeFileSync(join(projectDir, '.coursecoderc.json'), JSON.stringify({ frameworkVersion: '0.1.48' }));
+            writeFileSync(join(projectDir, 'course', 'course-config.js'), "export const courseConfig = {\\n  metadata: { title: 'Offline Course' },\\n  layout: 'article',\\n};\\n");
+        `);
+        const fakeNpmPath = join(tempDir, 'fake-npm-install-fail.mjs');
+        writeFileSync(fakeNpmPath, `process.stderr.write('network unavailable\\n'); process.exit(1);`);
+        nodeEnvMod.getCLISpawnArgs.mockImplementation((args) => {
+            if (args[0] === '--version') return { command: 'echo', args: ['0.1.48'] };
+            return { command: process.execPath, args: [fakeCliPath] };
+        });
+        nodeEnvMod.npmSpawnArgs.mockImplementation(() => ({ command: process.execPath, args: [fakeNpmPath] }));
+
+        const project = await createProject({
+            name: 'Offline Course',
+            format: 'cmi5',
+            layout: 'focused',
+            blank: false,
+            location: tempDir
+        });
+
+        expect(project.name).toBe('offline_course');
+        expect(project.title).toBe('Offline Course');
+        expect(project.frameworkVersion).toBe('0.1.48');
+        expect(existsSync(join(tempDir, 'offline_course', 'node_modules', 'coursecode'))).toBe(false);
     });
 });
 

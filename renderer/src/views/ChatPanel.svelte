@@ -5,6 +5,7 @@
   import MentionDropdown from '../components/MentionDropdown.svelte';
   import AttachmentPicker from '../components/AttachmentPicker.svelte';
   import ModelPicker from '../components/ModelPicker.svelte';
+  import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import Icon from '../components/Icon.svelte';
   import { showToast } from '../stores/toast.js';
   import {
@@ -64,6 +65,8 @@
 
   // Streaming tool activity disclosure state
   let streamToolsExpanded = $state(false);
+  let keychainNotice = $state(false);
+  let keychainNoticeResolve = null;
 
   /**
    * Insert a context mention from the preview context menu into the chat input.
@@ -416,6 +419,11 @@
     const text = inputText.trim();
     if (!text || $streaming) return;
 
+    if ($aiMode !== 'cloud') {
+      const confirmed = await showKeychainNotice();
+      if (!confirmed) return;
+    }
+
     // Push to input history (dedupe consecutive identical messages, cap at 50)
     if (inputHistory.length === 0 || inputHistory[inputHistory.length - 1] !== text) {
       inputHistory = [...inputHistory.slice(-(50 - 1)), text];
@@ -440,6 +448,20 @@
     streamToolsExpanded = false;
 
     await sendMessage(projectPath, text, deduped);
+  }
+
+  function showKeychainNotice() {
+    if (!isMac) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      keychainNoticeResolve = resolve;
+      keychainNotice = true;
+    });
+  }
+
+  function closeKeychainNotice(confirmed) {
+    keychainNotice = false;
+    keychainNoticeResolve?.(confirmed);
+    keychainNoticeResolve = null;
   }
 
   async function handleStop() {
@@ -1479,6 +1501,18 @@
     </div>
   </div>
 </div>
+
+{#if keychainNotice}
+  <ConfirmDialog
+    title="macOS Keychain Access"
+    message="macOS may ask CourseCode to use Keychain."
+    detail="CourseCode needs to decrypt your saved API key locally before sending this message with your selected AI provider."
+    confirmLabel="Send"
+    cancelLabel="Cancel"
+    onconfirm={() => closeKeychainNotice(true)}
+    oncancel={() => closeKeychainNotice(false)}
+  />
+{/if}
 
 <style>
   .chat-panel {

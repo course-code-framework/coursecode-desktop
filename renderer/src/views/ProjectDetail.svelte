@@ -592,8 +592,22 @@
     return enabled && previewLinkNeedsPassword();
   }
 
+  function getPreviewLinkFormat() {
+    return ['cmi5', 'scorm2004', 'scorm1.2'].includes(project?.format) ? project.format : null;
+  }
+
+  function previewLinkFormatMismatch(link = cloudStatus?.previewLink) {
+    const desiredFormat = getPreviewLinkFormat();
+    if (!desiredFormat) return false;
+    return !!link?.format && link.format !== desiredFormat;
+  }
+
   function buildPreviewLinkOptions(enabled, link = cloudStatus?.previewLink) {
     const options = enabled ? { enable: true } : { disable: true };
+    const format = getPreviewLinkFormat();
+    if (enabled && format) {
+      options.format = format;
+    }
     if (enabled && (!link?.exists || link?.state === 'expired')) {
       options.expiresInDays = 7;
     }
@@ -723,10 +737,11 @@
     beginDeployProgress(repairBinding, overrides);
     consoleLines = [];
     const desiredPreviewEnabled = Object.prototype.hasOwnProperty.call(overrides, 'preview') ? !!overrides.preview : deployPreview;
+    const hadCloudDeployment = hasExistingCloudDeployment();
     const initialPreviewState = getCloudPreviewState();
     let enabledPreviewForAttempt = false;
     try {
-      if (desiredPreviewEnabled && hasExistingCloudDeployment() && (initialPreviewState !== 'active' || previewLinkNeedsPassword())) {
+      if (desiredPreviewEnabled && hadCloudDeployment && (initialPreviewState !== 'active' || previewLinkNeedsPassword() || previewLinkFormatMismatch())) {
         setDeployProgress({
           ...(deployProgress || {}),
           message: initialPreviewState === 'active' ? 'Updating preview link...' : 'Turning on preview link...'
@@ -739,6 +754,9 @@
       }
 
       const result = await window.api.cloud.deploy(projectPath, getDeployOptions(repairBinding, overrides));
+      if (desiredPreviewEnabled && !hadCloudDeployment && getPreviewLinkFormat()) {
+        await window.api.cloud.updatePreviewLink(projectPath, buildPreviewLinkOptions(true));
+      }
       const previewUrl = desiredPreviewEnabled
         ? (result?.previewUrl || cloudStatus?.previewLink?.url || null)
         : null;

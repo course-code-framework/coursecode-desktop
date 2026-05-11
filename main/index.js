@@ -137,12 +137,15 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-    // Inject OS system CAs before any HTTPS calls (LLM providers, cloud, updater).
-    // Corporate proxies (Zscaler, Netskope) use custom CAs that Node doesn't trust.
-    await injectSystemCerts();
-
     log.info('App ready', { version: app.getVersion(), packaged: app.isPackaged });
     loadSettings();
+
+    // Optional corporate/MDM CA compatibility. This can trigger macOS Keychain
+    // prompts, so keep it opt-in instead of doing it on every launch.
+    if (getSetting('trustSystemCertificates')) {
+        await injectSystemCerts();
+    }
+
     registerIpcHandlers();
 
     // Set dock icon on macOS (in dev mode there's no .app bundle)

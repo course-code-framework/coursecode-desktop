@@ -262,7 +262,6 @@
     align-items: stretch;
     flex: 1;
     min-width: 0;
-    -webkit-app-region: no-drag;
   }
 
   .titlebar-grab {
