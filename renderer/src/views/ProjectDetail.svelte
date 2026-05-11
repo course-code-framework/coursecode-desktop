@@ -17,6 +17,7 @@
   import PreviewPasswordControl from '../components/PreviewPasswordControl.svelte';
   import { getDisplayErrorMessage } from '../lib/errors.js';
   import { generatePreviewPassword } from '../lib/preview-password.js';
+  import { isGithubLinkedStatus } from '../lib/cloud-status.js';
 
   let { projectPath } = $props();
 
@@ -283,7 +284,7 @@
       }
       cloudStatus = status;
       // Detect GitHub-linked courses from the status response
-      const isGithub = status?.source?.type === 'github' || status?.source_type === 'github';
+      const isGithub = isGithubLinkedStatus(status);
       if (project && project.githubLinked !== isGithub) {
         project = { ...project, githubLinked: isGithub || undefined };
       }
@@ -353,7 +354,7 @@
   }
 
   function canPromoteToPreview(deployment) {
-    return deployment.id !== cloudStatus?.preview_deployment_id;
+    return !project?.githubLinked && deployment.id !== cloudStatus?.preview_deployment_id;
   }
 
   function resetCloudLinkControls() {
@@ -843,10 +844,14 @@
   }
 
   async function confirmRepairDeploy() {
+    if (project?.githubLinked) {
+      await clearStaleBindingOnly();
+      return;
+    }
     staleBindingPrompt = null;
     await deploy(
       true,
-      project?.githubLinked ? { preview: true, promote: false } : { preview: getCloudPreviewState() === 'active' }
+      { preview: getCloudPreviewState() === 'active' }
     );
     resetDeployOptions();
   }
@@ -1155,36 +1160,40 @@
               </div>
             {/if}
 
-            <div class="cloud-link-controls">
-              <label class="deploy-toggle-label">
-                <input type="checkbox" bind:checked={cloudLinkPasswordEditing} />
-                <span>{cloudStatus?.previewLink?.hasPassword ? 'Change password settings' : 'Require password'}</span>
-              </label>
-              {#if cloudLinkPasswordEditing}
-                <PreviewPasswordControl
-                  id="cloud-panel-preview-password"
-                  bind:requirePassword={cloudLinkRequirePassword}
-                  bind:password={cloudLinkPassword}
-                  disabled={cloudActionBusy === 'preview-link'}
-                />
-              {/if}
-              <label class="cloud-select-label" for="cloud-link-expiry">
-                <span>Expiry</span>
-                <select id="cloud-link-expiry" bind:value={cloudLinkExpiryAction} disabled={cloudActionBusy === 'preview-link'}>
-                  <option value="keep">Keep current expiry</option>
-                  <option value="extend7">Extend 7 days</option>
-                </select>
-              </label>
-            </div>
+            {#if project?.githubLinked}
+              <p class="cloud-panel-note">Preview deploys, pointer updates, and preview-link changes are managed by GitHub for this course.</p>
+            {:else}
+              <div class="cloud-link-controls">
+                <label class="deploy-toggle-label">
+                  <input type="checkbox" bind:checked={cloudLinkPasswordEditing} />
+                  <span>{cloudStatus?.previewLink?.hasPassword ? 'Change password settings' : 'Require password'}</span>
+                </label>
+                {#if cloudLinkPasswordEditing}
+                  <PreviewPasswordControl
+                    id="cloud-panel-preview-password"
+                    bind:requirePassword={cloudLinkRequirePassword}
+                    bind:password={cloudLinkPassword}
+                    disabled={cloudActionBusy === 'preview-link'}
+                  />
+                {/if}
+                <label class="cloud-select-label" for="cloud-link-expiry">
+                  <span>Expiry</span>
+                  <select id="cloud-link-expiry" bind:value={cloudLinkExpiryAction} disabled={cloudActionBusy === 'preview-link'}>
+                    <option value="keep">Keep current expiry</option>
+                    <option value="extend7">Extend 7 days</option>
+                  </select>
+                </label>
+              </div>
 
-            <div class="cloud-actions">
-              <button class="preview-link-btn" disabled={cloudActionBusy === 'preview-link'} onclick={saveCloudLinkSettings}>
-                {cloudActionBusy === 'preview-link' ? 'Saving…' : cloudStatus?.previewLink?.exists ? 'Save Preview Link' : 'Create Preview Link'}
-              </button>
-              {#if getCloudPreviewState() === 'active'}
-                <button class="preview-link-btn subtle" disabled={cloudActionBusy === 'preview-link'} onclick={disableCloudPreviewLink}>Turn Off</button>
-              {/if}
-            </div>
+              <div class="cloud-actions">
+                <button class="preview-link-btn" disabled={cloudActionBusy === 'preview-link'} onclick={saveCloudLinkSettings}>
+                  {cloudActionBusy === 'preview-link' ? 'Saving…' : cloudStatus?.previewLink?.exists ? 'Save Preview Link' : 'Create Preview Link'}
+                </button>
+                {#if getCloudPreviewState() === 'active'}
+                  <button class="preview-link-btn subtle" disabled={cloudActionBusy === 'preview-link'} onclick={disableCloudPreviewLink}>Turn Off</button>
+                {/if}
+              </div>
+            {/if}
           </section>
 
           <section class="cloud-manage-section">
@@ -1251,6 +1260,7 @@
                     <button
                       class="preview-link-btn subtle"
                       disabled={!canPromoteToPreview(deployment) || cloudActionBusy === `preview:${deployment.id}`}
+                      title={project?.githubLinked ? 'Preview is managed by GitHub' : 'Set as Preview'}
                       onclick={() => promoteDeploymentPointer(deployment, 'preview')}
                     >
                       {cloudActionBusy === `preview:${deployment.id}` ? 'Setting…' : 'Set Preview'}
@@ -1277,7 +1287,7 @@
     <div class="deploy-dialog-backdrop" role="presentation" onclick={() => deployPopoverOpen = false}>
       {#if project?.githubLinked}
         <div class="deploy-popover deploy-dialog-panel" role="dialog" aria-modal="true" aria-label="GitHub deploy info" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
-          <p class="deploy-toggle-tip">Production deploys are managed by your GitHub repository. Push to deploy.</p>
+          <p class="deploy-toggle-tip">Deploys are managed by your GitHub repository. Push to deploy.</p>
           <div class="preview-link-panel">
             <div class="preview-link-header">
               <span class="preview-link-title">Main Preview Link</span>
@@ -1287,40 +1297,22 @@
               {#if getCloudPreviewState() === 'active'}
                 Stakeholders can open the main preview now.
               {:else if getCloudPreviewState() === 'expired'}
-                The main preview link expired. Turn it back on before sharing the Preview pointer.
+                The main preview link expired.
               {:else if getCloudPreviewState() === 'disabled'}
-                The main preview link is off. Turn it on to publish a preview URL.
+                The main preview link is off.
               {:else}
-                No main preview link exists yet. Turn it on to create one.
+                No main preview link exists yet.
               {/if}
             </p>
             <div class="preview-link-actions">
-              <button class="preview-link-btn" disabled={isPreviewLinkBusy()} onclick={() => setPreviewLinkState(getCloudPreviewState() !== 'active', { autoSelectPreview: true })}>
-                {#if isPreviewLinkBusy()}
-                  <div class="btn-spinner"></div>
-                {:else if getCloudPreviewState() === 'active'}
-                  Turn Off Preview
-                {:else}
-                  Turn On Preview
-                {/if}
-              </button>
               {#if getCloudPreviewState() === 'active'}
                 <button class="preview-link-btn subtle" onclick={openCloudPreview}>Open Link</button>
               {/if}
             </div>
-            {#if getCloudPreviewState() !== 'active' && previewLinkNeedsPassword()}
-              <PreviewPasswordControl
-                id="project-github-preview-password"
-                bind:requirePassword={previewRequirePassword}
-                bind:password={previewPassword}
-                disabled={isPreviewLinkBusy()}
-              />
-            {/if}
           </div>
-          <p class="deploy-toggle-tip">You can still update the Preview pointer directly from Desktop.</p>
+          <p class="deploy-toggle-tip">Preview deploys and pointer updates are managed by GitHub.</p>
           <div class="deploy-popover-actions">
             <button class="deploy-popover-cancel" onclick={() => deployPopoverOpen = false}>Dismiss</button>
-            <button class="deploy-popover-confirm" disabled={!canUpdatePreviewPointer() || isPreviewLinkBusy()} onclick={() => deploy(false, { preview: true, promote: false })}>Deploy Preview</button>
           </div>
         </div>
       {:else}
@@ -1529,10 +1521,10 @@
     title="Linked Cloud Course Missing"
     message={staleBindingPrompt.message || `"${project?.title || project?.name || 'This project'}" is still linked to a CourseCode Cloud course that no longer exists.`}
     detail={project?.githubLinked
-      ? 'You can clear the old local cloud link and update the preview deployment now, or clear the link only and leave this project in a not deployed state. Production deploys stay managed by GitHub.'
+      ? 'You can clear the old local cloud link and leave this project in a not deployed state. GitHub-linked deploys stay managed by GitHub.'
       : 'You can clear the old local cloud link and redeploy now, or clear the link only and leave this project in a not deployed state.'}
-    alternateLabel="Clear Link Only"
-    confirmLabel={project?.githubLinked ? 'Clear Link and Deploy Preview' : 'Clear Link and Redeploy'}
+    alternateLabel={project?.githubLinked ? undefined : 'Clear Link Only'}
+    confirmLabel={project?.githubLinked ? 'Clear Link' : 'Clear Link and Redeploy'}
     cancelLabel="Not Now"
     onconfirm={confirmRepairDeploy}
     onalternate={clearStaleBindingOnly}
@@ -2157,6 +2149,13 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg-primary);
+  }
+
+  .cloud-panel-note {
+    margin: 12px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
   }
 
   .cloud-label,

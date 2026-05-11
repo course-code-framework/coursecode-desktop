@@ -178,14 +178,11 @@ Desktop keeps advanced Cloud workflows in the Cloud web app, including multiple 
 
 ### GitHub-Linked Courses
 
-If a course is linked to a GitHub repository, production deploys are managed by GitHub. Push to the repo to update Production.
+If a course is linked to a GitHub repository, deploys are managed by GitHub. Push to the repo to update the hosted course.
 
-Desktop still supports:
-- preview-only deploys
-- Preview pointer changes
-- main preview link password/expiry management
+Desktop shows Cloud status for GitHub-linked courses, but deploys, Preview pointer changes, and preview-link changes stay in the GitHub/Cloud workflow.
 
-Desktop disables Production pointer changes for GitHub-linked courses to avoid conflicting with the repository workflow.
+Desktop disables direct deploy and pointer-change actions for GitHub-linked courses to avoid conflicting with the repository workflow.
 
 Cloud features should always be labeled optional in Desktop UI/docs.
 

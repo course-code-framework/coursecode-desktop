@@ -14,6 +14,7 @@
   import { popover } from '../actions/popover.js';
   import { getDisplayErrorMessage } from '../lib/errors.js';
   import { generatePreviewPassword } from '../lib/preview-password.js';
+  import { isGithubLinkedStatus } from '../lib/cloud-status.js';
 
   let { onCreateNew, onOpenProject, onCloseProject } = $props();
 
@@ -184,7 +185,7 @@
           }
         }
         // Detect GitHub-linked courses from the status response
-        const isGithub = status?.source?.type === 'github' || status?.source_type === 'github';
+        const isGithub = isGithubLinkedStatus(status);
         const project = linkedProjects.find((candidate) => candidate.path === path);
         if (project && project.githubLinked !== isGithub) {
           updateProject(path, { githubLinked: isGithub || undefined });
@@ -699,12 +700,16 @@
   async function confirmRepairDeploy() {
     if (!staleBindingPrompt) return;
     const { project } = staleBindingPrompt;
+    if (project.githubLinked) {
+      await clearStaleBindingOnly();
+      return;
+    }
     staleBindingPrompt = null;
     await confirmDeploy(
       null,
       project,
       true,
-      project.githubLinked ? { preview: true, promote: false } : { preview: getCloudPreviewState(project.path) === 'active' }
+      { preview: getCloudPreviewState(project.path) === 'active' }
     );
   }
 
@@ -1141,10 +1146,10 @@
       title="Linked Cloud Course Missing"
       message={staleBindingPrompt.message || `"${staleBindingPrompt.project?.title || staleBindingPrompt.project?.name || 'This project'}" is still linked to a CourseCode Cloud course that no longer exists.`}
       detail={staleBindingPrompt.project?.githubLinked
-        ? 'You can clear the old local cloud link and update the preview deployment now, or clear the link only and leave this project in a not deployed state. Production deploys stay managed by GitHub.'
+        ? 'You can clear the old local cloud link and leave this project in a not deployed state. GitHub-linked deploys stay managed by GitHub.'
         : 'You can clear the old local cloud link and redeploy now, or clear the link only and leave this project in a not deployed state.'}
-      alternateLabel="Clear Link Only"
-      confirmLabel={staleBindingPrompt.project?.githubLinked ? 'Clear Link and Deploy Preview' : 'Clear Link and Redeploy'}
+      alternateLabel={staleBindingPrompt.project?.githubLinked ? undefined : 'Clear Link Only'}
+      confirmLabel={staleBindingPrompt.project?.githubLinked ? 'Clear Link' : 'Clear Link and Redeploy'}
       cancelLabel="Not Now"
       onconfirm={confirmRepairDeploy}
       onalternate={clearStaleBindingOnly}
@@ -1171,7 +1176,7 @@
           </svg>
           <strong>GitHub-linked course</strong>
         </div>
-        <p class="github-info-body">Production deploys are controlled by your GitHub repo. Push to deploy.</p>
+        <p class="github-info-body">Deploys are controlled by your GitHub repo. Push to deploy.</p>
         <div class="preview-link-panel">
           <div class="preview-link-header">
             <span class="preview-link-title">Main Preview Link</span>
@@ -1181,44 +1186,22 @@
             {#if cloudPreviewState === 'active'}
               Stakeholders can open the cloud preview now.
             {:else if cloudPreviewState === 'expired'}
-              The main preview link expired. Turn it back on before sharing the Preview pointer.
+              The main preview link expired.
             {:else if cloudPreviewState === 'disabled'}
-              The main preview link is off. Turn it on to publish a preview URL.
+              The main preview link is off.
             {:else}
-              No main preview link exists yet. Turn it on to create one.
+              No main preview link exists yet.
             {/if}
           </p>
           <div class="preview-link-actions">
-            <button
-              class="preview-link-btn"
-              disabled={isPreviewLinkBusy(project.path)}
-              onclick={(e) => setPreviewLinkState(e, project, cloudPreviewState !== 'active', { autoSelectPreview: true })}
-            >
-              {#if isPreviewLinkBusy(project.path)}
-                <div class="btn-spinner"></div>
-              {:else if cloudPreviewState === 'active'}
-                Turn Off Preview
-              {:else}
-                Turn On Preview
-              {/if}
-            </button>
             {#if hasActiveCloudPreview(project.path)}
               <button class="preview-link-btn subtle" onclick={(e) => openCloudPreview(e, project)}>Open Link</button>
             {/if}
           </div>
-          {#if cloudPreviewState !== 'active' && previewLinkNeedsPassword(project.path)}
-            <PreviewPasswordControl
-              id="dashboard-github-preview-password"
-              bind:requirePassword={previewRequirePassword}
-              bind:password={previewPassword}
-              disabled={isPreviewLinkBusy(project.path)}
-            />
-          {/if}
         </div>
-        <p class="github-info-body">You can still update the <strong>Preview pointer</strong> directly:</p>
+        <p class="github-info-body">Preview deploys and pointer updates are managed by GitHub.</p>
         <div class="deploy-popover-actions">
           <button class="deploy-popover-cancel" onclick={() => { deployPopover = null; deployAnchorEl = null; }}>Dismiss</button>
-          <button class="deploy-popover-confirm" disabled={!canUpdatePreviewPointer(project.path) || isPreviewLinkBusy(project.path)} onclick={(e) => { deployPreview = true; confirmDeploy(e, project); }}>Deploy Preview</button>
         </div>
       {:else}
         <div class="deploy-popover-field">

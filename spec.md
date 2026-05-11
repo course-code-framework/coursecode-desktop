@@ -358,7 +358,7 @@ The primary view. Displays all detected projects as cards in a responsive grid.
 
 **Version upgrade indicator**: When a project's `frameworkVersion` (from `.coursecoderc.json`) is behind the latest published version of the `coursecode` npm package (fetched from the npm registry via `api.version.getLatest()`), the version text on the card becomes clickable and shows an accent-colored info-circle icon. Clicking the version text or icon opens the **Version Modal** — a centered dialog that compares the course version against the latest published version and provides a one-click "Upgrade Course" action. The upgrade runs `npm install coursecode@latest` via the bundled npm (same no-terminal pattern as CLI installation). After a successful upgrade, the modal prompts to restart the preview if it was running.
 
-**Cloud status polling**: For projects linked to CourseCode Cloud (those with a `cloudId` in `.coursecoderc.json`), the Dashboard polls `coursecode status --json` every **60 seconds** to refresh deploy status, preview link state, and stale binding detection. An immediate poll also fires on mount and after every user-initiated action (deploy, preview link change, delete). If the status response indicates the course's deployment source is GitHub (`source.type === 'github'`), the project's `githubLinked` flag is updated reactively so the deploy button locks to preview-only mode without requiring a full re-scan.
+**Cloud status polling**: For projects linked to CourseCode Cloud (those with a `cloudId` in `.coursecoderc.json`), the Dashboard polls `coursecode status --json` every **60 seconds** to refresh deploy status, preview link state, and stale binding detection. An immediate poll also fires on mount and after every user-initiated action (deploy, preview link change, delete). If the status response indicates the course is GitHub-linked (`github_repo`, `source.githubRepo`, or a direct-production deploy guard), the project's `githubLinked` flag is updated reactively so the deploy button switches to GitHub-only status without requiring a full re-scan.
 
 ### Create Wizard
 
@@ -505,7 +505,7 @@ Returns an array of `Project` objects sorted by last modified (newest first).
 
 **Validation**: Before creation, validates that the target directory doesn't already exist and that the project name produces a valid directory name.
 
-**GitHub detection**: During scanning and project open, reads `sourceType` from `.coursecoderc.json`. If `sourceType === 'github'`, the project is flagged as `githubLinked`, which locks the deploy button to preview-only mode in the UI.
+**GitHub detection**: During scanning and project open, reads `sourceType` from `.coursecoderc.json`. If `sourceType === 'github'`, the project is flagged as `githubLinked`, which locks direct Desktop deploy and pointer-change actions in the UI.
 
 **Cloud binding management**: `clearCloudBinding(projectPath)` removes all cloud-related keys (`cloudId`, `orgId`, `sourceType`, `githubRepo`) from `.coursecoderc.json` while preserving other metadata like `frameworkVersion`.
 
@@ -552,11 +552,11 @@ A thin wrapper around the `coursecode` CLI and the CLI-compatible Cloud API. Bui
 
 **User info**: Spawns `coursecode whoami --json` and returns parsed JSON.
 
-**Deploy status**: Spawns `coursecode status --json` in the project directory. The response includes `source.type`, `source.githubRepo`, production/preview pointer summaries, and main preview link state. The UI uses those fields to detect GitHub-linked courses, lock the deploy button to preview-only mode, and show preview link/pointer status.
+**Deploy status**: Spawns `coursecode status --json` in the project directory. The response includes `source.type`, `source.githubRepo`, `github_repo`, production/preview pointer summaries, and main preview link state. The UI uses those fields to detect GitHub-linked courses, lock direct Desktop deploy and pointer-change actions, and show preview link/pointer status.
 
 **Preview link management**: Spawns `coursecode preview-link --json` in the project directory. The Desktop UI can create or enable the main preview link, disable it, add/change/remove a password, and extend expiry. Password-protected previews are the default for newly created or unprotected preview links, but users can explicitly opt out.
 
-**Deployment history and pointer management**: Fetches recent deployments from the Cloud versions API and can move the Production or Preview pointer to an existing deployment. The Desktop subset is intentionally compact: it shows current Production/Preview pointers, recent deployments, `Set Preview`, `Set Production`, preview-link password/expiry controls, copy/open preview URL, and an "Open in Cloud" path for deeper Cloud-only workflows.
+**Deployment history and pointer management**: Fetches recent deployments from the Cloud versions API and can move the Production or Preview pointer to an existing deployment when the course is not GitHub-linked. The Desktop subset is intentionally compact: it shows current Production/Preview pointers, recent deployments, `Set Preview`, `Set Production`, preview-link password/expiry controls, copy/open preview URL, and an "Open in Cloud" path for deeper Cloud-only workflows. For GitHub-linked courses, these write actions are disabled in Desktop.
 
 **Cloud project linking**: On first deploy, the CLI stamps a `cloudId` into `.coursecoderc.json`. For GitHub-linked courses, the cloud also stamps `sourceType` and `githubRepo`. Team members who clone the repo get these fields automatically.
 
@@ -757,14 +757,15 @@ Advanced Cloud workflows such as multiple pinned stakeholder preview links, clea
 
 ### GitHub Deploy Guard
 
-When a course is deployed to CourseCode Cloud via GitHub (GitHub Actions integration), the deployment source is GitHub — not the CLI. The desktop app enforces a deploy guard to prevent conflicting production deploys.
+When a course is deployed to CourseCode Cloud via GitHub (GitHub Actions integration), the deployment source is GitHub — not the CLI. The desktop app enforces a deploy guard to prevent conflicting direct deploys and pointer updates.
 
-**Detection**: The `sourceType` field in `.coursecoderc.json` is the primary local signal. When the cloud stamps `sourceType: 'github'` into the repo (via the GitHub Contents API on initial link), the desktop reads it during project scanning and sets `project.githubLinked = true`. As a secondary detection path, the cloud status polling (`coursecode status --json`) returns `source.type` in the response, which the UI reads every 60 seconds to update the `githubLinked` flag reactively.
+**Detection**: The `sourceType` field in `.coursecoderc.json` is the primary local signal. When the cloud stamps `sourceType: 'github'` into the repo (via the GitHub Contents API on initial link), the desktop reads it during project scanning and sets `project.githubLinked = true`. As a secondary detection path, the cloud status polling (`coursecode status --json`) returns GitHub repo fields and deploy constraints (`github_repo`, `source.githubRepo`, or `source.directProductionDeployAllowed === false`), which the UI reads every 60 seconds to update the `githubLinked` flag reactively.
 
 **UI behavior when `githubLinked` is `true`**:
-- The Deploy button tooltip indicates production deploys are managed via GitHub.
-- Production deploy is blocked — Desktop can still create preview-only deployments, move the Preview pointer, and manage the main preview link.
-- The Cloud Deployments panel disables `Set Production`; Preview pointer and main preview link management remain available.
+- The Deploy button tooltip indicates deploys are managed via GitHub.
+- Direct Desktop deploys are blocked, including preview-only deploys.
+- Preview pointer changes and preview-link writes are disabled in Desktop.
+- The Cloud Deployments panel disables `Set Preview` and `Set Production`; status, copy/open links, and "Open in Cloud" remain available.
 - The project card shows a GitHub badge.
 
 **CLI-side guard**: The CLI `deploy()` command also checks `sourceType` in `.coursecoderc.json` before building. If `sourceType === 'github'` and `--preview` is not passed, the CLI blocks with exit code 1 and a `github_source_blocked` error.
