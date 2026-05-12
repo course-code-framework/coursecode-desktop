@@ -58,15 +58,20 @@
     }
   }
 
+  function requestClose() {
+    if (upgrading) return;
+    onclose?.();
+  }
+
   function handleKeydown(e) {
     if (e.key === 'Escape') {
       e.stopPropagation();
-      onclose?.();
+      requestClose();
     }
   }
 
   function handleBackdropClick(e) {
-    if (e.target === e.currentTarget) onclose?.();
+    if (e.target === e.currentTarget) e.stopPropagation();
   }
 
   function formatVersion(v) {
@@ -81,7 +86,7 @@
   <div class="version-dialog">
     <div class="version-header">
       <h3 id="version-title" class="version-title">CourseCode Version</h3>
-      <button class="version-close" onclick={() => onclose?.()} title="Close">
+      <button class="version-close" onclick={requestClose} title="Close" disabled={upgrading} aria-label="Close">
         <Icon size={18}>
           <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
         </Icon>
@@ -101,7 +106,7 @@
           <p class="restart-hint">Restart the preview to use the updated framework.</p>
         {/if}
         <div class="version-actions">
-          <button class="btn-primary" onclick={() => onclose?.()}>Done</button>
+          <button class="btn-primary" onclick={requestClose}>Done</button>
         </div>
       </div>
     {:else}
@@ -163,7 +168,7 @@
       {/if}
 
       <div class="version-actions">
-        <button class="btn-secondary" onclick={() => onclose?.()}>
+        <button class="btn-secondary" onclick={requestClose} disabled={upgrading}>
           {upgradeAvailable ? 'Not Now' : 'Close'}
         </button>
         {#if upgradeAvailable}
