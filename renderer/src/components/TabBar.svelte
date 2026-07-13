@@ -26,20 +26,40 @@
     const closedPath = closeTab(tabId);
     if (closedPath) onTabClose?.(closedPath);
   }
+
+  function handleTabKeydown(e, index) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setActiveTab($tabs[index].id);
+      return;
+    }
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    let nextIndex = index;
+    if (e.key === 'ArrowLeft') nextIndex = (index - 1 + $tabs.length) % $tabs.length;
+    if (e.key === 'ArrowRight') nextIndex = (index + 1) % $tabs.length;
+    if (e.key === 'Home') nextIndex = 0;
+    if (e.key === 'End') nextIndex = $tabs.length - 1;
+    const nextTab = $tabs[nextIndex];
+    setActiveTab(nextTab.id);
+    requestAnimationFrame(() => document.getElementById(`tab-${nextIndex}`)?.focus());
+  }
 </script>
 
 <div class="tab-bar">
   <div class="tab-list" role="tablist">
-    {#each $tabs as tab (tab.id)}
-      <div
+    {#each $tabs as tab, index (tab.id)}
+      <div class="tab-wrap">
+      <button
+        id={`tab-${index}`}
         class="tab"
         class:active={$activeTabId === tab.id}
         class:home={tab.type === 'home'}
         role="tab"
-        tabindex="0"
+        tabindex={$activeTabId === tab.id ? 0 : -1}
         aria-selected={$activeTabId === tab.id}
         onclick={() => setActiveTab(tab.id)}
-        onkeydown={(e) => e.key === 'Enter' && setActiveTab(tab.id)}
+        onkeydown={(e) => handleTabKeydown(e, index)}
         title={tab.type === 'course' ? tab.path : undefined}
       >
         {#if tab.type === 'home'}
@@ -49,11 +69,13 @@
           </svg>
         {/if}
         <span class="tab-label">{tab.title}</span>
+      </button>
         {#if tab.type === 'course'}
           <button
             class="tab-close"
             onclick={(e) => handleClose(e, tab.id)}
-            title="Close tab"
+            title={`Close ${tab.title}`}
+            aria-label={`Close ${tab.title}`}
           >
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
               <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -171,6 +193,17 @@
     -webkit-app-region: no-drag;
   }
 
+  .tab-wrap {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+  }
+
+  .tab-wrap .tab:has(+ .tab-close) {
+    padding-right: 34px;
+  }
+
   .tab:hover {
     color: var(--text-secondary);
     background: color-mix(in srgb, var(--bg-secondary) 74%, transparent);
@@ -213,16 +246,21 @@
     opacity: 0.5;
     transition: all var(--duration-fast) var(--ease);
     -webkit-app-region: no-drag;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
   }
 
-  .tab:hover .tab-close {
+  .tab-wrap:hover .tab-close,
+  .tab-close:focus-visible {
     opacity: 1;
   }
 
   .tab-close:hover {
     background: var(--error-subtle);
     color: var(--error);
-    transform: scale(1.05);
+    transform: translateY(-50%) scale(1.05);
   }
 
   .tab-actions {

@@ -122,7 +122,8 @@ test.describe('Settings', () => {
         const { app, window } = await launchApp();
         await window.locator('[data-testid="settings-btn"]').click();
 
-        const signInBtn = window.locator('text=Sign In to CourseCode Cloud');
+        const cloudSection = window.locator('.settings-section').filter({ hasText: 'Cloud Account' });
+        const signInBtn = cloudSection.getByRole('button', { name: 'Sign In' });
         await expect(signInBtn).toBeVisible();
 
         await app.close();

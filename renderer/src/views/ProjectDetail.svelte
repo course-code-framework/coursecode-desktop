@@ -4,6 +4,7 @@
   import ChatPanel from './ChatPanel.svelte';
   import RefsPanel from './RefsPanel.svelte';
   import OutlinePanel from './OutlinePanel.svelte';
+  import HistoryPanel from '../components/HistoryPanel.svelte';
   import EditorPanel from '../components/EditorPanel.svelte';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import VersionModal from '../components/VersionModal.svelte';
@@ -41,6 +42,7 @@
   let refsExpanded = $state(false);
   let refCount = $state(0);
   let outlineOpen = $state(false);
+  let historyOpen = $state(false);
   let refViewerOpen = $state(false);
   let refViewerFilename = $state('');
   let refViewerContent = $state('');
@@ -915,6 +917,40 @@
     refCount = count;
   }
 
+  function renderReferenceHtml(markdown) {
+    if (!markdown) return '';
+    const template = document.createElement('template');
+    template.innerHTML = marked(markdown);
+    template.content.querySelectorAll('script,style,iframe,object,embed,link,meta,img,form,input,button').forEach(node => node.remove());
+    const allowedTags = new Set([
+      'p', 'br', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li', 'blockquote',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td'
+    ]);
+    for (const el of template.content.querySelectorAll('*')) {
+      const tag = el.tagName.toLowerCase();
+      if (!allowedTags.has(tag)) {
+        el.replaceWith(document.createTextNode(el.textContent || ''));
+        continue;
+      }
+      for (const attr of [...el.attributes]) {
+        const name = attr.name.toLowerCase();
+        const value = (attr.value || '').trim();
+        if (tag === 'a' && name === 'href' && /^https?:\/\//i.test(value)) continue;
+        if (tag === 'a' && name === 'title') continue;
+        el.removeAttribute(attr.name);
+      }
+    }
+    return template.innerHTML;
+  }
+
+  function handleReferenceClick(event) {
+    const anchor = event.target?.closest('a');
+    if (!anchor) return;
+    event.preventDefault();
+    const href = anchor.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href)) window.api.shell.openExternal(href);
+  }
+
   async function toggleChatPanel() {
     const nextVisible = !chatPanelVisible;
     chatPanelVisible = nextVisible;
@@ -1028,6 +1064,13 @@
           <line x1="16" y1="13" x2="8" y2="13"/>
           <line x1="16" y1="17" x2="8" y2="17"/>
           <polyline points="10 9 9 9 8 9"/>
+        </Icon>
+      </button>
+
+      <button class="tool-btn" class:active={historyOpen} onclick={() => historyOpen = !historyOpen} title={historyOpen ? 'Close History' : 'Project History'} data-testid="history-btn">
+        <Icon>
+          <circle cx="12" cy="12" r="9"/>
+          <polyline points="12 7 12 12 15 14"/>
         </Icon>
       </button>
 
@@ -1453,9 +1496,9 @@
                 <Icon size={16}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></Icon>
               </button>
             </div>
-            <div class="ref-viewer-body">
+            <div class="ref-viewer-body" role="presentation" onclick={handleReferenceClick}>
               {#if refViewerContent}
-                {@html marked(refViewerContent)}
+                {@html renderReferenceHtml(refViewerContent)}
               {:else}
                 <span class="text-tertiary">Loading…</span>
               {/if}
@@ -1467,6 +1510,16 @@
       {#if outlineOpen}
         <div class="history-overlay">
           <OutlinePanel {projectPath} onClose={() => outlineOpen = false} />
+        </div>
+      {/if}
+
+      {#if historyOpen}
+        <div class="history-overlay">
+          <HistoryPanel
+            {projectPath}
+            onClose={() => historyOpen = false}
+            onRestored={handleSnapshotRestored}
+          />
         </div>
       {/if}
 

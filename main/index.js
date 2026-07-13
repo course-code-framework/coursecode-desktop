@@ -23,7 +23,7 @@ let mainWindow = null;
 function createWindow() {
     const bounds = getSetting('windowBounds') || {};
 
-    mainWindow = new BrowserWindow({
+    const window = new BrowserWindow({
         width: bounds.width || 1440,
         height: bounds.height || 900,
         x: bounds.x,
@@ -42,15 +42,19 @@ function createWindow() {
             nodeIntegration: false
         }
     });
+    mainWindow = window;
 
     // Apply theme
     const theme = getSetting('theme') || 'system';
     nativeTheme.themeSource = theme;
 
-    mainWindow.on('ready-to-show', () => {
+    window.on('ready-to-show', () => {
         if (!process.env.E2E_HEADLESS) {
-            mainWindow.show();
+            window.show();
         }
+    });
+    window.on('closed', () => {
+        if (mainWindow === window) mainWindow = null;
     });
 
     // Save window bounds on move/resize
@@ -58,24 +62,28 @@ function createWindow() {
     const saveBounds = () => {
         clearTimeout(boundsTimer);
         boundsTimer = setTimeout(() => {
-            if (!mainWindow.isDestroyed()) {
-                saveSetting('windowBounds', mainWindow.getBounds());
+            if (!window.isDestroyed()) {
+                saveSetting('windowBounds', window.getBounds());
             }
         }, 500);
     };
-    mainWindow.on('resize', saveBounds);
-    mainWindow.on('move', saveBounds);
+    window.on('resize', saveBounds);
+    window.on('move', saveBounds);
 
     // Open external links in browser
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        shell.openExternal(url);
+    window.webContents.setWindowOpenHandler(({ url }) => {
+        if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
         return { action: 'deny' };
+    });
+    window.webContents.on('will-navigate', (event, url) => {
+        const currentUrl = window.webContents.getURL();
+        if (url !== currentUrl) event.preventDefault();
     });
 
     // Smart context menu — sends context data to renderer for a custom styled menu.
     // Frame-level actions (select all, toggle edit mode) are handled via dedicated
     // IPC handlers since they require executeJavaScript on the preview frame.
-    mainWindow.webContents.on('context-menu', async (_event, params) => {
+    window.webContents.on('context-menu', async (_event, params) => {
         const isPreviewFrame = /^https?:\/\/127\.0\.0\.1:\d+/.test(params.frameURL || '');
         const selectionText = params.selectionText?.trim() || '';
 
@@ -92,7 +100,7 @@ function createWindow() {
             }
         }
 
-        mainWindow.webContents.send('preview:contextMenu', {
+        window.webContents.send('preview:contextMenu', {
             x: params.x,
             y: params.y,
             selectionText,
@@ -102,38 +110,43 @@ function createWindow() {
         });
     });
 
-    // IPC handlers for preview frame actions (require executeJavaScript on the frame)
+    // Load renderer
+    if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+        window.loadURL(process.env.ELECTRON_RENDERER_URL);
+    } else {
+        window.loadFile(join(__dirname, '../renderer/index.html'));
+    }
+}
+
+function registerPreviewIpcHandlers() {
+    // These handlers are application-scoped. Registering them in createWindow
+    // breaks macOS window recreation because ipcMain rejects duplicate channels.
     ipcMain.handle('preview:selectAll', (_e, frameURL) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
         // The course content is a nested iframe (grandchild of mainFrame),
         // so use framesInSubtree for recursive lookup.
         for (const frame of mainWindow.webContents.mainFrame.framesInSubtree) {
             if (frame.url === frameURL) {
-                frame.executeJavaScript('document.execCommand("selectAll")');
+                void frame.executeJavaScript('document.execCommand("selectAll")');
                 break;
             }
         }
     });
 
     ipcMain.handle('preview:toggleEditMode', (_e, port) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
         // The edit-mode button lives in the stub player's top-level document
         // (direct child frame at the preview server root).
         const target = `http://127.0.0.1:${port}`;
         for (const frame of mainWindow.webContents.mainFrame.frames) {
             if (frame.url.startsWith(target)) {
-                frame.executeJavaScript(
+                void frame.executeJavaScript(
                     'document.getElementById("stub-player-edit-mode-btn")?.click()'
                 );
                 break;
             }
         }
     });
-
-    // Load renderer
-    if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-        mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
-    } else {
-        mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
-    }
 }
 
 app.whenReady().then(async () => {
@@ -147,6 +160,7 @@ app.whenReady().then(async () => {
     }
 
     registerIpcHandlers();
+    registerPreviewIpcHandlers();
 
     // Set dock icon on macOS (in dev mode there's no .app bundle)
     if (process.platform === 'darwin' && app.dock) {
@@ -171,8 +185,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-    log.info('All windows closed — quitting');
-    app.quit();
+    if (process.platform !== 'darwin') {
+        log.info('All windows closed — quitting');
+        app.quit();
+    }
 });
 
 app.on('before-quit', () => {

@@ -117,6 +117,9 @@ async function getCloudCourseRef(projectPath) {
 
 // CLI manages credentials at ~/.coursecode/credentials.json (or credentials.local.json in local mode)
 function getCredentialsPath() {
+    if (process.env.COURSECODE_CREDENTIALS_PATH) {
+        return process.env.COURSECODE_CREDENTIALS_PATH;
+    }
     const filename = isLocalMode() ? 'credentials.local.json' : 'credentials.json';
     return join(homedir(), '.coursecode', filename);
 }

@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import Icon from './Icon.svelte';
   import { showToast } from '../stores/toast.js';
 
@@ -11,6 +11,7 @@
   let expandedDiff = $state(null);
   let restoreToast = $state(null);
   let restoreTimeout = null;
+  let restoreInterval = null;
 
   onMount(async () => {
     await loadSnapshots();
@@ -42,6 +43,8 @@
   }
 
   function handleRestore(snapshot) {
+    clearTimeout(restoreTimeout);
+    clearInterval(restoreInterval);
     // Show undo toast with 5-second countdown
     restoreToast = { snapshot, countdown: 5 };
 
@@ -57,17 +60,23 @@
     }, 5000);
 
     // Countdown
-    const interval = setInterval(() => {
-      if (!restoreToast) { clearInterval(interval); return; }
+    restoreInterval = setInterval(() => {
+      if (!restoreToast) { clearInterval(restoreInterval); return; }
       restoreToast = { ...restoreToast, countdown: restoreToast.countdown - 1 };
-      if (restoreToast.countdown <= 0) clearInterval(interval);
+      if (restoreToast.countdown <= 0) clearInterval(restoreInterval);
     }, 1000);
   }
 
   function cancelRestore() {
     clearTimeout(restoreTimeout);
+    clearInterval(restoreInterval);
     restoreToast = null;
   }
+
+  onDestroy(() => {
+    clearTimeout(restoreTimeout);
+    clearInterval(restoreInterval);
+  });
 
   function formatTime(iso) {
     const date = new Date(iso);

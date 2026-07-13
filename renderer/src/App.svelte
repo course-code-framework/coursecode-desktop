@@ -11,6 +11,7 @@
   import Settings from './views/Settings.svelte';
   import SetupAssistant from './views/SetupAssistant.svelte';
   import ToastContainer from './components/ToastContainer.svelte';
+  import { showToast } from './stores/toast.js';
 
   let overlay = $state(null); // 'create' | 'settings' | 'setup' | null
   let ready = $state(false);
@@ -21,6 +22,8 @@
   let unsubUpdateStatus = null;
   let unsubNavigate = null;
   let handleOpenSettingsEvent = null;
+  let systemThemeQuery = null;
+  let handleSystemThemeChange = null;
   const isMac = navigator.platform.includes('Mac');
   const currentView = $derived(() => {
     if (!ready) return 'loading';
@@ -41,8 +44,7 @@
   async function handleOpenProject(path, title) {
     const opened = openCourseTab(path, title || path.split('/').pop());
     if (!opened) {
-      // Tab limit reached — could show a toast, for now just focus home
-      activeTabId.set('home');
+      showToast({ type: 'warning', message: 'You can keep up to five courses open. Close a course tab and try again.' });
       return;
     }
     // Preview auto-start is handled by ProjectDetail when chat workspace is active
@@ -93,6 +95,14 @@
     };
     document.addEventListener('open-settings', handleOpenSettingsEvent);
 
+    systemThemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    handleSystemThemeChange = () => {
+      if ($settings.theme === 'system') {
+        document.documentElement.setAttribute('data-theme', systemThemeQuery.matches ? 'dark' : 'light');
+      }
+    };
+    systemThemeQuery.addEventListener('change', handleSystemThemeChange);
+
     ready = true;
   });
 
@@ -103,6 +113,7 @@
       document.removeEventListener('open-settings', handleOpenSettingsEvent);
       handleOpenSettingsEvent = null;
     }
+    systemThemeQuery?.removeEventListener('change', handleSystemThemeChange);
   });
 
   function dismissUpdateToast() {
@@ -245,6 +256,7 @@
     height: 100%;
     color: var(--text-primary);
     -webkit-app-region: no-drag;
+    min-width: 148px;
   }
 
   .titlebar-brand-text {

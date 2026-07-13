@@ -50,21 +50,13 @@ test.describe('Setup Assistant', () => {
 
         // Step 1 → 2: Skip
         await window.locator('[data-testid="setup-skip-btn"]').click();
-        await expect(window.locator('text=AI Assistant').first()).toBeVisible();
+        await expect(window.locator('text=Auto-Deploy').first()).toBeVisible();
 
         // Step 2 → 3: Skip
         await window.locator('[data-testid="setup-skip-btn"]').click();
-        await expect(window.locator('text=Code Editor').first()).toBeVisible();
-
-        // Step 3 → 4: Skip
-        await window.locator('[data-testid="setup-skip-btn"]').click();
-        await expect(window.locator('text=Version Control').first()).toBeVisible();
-
-        // Step 4 → 5: Skip
-        await window.locator('[data-testid="setup-skip-btn"]').click();
         await expect(window.locator('text=Cloud Account').first()).toBeVisible();
 
-        // Step 5 → 6: Skip
+        // Step 3 → 4: Skip
         await window.locator('[data-testid="setup-skip-btn"]').click();
         await expect(window.locator('[data-testid="setup-done"]')).toBeVisible();
         await expect(window.locator('text=You\'re All Set!').first()).toBeVisible();
@@ -93,7 +85,7 @@ test.describe('Setup Assistant', () => {
 
         // Skip through all steps
         await window.locator('[data-testid="setup-next-btn"]').click(); // Welcome → CLI
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 3; i++) {
             await window.locator('[data-testid="setup-skip-btn"]').click();
         }
 
@@ -116,7 +108,7 @@ test.describe('Setup Assistant', () => {
 
         // Complete the wizard
         await window.locator('[data-testid="setup-next-btn"]').click();
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 3; i++) {
             await window.locator('[data-testid="setup-skip-btn"]').click();
         }
         await window.locator('[data-testid="setup-finish-btn"]').click();
@@ -128,7 +120,12 @@ test.describe('Setup Assistant', () => {
         const { join } = await import('path');
         const app2 = await electron.launch({
             args: [join(process.cwd(), 'out/main/index.js')],
-            env: { ...process.env, ELECTRON_USER_DATA_DIR: userDataDir, E2E_HEADLESS: 'true' }
+            env: {
+                ...process.env,
+                ELECTRON_USER_DATA_DIR: userDataDir,
+                COURSECODE_CREDENTIALS_PATH: join(userDataDir, 'credentials.json'),
+                E2E_HEADLESS: 'true'
+            }
         });
         const window2 = await app2.firstWindow();
 

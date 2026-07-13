@@ -46,6 +46,7 @@ export async function launchApp({ freshInstall = false, settings: extraSettings 
         env: {
             ...process.env,
             ELECTRON_USER_DATA_DIR: userDataDir,
+            COURSECODE_CREDENTIALS_PATH: join(userDataDir, 'credentials.json'),
             E2E_HEADLESS: 'true'
         }
     });

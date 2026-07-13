@@ -1,4 +1,4 @@
-import { join } from 'path';
+import { basename, join, resolve, sep } from 'path';
 import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, statSync } from 'fs';
 import { spawn } from 'child_process';
 import { getProjectCLISpawnArgs, getChildEnv } from './node-env.js';
@@ -10,9 +10,10 @@ export function listRefs(projectPath) {
     const convertedDir = join(projectPath, 'course', 'references', 'converted');
     if (!existsSync(convertedDir)) return [];
 
-    return readdirSync(convertedDir)
-        .filter(f => f.endsWith('.md'))
-        .map(filename => {
+    return readdirSync(convertedDir, { withFileTypes: true })
+        .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+        .map(entry => {
+            const filename = entry.name;
             const filePath = join(convertedDir, filename);
             const stat = statSync(filePath);
             return {
@@ -29,7 +30,14 @@ export function listRefs(projectPath) {
  * Read a specific reference document's content.
  */
 export function readRef(projectPath, filename) {
-    const filePath = join(projectPath, 'course', 'references', 'converted', filename);
+    if (typeof filename !== 'string' || basename(filename) !== filename || !filename.endsWith('.md')) {
+        throw new Error('Invalid reference document name');
+    }
+    const convertedDir = resolve(projectPath, 'course', 'references', 'converted');
+    const filePath = resolve(convertedDir, filename);
+    if (!filePath.startsWith(`${convertedDir}${sep}`)) {
+        throw new Error('Reference path escapes converted references directory');
+    }
     if (!existsSync(filePath)) {
         throw new Error(`Reference document not found: ${filename}`);
     }

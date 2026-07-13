@@ -41,20 +41,13 @@ test.describe('Project Detail View', () => {
         await app.close();
     });
 
-    test('deploy popover opens and closes', async () => {
+    test('deploy requires cloud sign-in when unauthenticated', async () => {
         const { app, window } = await launchApp({ seedProject: true });
         await window.locator('.course-card').filter({ hasText: 'Test E2E Course' }).locator('.card-title-btn').click();
 
-        // Click deploy to open popover
-        await window.locator('[data-testid="deploy-btn"]').click();
-
-        // Popover should be visible
-        const popover = window.locator('.deploy-popover');
-        await expect(popover).toBeVisible();
-
-        // Click cancel to close it
-        await window.locator('.deploy-popover-cancel').click();
-        await expect(popover).not.toBeVisible();
+        const deployButton = window.locator('[data-testid="deploy-btn"]');
+        await expect(deployButton).toBeDisabled();
+        await expect(deployButton).toHaveAttribute('title', 'Sign in to deploy');
 
         await app.close();
     });

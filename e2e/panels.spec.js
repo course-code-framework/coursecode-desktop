@@ -5,7 +5,7 @@ test.afterAll(cleanupTempDirs);
 
 test.describe('Workspace Panels', () => {
     test('chat panel can be toggled via toolbar', async () => {
-        const { app, window } = await launchApp({ seedProject: true });
+        const { app, window } = await launchApp({ seedProject: true, settings: { aiChatEnabled: true } });
         await window.locator('.course-card').filter({ hasText: 'Test E2E Course' }).locator('.card-title-btn').click();
 
 
@@ -24,7 +24,7 @@ test.describe('Workspace Panels', () => {
     });
 
     test('can open and close the outline panel', async () => {
-        const { app, window } = await launchApp({ seedProject: true });
+        const { app, window } = await launchApp({ seedProject: true, settings: { aiChatEnabled: true } });
         await window.locator('.course-card').filter({ hasText: 'Test E2E Course' }).locator('.card-title-btn').click();
 
         // Outline is hidden by default
@@ -60,7 +60,7 @@ test.describe('Workspace Panels', () => {
     });
 
     test('can expand the references panel', async () => {
-        const { app, window } = await launchApp({ seedProject: true });
+        const { app, window } = await launchApp({ seedProject: true, settings: { aiChatEnabled: true } });
         await window.locator('.course-card').filter({ hasText: 'Test E2E Course' }).locator('.card-title-btn').click();
 
         // Refs list is hidden by default (only the toggle is visible)

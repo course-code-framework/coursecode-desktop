@@ -14,11 +14,26 @@
   } = $props();
 
   let dialogEl = $state(null);
+  let previouslyFocused = null;
 
   function handleKeydown(e) {
     if (e.key === 'Escape') {
       e.stopPropagation();
       oncancel?.();
+      return;
+    }
+    if (e.key === 'Tab' && dialogEl) {
+      const focusable = [...dialogEl.querySelectorAll('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     }
   }
 
@@ -28,8 +43,10 @@
 
   $effect(() => {
     if (dialogEl) {
-      const btn = dialogEl.querySelector('[data-autofocus]');
+      previouslyFocused = document.activeElement;
+      const btn = dialogEl.querySelector(destructive ? '[data-cancel]' : '[data-autofocus]');
       btn?.focus();
+      return () => previouslyFocused?.focus?.();
     }
   });
 </script>
@@ -46,7 +63,7 @@
       <p class="confirm-detail">{detail}</p>
     {/if}
     <div class="confirm-actions">
-      <button class="btn-secondary" onclick={() => oncancel?.()}>
+      <button class="btn-secondary" data-cancel onclick={() => oncancel?.()}>
         {cancelLabel}
       </button>
       {#if alternateLabel}

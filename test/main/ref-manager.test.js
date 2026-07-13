@@ -89,6 +89,13 @@ describe('readRef', () => {
         expect(() => readRef(projectDir, 'no-such-file.md'))
             .toThrow('Reference document not found');
     });
+
+    it('blocks path traversal outside converted references', () => {
+        expect(() => readRef(projectDir, '../../course-config.js'))
+            .toThrow('Invalid reference document name');
+        expect(() => readRef(projectDir, '/etc/passwd'))
+            .toThrow('Invalid reference document name');
+    });
 });
 
 describe('formatSize (tested indirectly via listRefs)', () => {

@@ -20,3 +20,25 @@ test('app launches and shows dashboard', async () => {
 
     await app.close();
 });
+
+test('reopens its window from the dock after the last macOS window closes', async () => {
+    test.skip(process.platform !== 'darwin');
+
+    const { app } = await launchApp();
+    const reopenedWindow = app.waitForEvent('window');
+
+    await app.evaluate(({ app: electronApp, BrowserWindow }) => new Promise((resolve) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        window.once('closed', () => {
+            electronApp.emit('activate');
+            resolve();
+        });
+        window.close();
+    }));
+
+    const window = await reopenedWindow;
+    await expect(window.locator('[data-testid="app-container"]')).toBeVisible();
+    await expect(window.locator('[data-testid="dashboard"]')).toBeVisible();
+
+    await app.close();
+});
