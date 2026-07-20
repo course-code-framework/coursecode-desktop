@@ -239,8 +239,8 @@ All communication between renderer and main process flows through typed IPC chan
 - `api.projects.open(projectPath)` → `Project` — Load a specific project's details.
 - `api.projects.reveal(projectPath)` → `void` — Open project folder in Finder/Explorer.
 - `api.projects.delete(projectPath)` → `void` — Move project to trash.
-- `api.projects.upgrade(projectPath)` → `{ success, version }` — Upgrade the project's CourseCode framework dependency to the latest version. Runs `npm install coursecode@latest` via the bundled npm, then stamps the new version into `.coursecoderc.json`. Streams progress events via `project:upgradeProgress`.
-- `api.projects.onUpgradeProgress(callback)` → `unsubscribe` — Stream upgrade progress: `{ phase, text }`. Phases: `installing`, `complete`, `error`.
+- `api.projects.upgrade(projectPath)` → `{ success, version }` — Fully upgrade the project to the latest CourseCode version. Installs `coursecode@latest`, runs the newly installed project-local CLI with `upgrade --force --configs`, and installs the migrated dependency graph. The CLI replaces managed framework/manifests/schemas, backs up changed build configs, preserves `course/`, and updates `.coursecoderc.json` only after migration succeeds. Streams progress events via `project:upgradeProgress`.
+- `api.projects.onUpgradeProgress(callback)` → `unsubscribe` — Stream upgrade progress: `{ phase, text }`. Phases: `installing`, `migrating`, `finalizing`, `complete`, `error`.
 
 ### Preview
 - `api.preview.start(projectPath, opts?)` → `{ port }` — Start preview server, return assigned port. Options: `{ openBrowser: boolean }` (default `true`). When `false`, starts the server without opening an external browser window (used for embedded preview in chat mode).
@@ -356,7 +356,7 @@ The primary view. Displays all detected projects as cards in a responsive grid.
 
 **Project scanning**: On app launch and when returning to Dashboard, the main process scans the configured projects directory (one level deep) looking for directories containing `course-config.js` or `.coursecoderc.json`.
 
-**Version upgrade indicator**: When a project's `frameworkVersion` (from `.coursecoderc.json`) is behind the latest published version of the `coursecode` npm package (fetched from the npm registry via `api.version.getLatest()`), the version text on the card becomes clickable and shows an accent-colored info-circle icon. Clicking the version text or icon opens the **Version Modal** — a centered dialog that compares the course version against the latest published version and provides a one-click "Upgrade Course" action. The upgrade runs `npm install coursecode@latest` via the bundled npm (same no-terminal pattern as CLI installation). After a successful upgrade, the modal prompts to restart the preview if it was running.
+**Version upgrade indicator**: When a project's `frameworkVersion` (from `.coursecoderc.json`) is behind the latest published version of the `coursecode` npm package (fetched from the npm registry via `api.version.getLatest()`), the version text on the card becomes clickable and shows an accent-colored info-circle icon. Clicking the version text or icon opens the **Version Modal** — a centered dialog that compares the course version against the latest published version and provides a one-click "Upgrade Course" action. The upgrade first installs `coursecode@latest`, then invokes that newly installed project-local CLI with `upgrade --force --configs`, and finally runs `npm install` again to align the lockfile and dependency tree with the migrated project configuration. Changed configs receive `.backup` copies, while `course/` remains untouched. After a successful upgrade, the modal prompts to restart the preview if it was running.
 
 **Cloud status polling**: For projects linked to CourseCode Cloud (those with a `cloudId` in `.coursecoderc.json`), the Dashboard polls `coursecode status --json` every **60 seconds** to refresh deploy status, preview link state, and stale binding detection. An immediate poll also fires on mount and after every user-initiated action (deploy, preview link change, delete). If the status response indicates the course is GitHub-linked (`github_repo`, `source.githubRepo`, or a direct-production deploy guard), the project's `githubLinked` flag is updated reactively so the deploy button switches to GitHub-only status without requiring a full re-scan.
 
@@ -380,7 +380,7 @@ A multi-step modal or full-view wizard for creating a new course project.
 - **Presentation** — "Full-screen slides, like PowerPoint."
 - **Focused** — "Immersive, distraction-free content."
 
-**Creation process**: On "Create", the wizard shows a spinner ("Creating your course..."). Delegates to the bundled `coursecode create <name>` CLI, which handles template scaffolding and initial dependency installation. After the CLI succeeds, Desktop identifies the actual created project directory (the CLI may normalize the display name into a directory-safe folder), makes a best-effort `npm install coursecode@latest` inside the new project, stamps `.coursecoderc.json` with the installed framework version when successful, applies the selected format/layout, and navigates to the Project Detail view. If the latest-framework install fails because npm is unavailable or offline, the course still opens with the bundled framework baseline.
+**Creation process**: On "Create", the wizard shows a spinner ("Creating your course..."). Delegates to the bundled `coursecode create <name>` CLI, which handles template scaffolding and initial dependency installation. After the CLI succeeds, Desktop identifies the actual created project directory (the CLI may normalize the display name into a directory-safe folder), makes a best-effort full upgrade through the newly installed `coursecode@latest` package, applies the selected format/layout, and navigates to the Project Detail view. The full upgrade runs the project-local migration plus the final dependency install, so the package version and checked-in framework cannot drift. If the latest-framework install or migration fails because npm is unavailable or offline, the course still opens with the bundled framework baseline and retains its prior version marker.
 
 If creation fails, the error is shown inline with a "Try Again" button.
 
@@ -501,7 +501,7 @@ Central registry that imports all domain modules and maps IPC channel names to h
 
 Returns an array of `Project` objects sorted by last modified (newest first).
 
-**Creation**: Delegates to the bundled `coursecode create <name>` CLI. Accepts options: `name`, `blank` (creates without example slides), and `location` (custom parent directory, defaults to configured projects dir). The CLI handles template scaffolding and initial dependency installation. Desktop then discovers the actual created directory, installs `coursecode@latest` into the project when npm is reachable, stamps `.coursecoderc.json` with the actual installed framework version, applies selected format/layout preferences, and falls back to the bundled framework if latest installation is unavailable.
+**Creation**: Delegates to the bundled `coursecode create <name>` CLI. Accepts options: `name`, `blank` (creates without example slides), and `location` (custom parent directory, defaults to configured projects dir). The CLI handles template scaffolding and initial dependency installation. Desktop then discovers the actual created directory and, when npm is reachable, installs `coursecode@latest`, runs its project-local `upgrade --force --configs`, and installs the migrated dependency graph before applying selected format/layout preferences. If any latest-framework stage fails, creation still opens the bundled baseline and does not stamp a newer version independently of the migration.
 
 **Validation**: Before creation, validates that the target directory doesn't already exist and that the project name produces a valid directory name.
 
@@ -509,7 +509,7 @@ Returns an array of `Project` objects sorted by last modified (newest first).
 
 **Cloud binding management**: `clearCloudBinding(projectPath)` removes all cloud-related keys (`cloudId`, `orgId`, `sourceType`, `githubRepo`) from `.coursecoderc.json` while preserving other metadata like `frameworkVersion`.
 
-**Framework upgrade**: `upgradeProject(projectPath, webContents)` upgrades the `coursecode` npm package in the project directory to the latest version. Uses `npmSpawnArgs()` and `getChildEnv()` from `node-env.js` (same bundled-npm pattern as `cli-installer.js`). Streams progress events to the renderer via `webContents.send('project:upgradeProgress', { phase, text })`. On success, reads the newly installed version from `node_modules/coursecode/package.json` and stamps it into `.coursecoderc.json` as `frameworkVersion`.
+**Framework upgrade**: `upgradeProject(projectPath, webContents)` upgrades the npm package and the checked-in project framework as one workflow. It uses `npmSpawnArgs()` for the initial `coursecode@latest` install, `getProjectCLISpawnArgs()` to run the newly installed `upgrade --force --configs`, and a final `npm install` to apply migrated package metadata. Progress is streamed via `webContents.send('project:upgradeProgress', { phase, text })`. Success is reported only after all three stages complete; `.coursecoderc.json` is owned by the CLI migration rather than being stamped after a package-only install.
 
 ### `preview-manager.js` — Preview Server Lifecycle
 
@@ -599,7 +599,7 @@ Ensures CourseCode tools are available with a bundled-first strategy for non-tec
 4. Streams progress/status to the renderer via IPC events.
 5. Stores detected CLI version in settings.
 
-**Update flow**: Desktop app updates and course framework updates are separate. The app shell updates through Electron auto-update and GitHub Releases. Course framework updates are per-project: newly created courses get the latest published framework when npm is reachable, existing courses show the Version Modal when their `.coursecoderc.json` `frameworkVersion` is behind npm latest, and the one-click upgrade runs `npm install coursecode@latest` inside that course.
+**Update flow**: Desktop app updates and course framework updates are separate. The app shell updates through Electron auto-update and GitHub Releases. Course framework updates are per-project: newly created courses get the latest published package plus a full project migration when npm is reachable, existing courses show the Version Modal when their `.coursecoderc.json` `frameworkVersion` is behind npm latest, and the one-click upgrade installs the latest package, runs its project-local migration, and installs the resulting dependency graph.
 
 ### `tool-integrations.js` — External Tool Discovery
 

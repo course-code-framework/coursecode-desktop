@@ -10,6 +10,7 @@ vi.mock('electron', () => import('../mocks/electron.js'));
 vi.mock('../../main/node-env.js', () => ({
     getChildEnv: vi.fn(() => ({ ...process.env })),
     getCLISpawnArgs: vi.fn((args) => ({ command: 'echo', args })),
+    getProjectCLISpawnArgs: vi.fn((projectPath, args) => ({ command: 'echo', args })),
     npmSpawnArgs: vi.fn((args) => ({ command: 'echo', args })),
     isLocalMode: vi.fn(() => false),
 }));
@@ -32,7 +33,7 @@ vi.mock('../../main/settings.js', async () => {
     };
 });
 
-const { scanProjects, openProject, createProject, clearCloudBinding } = await import('../../main/project-manager.js');
+const { scanProjects, openProject, createProject, clearCloudBinding, upgradeProject } = await import('../../main/project-manager.js');
 const settingsMod = await import('../../main/settings.js');
 const nodeEnvMod = await import('../../main/node-env.js');
 
@@ -42,6 +43,7 @@ beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'cc-projects-test-'));
     settingsMod._setProjectsDir(tempDir);
     nodeEnvMod.getCLISpawnArgs.mockImplementation((args) => ({ command: 'echo', args }));
+    nodeEnvMod.getProjectCLISpawnArgs.mockImplementation((projectPath, args) => ({ command: 'echo', args }));
     nodeEnvMod.npmSpawnArgs.mockImplementation((args) => ({ command: 'echo', args }));
 });
 
@@ -184,10 +186,26 @@ describe('createProject', () => {
             mkdirSync(packageDir, { recursive: true });
             writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ version: '0.1.49' }));
         `);
+        const fakeUpgradePath = join(tempDir, 'fake-coursecode-upgrade.mjs');
+        writeFileSync(fakeUpgradePath, `
+            import { readFileSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+
+            const rcPath = join(process.cwd(), '.coursecoderc.json');
+            const rc = JSON.parse(readFileSync(rcPath, 'utf-8'));
+            rc.frameworkVersion = '0.1.49';
+            rc.upgradedFrom = '0.1.48';
+            rc.upgradedAt = '2026-07-15T12:00:00.000Z';
+            writeFileSync(rcPath, JSON.stringify(rc));
+        `);
         nodeEnvMod.getCLISpawnArgs.mockImplementation((args) => {
             if (args[0] === '--version') return { command: 'echo', args: ['0.1.48'] };
             return { command: process.execPath, args: [fakeCliPath] };
         });
+        nodeEnvMod.getProjectCLISpawnArgs.mockImplementation((projectPath, args) => ({
+            command: process.execPath,
+            args: [fakeUpgradePath, ...args]
+        }));
         nodeEnvMod.npmSpawnArgs.mockImplementation(() => ({ command: process.execPath, args: [fakeNpmPath] }));
 
         const project = await createProject({
@@ -367,5 +385,156 @@ describe('clearCloudBinding', () => {
         project = await openProject(projectDir);
         expect(project.cloudId).toBeUndefined();
         expect(project.githubLinked).toBeUndefined();
+    });
+});
+
+describe('upgradeProject', () => {
+    it('installs the package, migrates project files, and installs migrated dependencies before success', async () => {
+        const projectDir = join(tempDir, 'upgrade-course');
+        mkdirSync(join(projectDir, 'course'), { recursive: true });
+        writeFileSync(join(projectDir, '.coursecoderc.json'), JSON.stringify({ frameworkVersion: '0.1.53' }));
+        writeFileSync(join(projectDir, 'course', 'course-config.js'), 'export const courseConfig = {};\n');
+
+        const fakeNpmPath = join(tempDir, 'fake-upgrade-npm.mjs');
+        writeFileSync(fakeNpmPath, `
+            import { appendFileSync, mkdirSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+
+            const args = process.argv.slice(2);
+            appendFileSync(join(process.cwd(), 'upgrade-order.txt'), 'npm:' + args.join(' ') + '\\n');
+            if (args.includes('coursecode@latest')) {
+                const packageDir = join(process.cwd(), 'node_modules', 'coursecode');
+                mkdirSync(packageDir, { recursive: true });
+                writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ version: '0.1.60' }));
+            }
+        `);
+
+        const fakeUpgradePath = join(tempDir, 'fake-project-upgrade.mjs');
+        writeFileSync(fakeUpgradePath, `
+            import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+
+            const args = process.argv.slice(2);
+            appendFileSync(join(process.cwd(), 'upgrade-order.txt'), 'cli:' + args.join(' ') + '\\n');
+            mkdirSync(join(process.cwd(), 'framework'), { recursive: true });
+            writeFileSync(join(process.cwd(), 'framework', 'upgraded.txt'), '0.1.60');
+            writeFileSync(join(process.cwd(), 'vite.config.js'), '// migrated config');
+            const rcPath = join(process.cwd(), '.coursecoderc.json');
+            const rc = JSON.parse(readFileSync(rcPath, 'utf-8'));
+            rc.frameworkVersion = '0.1.60';
+            rc.upgradedFrom = '0.1.53';
+            rc.upgradedAt = '2026-07-15T12:00:00.000Z';
+            writeFileSync(rcPath, JSON.stringify(rc));
+        `);
+
+        nodeEnvMod.npmSpawnArgs.mockImplementation((args) => ({
+            command: process.execPath,
+            args: [fakeNpmPath, ...args]
+        }));
+        nodeEnvMod.getProjectCLISpawnArgs.mockImplementation((projectPath, args) => ({
+            command: process.execPath,
+            args: [fakeUpgradePath, ...args]
+        }));
+
+        const send = vi.fn();
+        const result = await upgradeProject(projectDir, { isDestroyed: () => false, send });
+
+        expect(result).toEqual({ success: true, version: '0.1.60' });
+        expect(readFileSync(join(projectDir, 'framework', 'upgraded.txt'), 'utf-8')).toBe('0.1.60');
+        expect(readFileSync(join(projectDir, 'vite.config.js'), 'utf-8')).toBe('// migrated config');
+        expect(readFileSync(join(projectDir, 'upgrade-order.txt'), 'utf-8').trim().split('\n')).toEqual([
+            'npm:install coursecode@latest',
+            'cli:upgrade --force --configs',
+            'npm:install'
+        ]);
+
+        const rc = JSON.parse(readFileSync(join(projectDir, '.coursecoderc.json'), 'utf-8'));
+        expect(rc.frameworkVersion).toBe('0.1.60');
+        expect(rc.upgradedFrom).toBe('0.1.53');
+        expect(send.mock.calls.map(([, payload]) => payload.phase)).toEqual(expect.arrayContaining([
+            'installing',
+            'migrating',
+            'finalizing',
+            'complete'
+        ]));
+    });
+
+    it('does not stamp a new framework version when project migration fails', async () => {
+        const projectDir = join(tempDir, 'failed-upgrade-course');
+        mkdirSync(projectDir);
+        writeFileSync(join(projectDir, '.coursecoderc.json'), JSON.stringify({ frameworkVersion: '0.1.53' }));
+
+        const fakeNpmPath = join(tempDir, 'fake-failed-upgrade-npm.mjs');
+        writeFileSync(fakeNpmPath, `
+            import { mkdirSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+            const packageDir = join(process.cwd(), 'node_modules', 'coursecode');
+            mkdirSync(packageDir, { recursive: true });
+            writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ version: '0.1.60' }));
+        `);
+        const fakeUpgradePath = join(tempDir, 'fake-failed-project-upgrade.mjs');
+        writeFileSync(fakeUpgradePath, `process.stderr.write('migration exploded\\n'); process.exit(2);`);
+
+        nodeEnvMod.npmSpawnArgs.mockImplementation((args) => ({
+            command: process.execPath,
+            args: [fakeNpmPath, ...args]
+        }));
+        nodeEnvMod.getProjectCLISpawnArgs.mockImplementation((projectPath, args) => ({
+            command: process.execPath,
+            args: [fakeUpgradePath, ...args]
+        }));
+
+        await expect(upgradeProject(projectDir)).rejects.toThrow('CourseCode project migration failed');
+        const rc = JSON.parse(readFileSync(join(projectDir, '.coursecoderc.json'), 'utf-8'));
+        expect(rc.frameworkVersion).toBe('0.1.53');
+        expect(rc.upgradedAt).toBeUndefined();
+    });
+
+    it('restores the old version marker when the final dependency install fails', async () => {
+        const projectDir = join(tempDir, 'failed-final-install-course');
+        mkdirSync(projectDir);
+        writeFileSync(join(projectDir, '.coursecoderc.json'), JSON.stringify({
+            frameworkVersion: '0.1.53',
+            upgradedFrom: '0.1.44'
+        }));
+
+        const fakeNpmPath = join(tempDir, 'fake-final-install-npm.mjs');
+        writeFileSync(fakeNpmPath, `
+            import { mkdirSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+            const args = process.argv.slice(2);
+            if (args.includes('coursecode@latest')) {
+                const packageDir = join(process.cwd(), 'node_modules', 'coursecode');
+                mkdirSync(packageDir, { recursive: true });
+                writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ version: '0.1.60' }));
+            } else {
+                process.stderr.write('final install failed\\n');
+                process.exit(3);
+            }
+        `);
+        const fakeUpgradePath = join(tempDir, 'fake-successful-project-upgrade.mjs');
+        writeFileSync(fakeUpgradePath, `
+            import { readFileSync, writeFileSync } from 'fs';
+            import { join } from 'path';
+            const rcPath = join(process.cwd(), '.coursecoderc.json');
+            const rc = JSON.parse(readFileSync(rcPath, 'utf-8'));
+            rc.frameworkVersion = '0.1.60';
+            rc.upgradedFrom = '0.1.53';
+            rc.upgradedAt = '2026-07-15T12:00:00.000Z';
+            writeFileSync(rcPath, JSON.stringify(rc));
+        `);
+
+        nodeEnvMod.npmSpawnArgs.mockImplementation((args) => ({
+            command: process.execPath,
+            args: [fakeNpmPath, ...args]
+        }));
+        nodeEnvMod.getProjectCLISpawnArgs.mockImplementation((projectPath, args) => ({
+            command: process.execPath,
+            args: [fakeUpgradePath, ...args]
+        }));
+
+        await expect(upgradeProject(projectDir)).rejects.toThrow('Migrated dependency install failed');
+        const rc = JSON.parse(readFileSync(join(projectDir, '.coursecoderc.json'), 'utf-8'));
+        expect(rc).toEqual({ frameworkVersion: '0.1.53', upgradedFrom: '0.1.44' });
     });
 });

@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 import { shell } from 'electron';
 import { getSetting, saveSetting } from './settings.js';
-import { getChildEnv, getCLISpawnArgs, npmSpawnArgs } from './node-env.js';
+import { getChildEnv, getCLISpawnArgs, getProjectCLISpawnArgs, npmSpawnArgs } from './node-env.js';
 import { initRepo, createSnapshot } from './snapshot-manager.js';
 import { stopPreview } from './preview-manager.js';
 import { stopGeneration, deleteChatHistory } from './chat-engine.js';
@@ -183,11 +183,8 @@ async function findCreatedProjectDir(projectsDir, beforeEntries) {
 
 async function installLatestFrameworkForNewProject(projectDir) {
     try {
-        const result = await installFrameworkPackage(projectDir, 'coursecode@latest');
-        if (!result.version) return;
-
-        await stampFrameworkVersion(projectDir, result.version);
-        log.info('Installed latest CourseCode framework for new project', {
+        const result = await upgradeFrameworkInProject(projectDir);
+        log.info('Installed and migrated latest CourseCode framework for new project', {
             projectDir,
             version: result.version
         });
@@ -199,31 +196,28 @@ async function installLatestFrameworkForNewProject(projectDir) {
     }
 }
 
-function installFrameworkPackage(projectDir, packageSpec, onProgress = null) {
-    const { command, args } = npmSpawnArgs(['install', packageSpec]);
-    const env = getChildEnv();
-
+function runProjectCommand(projectDir, { command, args }, { phase, description, errorPrefix, onProgress }) {
     return new Promise((resolve, reject) => {
-        onProgress?.('installing', `Installing ${packageSpec}…`);
+        onProgress?.(phase, description);
 
         const child = spawn(command, args, {
             cwd: projectDir,
-            env,
+            env: getChildEnv(),
             stdio: ['ignore', 'pipe', 'pipe']
         });
 
         let stderrBuffer = '';
 
         child.stdout.on('data', (data) => {
-            onProgress?.('installing', data.toString());
+            onProgress?.(phase, data.toString());
         });
 
         child.stderr.on('data', (data) => {
             stderrBuffer += data.toString();
-            onProgress?.('installing', data.toString());
+            onProgress?.(phase, data.toString());
         });
 
-        child.on('exit', async (code) => {
+        child.on('exit', (code) => {
             if (code !== 0) {
                 const detail = stderrBuffer
                     .split(/\r?\n/)
@@ -231,15 +225,81 @@ function installFrameworkPackage(projectDir, packageSpec, onProgress = null) {
                     .filter(Boolean)
                     .slice(-6)
                     .join('\n');
-                reject(new Error(`npm install failed (exit code ${code}).${detail ? `\n${detail}` : ''}`));
+                reject(new Error(`${errorPrefix} (exit code ${code}).${detail ? `\n${detail}` : ''}`));
                 return;
             }
 
-            resolve({ version: await readInstalledFrameworkVersion(projectDir) });
+            resolve();
         });
 
         child.on('error', reject);
     });
+}
+
+async function installFrameworkPackage(projectDir, packageSpec, onProgress = null) {
+    await runProjectCommand(projectDir, npmSpawnArgs(['install', packageSpec]), {
+        phase: 'installing',
+        description: `Installing ${packageSpec}…`,
+        errorPrefix: 'npm install failed',
+        onProgress
+    });
+
+    return { version: await readInstalledFrameworkVersion(projectDir) };
+}
+
+async function runFrameworkMigration(projectDir, onProgress = null) {
+    await runProjectCommand(
+        projectDir,
+        getProjectCLISpawnArgs(projectDir, ['upgrade', '--force', '--configs']),
+        {
+            phase: 'migrating',
+            description: 'Replacing framework files and migrating build configuration…',
+            errorPrefix: 'CourseCode project migration failed',
+            onProgress
+        }
+    );
+}
+
+async function installMigratedDependencies(projectDir, onProgress = null) {
+    await runProjectCommand(projectDir, npmSpawnArgs(['install']), {
+        phase: 'finalizing',
+        description: 'Installing migrated project dependencies…',
+        errorPrefix: 'Migrated dependency install failed',
+        onProgress
+    });
+}
+
+async function upgradeFrameworkInProject(projectDir, onProgress = null) {
+    const rcPath = join(projectDir, '.coursecoderc.json');
+    const originalRc = existsSync(rcPath) ? await readFile(rcPath, 'utf-8') : null;
+
+    try {
+        const { version } = await installFrameworkPackage(projectDir, 'coursecode@latest', onProgress);
+        if (!version) {
+            throw new Error('The latest CourseCode package installed, but its version could not be verified.');
+        }
+
+        // Installing the package only updates node_modules. The project-local CLI
+        // owns the checked-in framework, manifests, schemas, and managed configs.
+        await runFrameworkMigration(projectDir, onProgress);
+        await installMigratedDependencies(projectDir, onProgress);
+
+        return { version };
+    } catch (err) {
+        // Keep the old version visible so the UI offers a retry if any stage
+        // fails, including the dependency install after CLI migration.
+        if (originalRc !== null) {
+            try {
+                await writeFile(rcPath, originalRc, 'utf-8');
+            } catch (restoreErr) {
+                log.warn('Failed to restore project version metadata after upgrade failure', {
+                    projectDir,
+                    error: restoreErr?.message
+                });
+            }
+        }
+        throw err;
+    }
 }
 
 async function readInstalledFrameworkVersion(projectDir) {
@@ -252,18 +312,6 @@ async function readInstalledFrameworkVersion(projectDir) {
         log.debug('Could not read installed framework version', { projectDir, error: err?.message });
         return null;
     }
-}
-
-async function stampFrameworkVersion(projectDir, version) {
-    if (!version) return;
-
-    const rcPath = join(projectDir, '.coursecoderc.json');
-    let rc = {};
-    if (existsSync(rcPath)) {
-        rc = JSON.parse(await readFile(rcPath, 'utf-8'));
-    }
-    rc.frameworkVersion = version;
-    await writeFile(rcPath, JSON.stringify(rc, null, 2) + '\n', 'utf-8');
 }
 
 async function applyProjectPreferences(projectDir, { format, layout }) {
@@ -445,11 +493,11 @@ export async function clearCloudBinding(projectPath) {
 }
 
 /**
- * Upgrade the coursecode framework dependency in a project.
+ * Upgrade the CourseCode package and migrate the checked-in project framework.
  *
- * Runs `npm install coursecode@latest` in the project directory using the
- * bundled npm (same pattern as cli-installer.js). On success, updates the
- * project's .coursecoderc.json frameworkVersion to reflect the new version.
+ * Installs `coursecode@latest`, runs that project-local CLI's full upgrade with
+ * managed config migration, then installs the migrated dependency graph. The
+ * CLI updates .coursecoderc.json only after replacing the project files.
  *
  * Streams progress events to the renderer via webContents.
  */
@@ -463,15 +511,7 @@ export async function upgradeProject(projectPath, webContents) {
 
         sendProgress('installing', 'Upgrading CourseCode framework…');
 
-        installFrameworkPackage(projectPath, 'coursecode@latest', sendProgress).then(async ({ version: newVersion }) => {
-            if (newVersion) {
-                try {
-                    await stampFrameworkVersion(projectPath, newVersion);
-                } catch (err) {
-                    log.warn('Failed to update frameworkVersion in .coursecoderc.json', err);
-                }
-            }
-
+        upgradeFrameworkInProject(projectPath, sendProgress).then(({ version: newVersion }) => {
             sendProgress('complete', `Upgraded to CourseCode ${newVersion || 'latest'}`);
             log.info('Project framework upgraded', { projectPath, newVersion });
             resolve({ success: true, version: newVersion });

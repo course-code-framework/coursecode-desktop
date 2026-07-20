@@ -141,7 +141,7 @@
             <path d="M12 8v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
             <circle cx="12" cy="16" r="1" fill="currentColor"/>
           </svg>
-          <p>A newer version of CourseCode is available. Upgrading updates the framework dependency in this course project.</p>
+          <p>A newer version of CourseCode is available. Upgrading replaces the managed framework files, migrates the build configuration with backups, and preserves your course content.</p>
         </div>
       {:else if upToDate}
         <div class="uptodate-banner">
