@@ -26,11 +26,7 @@ const DEFAULTS = {
     aiProvider: 'anthropic',
     aiModel: null,
     aiCustomInstructions: '',
-    defaultAiMode: 'byok',
-    aiModeInitialized: false,
     toolApprovalMode: 'auto',  // 'auto' | 'mutations' | 'all' — controls whether tools need user approval
-    cloudAiModel: null,
-    cloudModelCache: [],
     trustSystemCertificates: false
 };
 
@@ -54,6 +50,13 @@ export function loadSettings() {
         settings.aiChatEnabled = settings.showAiChatByDefault;
     }
     delete settings.showAiChatByDefault;
+
+    // Cloud AI mode was removed; AI chat is BYOK-only. Drop its leftover keys so a
+    // user who had chosen it falls back to their BYOK provider (or the "add your
+    // API key" prompt if none is configured).
+    for (const key of ['defaultAiMode', 'aiModeInitialized', 'cloudAiModel', 'cloudModelCache']) {
+        delete settings[key];
+    }
 
     // Ensure projects directory exists
     if (!existsSync(settings.projectsDir)) {

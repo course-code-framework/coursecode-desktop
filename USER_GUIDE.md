@@ -83,7 +83,7 @@ Settings controls:
 - projects directory
 - default format/layout
 - appearance/theme
-- AI settings (BYOK or Cloud models, if enabled)
+- AI settings (provider, API key, and model)
 - tools & integrations status
 
 ## Preview, Export, and Deploy (Important Terms)
@@ -148,7 +148,6 @@ You can use Desktop fully for:
 If you sign in to CourseCode Cloud, Desktop can also support:
 - one-click deploy
 - cloud-hosted delivery workflows
-- cloud-linked AI credit usage (instead of BYOK)
 
 Typical non-technical workflow:
 1. Build and test in Desktop with `Preview`
@@ -190,9 +189,7 @@ Cloud features should always be labeled optional in Desktop UI/docs.
 
 Desktop can include an AI chat workspace for project work.
 
-Modes:
-- `BYOK` — use your own API key with supported providers
-- `Cloud` — use CourseCode Cloud models/credits (requires sign-in)
+AI chat is `BYOK` (bring your own key): add an API key from a supported provider (Anthropic, OpenAI, or Google) in Settings → AI Assistant, then pick a model. Desktop sends requests directly to that provider, and usage is billed to your provider account. AI chat does not require CourseCode Cloud or a Cloud sign-in.
 
 AI is an optional assistive workflow. You can still build courses without it.
 
@@ -222,11 +219,12 @@ Check:
 - course builds successfully locally
 - your account/org has access to CourseCode Cloud features
 
-### AI Cloud mode unavailable
+### AI chat says no API key is configured
 
 Check:
-- signed in to CourseCode Cloud
-- cloud credits/model availability
+- an API key is saved for the selected provider in Settings → AI Assistant
+- the selected provider matches the key you added
+- models load after clicking `Refresh` (if not, check the key's permissions and your internet connection)
 
 ## Where to Go Next
 

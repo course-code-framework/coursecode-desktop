@@ -364,9 +364,6 @@ export function getMaxContextChars(contextTokens) {
 /** BYOK cost thresholds (USD) — warn user when session cost exceeds these */
 export const COST_WARNING_THRESHOLDS = [2, 5, 10, 25];
 
-/** Cloud credit warning threshold — warn when balance drops below this */
-export const CREDIT_LOW_THRESHOLD = 50;
-
 export const DEFAULT_PROVIDER = 'anthropic';
 
 // ---------------------------------------------------------------------------

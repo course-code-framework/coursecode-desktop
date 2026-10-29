@@ -32,7 +32,7 @@ Use Desktop if you want:
 
 - a guided workflow with buttons instead of terminal commands
 - local preview and LMS export without Node.js setup
-- optional AI-assisted authoring (BYOK or Cloud credits)
+- optional AI-assisted authoring with your own provider API key (BYOK)
 - optional one-click deploy to CourseCode Cloud
 
 Desktop uses the same project format as the CourseCode Framework, so your files stay portable.
@@ -41,7 +41,7 @@ Desktop uses the same project format as the CourseCode Framework, so your files 
 
 - **CourseCode Desktop**: open-source, local-first app
 - **CourseCode Framework**: open-source framework + CLI
-- **CourseCode Cloud**: optional hosted service for deployment, sharing, analytics, and managed AI credits
+- **CourseCode Cloud**: optional hosted service for deployment, sharing, and analytics
 
 Cloud is optional. Desktop and Framework remain useful for local authoring and export without Cloud.
 

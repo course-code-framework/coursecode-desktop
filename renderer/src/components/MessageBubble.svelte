@@ -159,9 +159,6 @@
 
   function formatUsage(usage) {
     if (!usage) return '';
-    if (usage.creditsCharged != null) {
-      return `${Math.round(usage.creditsCharged)} credits used`;
-    }
     const count = (usage.inputTokens || 0) + (usage.outputTokens || 0);
     if (!count) return '';
     if (count < 1000) return `${count} tokens`;

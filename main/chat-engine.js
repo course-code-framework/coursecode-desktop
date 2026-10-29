@@ -2,8 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSy
 import { createHash, randomBytes } from 'crypto';
 import { app } from 'electron';
 import { join, resolve, dirname, sep } from 'path';
-import { createProvider, loadApiKey, estimateCost, getCloudModels, getProviderModels, getModelContextWindow } from './llm-provider.js';
-import { loadToken } from './cloud-client.js';
+import { createProvider, loadApiKey, estimateCost, getProviderModels, getModelContextWindow } from './llm-provider.js';
 import { buildSystemPrompt } from './system-prompts.js';
 import { getSetting } from './settings.js';
 import { startPreview, getPreviewStatus, getPreviewPort } from './preview-manager.js';
@@ -17,7 +16,7 @@ import {
     TOOL_RESULT_MAX_CHARS, STATE_TOOL_MAX_CHARS, MCP_TOOL_TRUNCATION_NOTE,
     OLDER_MESSAGE_MAX_CHARS, READ_FILE_MAX_LINES,
     SAFE_TOOLS, MUTATION_TOOLS, PARALLELIZABLE_TOOLS,
-    getMaxContextChars, COST_WARNING_THRESHOLDS, CREDIT_LOW_THRESHOLD
+    getMaxContextChars, COST_WARNING_THRESHOLDS
 } from './ai-config.js';
 
 const log = createLogger('chat');
@@ -37,22 +36,6 @@ const NOISY_CHAT_TRACE_STEPS = new Set([
     'llm-request-start',
     'llm-loop-continue'
 ]);
-
-function inferCloudProviderFromModelId(modelId) {
-    const id = String(modelId || '').toLowerCase();
-    if (!id) return null;
-    if (id.includes('claude')) return 'anthropic';
-    if (id.includes('gemini')) return 'google';
-    if (id.includes('gpt') || id.includes('codex') || /^o\d/.test(id)) return 'openai';
-    return null;
-}
-
-function inferCloudApiType(modelId, provider) {
-    if (provider !== 'openai') return null;
-    const id = String(modelId || '').toLowerCase();
-    if (id.includes('codex') || /^gpt-5(\.|-|$)/.test(id)) return 'responses';
-    return 'chat';
-}
 
 // --- Active conversations by projectPath ---
 const conversations = new Map();
@@ -213,224 +196,6 @@ function prepareApiMessages(messages, maxContextChars) {
     return apiMessages;
 }
 
-/**
- * Translate internal Anthropic-format messages to OpenAI wire format.
- * Called only when the cloud model's upstream provider is OpenAI.
- */
-function prepareOpenAIMessages(messages, maxContextChars) {
-    const anthropicMsgs = prepareApiMessages(messages, maxContextChars);
-    const out = [];
-
-    for (const m of anthropicMsgs) {
-        if (m.role === 'user') {
-            // User messages may contain tool_result blocks (Anthropic format)
-            if (Array.isArray(m.content) && m.content.some(b => b.type === 'tool_result')) {
-                for (const block of m.content) {
-                    if (block.type === 'tool_result') {
-                        out.push({
-                            role: 'tool',
-                            tool_call_id: block.tool_use_id,
-                            content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || {})
-                        });
-                    } else if (block.type === 'text' && block.text?.trim()) {
-                        out.push({ role: 'user', content: block.text });
-                    }
-                }
-            } else {
-                const text = typeof m.content === 'string' ? m.content
-                    : Array.isArray(m.content)
-                        ? m.content.filter(b => b.type === 'text' && b.text?.trim()).map(b => b.text).join('\n\n')
-                        : JSON.stringify(m.content);
-                if (text) out.push({ role: 'user', content: text });
-            }
-            continue;
-        }
-
-        if (m.role === 'assistant') {
-            if (Array.isArray(m.content)) {
-                const textParts = m.content.filter(b => b.type === 'text' && b.text?.trim()).map(b => b.text);
-                const toolUses = m.content.filter(b => b.type === 'tool_use');
-
-                if (toolUses.length > 0) {
-                    out.push({
-                        role: 'assistant',
-                        content: textParts.length > 0 ? textParts.join('\n\n') : '',
-                        tool_calls: toolUses.map(tc => ({
-                            id: tc.id,
-                            type: 'function',
-                            function: { name: tc.name, arguments: JSON.stringify(tc.input || {}) }
-                        }))
-                    });
-                } else if (textParts.length > 0) {
-                    out.push({ role: 'assistant', content: textParts.join('\n\n') });
-                }
-            } else if (typeof m.content === 'string') {
-                out.push({ role: 'assistant', content: m.content });
-            }
-            continue;
-        }
-
-        // Pass through any other roles
-        out.push(m);
-    }
-
-    return out;
-}
-
-/**
- * Resolve a tool name from the preceding assistant message's tool_use blocks.
- * tool_result blocks only carry tool_use_id — the actual name lives on the
- * assistant message that triggered the call.
- */
-function resolveToolName(apiMessages, toolUseId) {
-    for (let i = apiMessages.length - 1; i >= 0; i--) {
-        const m = apiMessages[i];
-        if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
-        for (const block of m.content) {
-            if (block.type === 'tool_use' && block.id === toolUseId) return block.name;
-        }
-    }
-    return null;
-}
-
-/**
- * Translate internal Anthropic-format messages to Gemini wire format.
- * Called only when the cloud model's upstream provider is Google.
- */
-function prepareGoogleMessages(messages, maxContextChars) {
-    const anthropicMsgs = prepareApiMessages(messages, maxContextChars);
-    const contents = [];
-
-    for (const m of anthropicMsgs) {
-        if (m.role === 'user') {
-            const parts = [];
-            if (Array.isArray(m.content)) {
-                for (const block of m.content) {
-                    if (block.type === 'text' && block.text?.trim()) {
-                        parts.push({ text: block.text });
-                    }
-                    if (block.type === 'tool_result' && block.tool_use_id) {
-                        const raw = typeof block.content === 'string' ? block.content : JSON.stringify(block.content || {});
-                        let responseData;
-                        try {
-                            responseData = JSON.parse(raw);
-                        } catch (err) {
-                            responseData = { result: raw };
-                            log.debug('Failed to parse tool_result for Gemini payload, using raw fallback', {
-                                toolUseId: block.tool_use_id,
-                                error: err?.message
-                            });
-                        }
-                        parts.push({
-                            functionResponse: {
-                                name: resolveToolName(anthropicMsgs, block.tool_use_id) || block.tool_use_id,
-                                response: responseData
-                            }
-                        });
-                    }
-                }
-            } else if (typeof m.content === 'string' && m.content.trim()) {
-                parts.push({ text: m.content });
-            }
-            if (parts.length > 0) contents.push({ role: 'user', parts });
-            continue;
-        }
-
-        if (m.role === 'assistant') {
-            const parts = [];
-            if (Array.isArray(m.content)) {
-                for (const block of m.content) {
-                    if (block.type === 'text' && block.text?.trim()) {
-                        parts.push({ text: block.text });
-                    }
-                    if (block.type === 'tool_use' && block.name) {
-                        const part = {
-                            functionCall: { name: block.name, args: block.input || {} }
-                        };
-                        if (block.thought_signature) part.thoughtSignature = block.thought_signature;
-                        parts.push(part);
-                    }
-                }
-            } else if (typeof m.content === 'string' && m.content.trim()) {
-                parts.push({ text: m.content });
-            }
-            if (parts.length > 0) contents.push({ role: 'model', parts });
-            continue;
-        }
-    }
-
-    return contents;
-}
-
-/**
- * Translate internal Anthropic-format messages to OpenAI Responses API input format.
- * Called only when the cloud model uses apiType === 'responses' (Codex models).
- *
- * Responses API input items:
- * - { role: "user", content: "..." }  (simple text messages)
- * - { role: "assistant", content: "..." }  (assistant text)
- * - { type: "function_call", call_id: "...", name: "...", arguments: "..." }
- * - { type: "function_call_output", call_id: "...", output: "..." }
- */
-function prepareOpenAIResponsesInput(messages, maxContextChars) {
-    const anthropicMsgs = prepareApiMessages(messages, maxContextChars);
-    const input = [];
-
-    for (const m of anthropicMsgs) {
-        if (m.role === 'user') {
-            if (Array.isArray(m.content) && m.content.some(b => b.type === 'tool_result')) {
-                for (const block of m.content) {
-                    if (block.type === 'tool_result') {
-                        input.push({
-                            type: 'function_call_output',
-                            call_id: block.tool_use_id,
-                            output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || {})
-                        });
-                    } else if (block.type === 'text' && block.text?.trim()) {
-                        input.push({ role: 'user', content: block.text });
-                    }
-                }
-            } else {
-                const text = typeof m.content === 'string' ? m.content
-                    : Array.isArray(m.content)
-                        ? m.content.filter(b => b.type === 'text' && b.text?.trim()).map(b => b.text).join('\n\n')
-                        : JSON.stringify(m.content);
-                if (text) input.push({ role: 'user', content: text });
-            }
-            continue;
-        }
-
-        if (m.role === 'assistant') {
-            if (Array.isArray(m.content)) {
-                const textParts = m.content.filter(b => b.type === 'text' && b.text?.trim()).map(b => b.text);
-                const toolUses = m.content.filter(b => b.type === 'tool_use');
-
-                // Emit text content as a message
-                if (textParts.length > 0) {
-                    input.push({ role: 'assistant', content: textParts.join('\n\n') });
-                }
-                // Emit each tool call as a function_call item
-                for (const tc of toolUses) {
-                    input.push({
-                        type: 'function_call',
-                        call_id: tc.id,
-                        name: tc.name,
-                        arguments: JSON.stringify(tc.input || {})
-                    });
-                }
-            } else if (typeof m.content === 'string') {
-                input.push({ role: 'assistant', content: m.content });
-            }
-            continue;
-        }
-
-        // Pass through any other items
-        input.push(m);
-    }
-
-    return input;
-}
-
 // --- Conversation persistence ---
 
 function getChatDir(projectPath) {
@@ -468,18 +233,19 @@ function migrateLegacyChatStorage(projectPath) {
 
 function normalizeSessionContext(session) {
     if (!session || typeof session !== 'object') return null;
-    const mode = session.mode === 'cloud' ? 'cloud' : session.mode === 'byok' ? 'byok' : null;
-    if (!mode) return null;
+    // Conversations saved with the discontinued cloud AI mode carry cloud model IDs
+    // that no BYOK provider accepts, so drop them and fall back to the user's settings.
+    if (session.mode === 'cloud') return null;
 
     const providerId = typeof session.providerId === 'string' && session.providerId.trim()
         ? session.providerId.trim()
         : null;
+    if (!providerId) return null;
     const modelId = typeof session.modelId === 'string' && session.modelId.trim()
         ? session.modelId.trim()
         : null;
 
     return {
-        mode,
         providerId,
         modelId,
         updatedAt: session.updatedAt || null
@@ -629,13 +395,11 @@ function archiveActiveConversation(projectPath) {
     renameSync(convPath, archivePath);
 
     // Update index
-    const session = normalizeSessionContext(data.session);
     const summary = {
         id,
         title: deriveConversationTitle(msgs),
         updatedAt: data.savedAt || new Date().toISOString(),
-        messageCount: msgs.filter(m => m.role === 'user' || m.role === 'assistant').length,
-        mode: session?.mode || 'byok'
+        messageCount: msgs.filter(m => m.role === 'user' || m.role === 'assistant').length
     };
 
     const index = loadConversationsIndex(projectPath);
@@ -1513,124 +1277,44 @@ export function buildMentionIndex(projectPath) {
 
 // --- Main chat flow ---
 
-export async function sendMessage(projectPath, userMessage, mentions, webContents, mode) {
-    // Resolve provider based on mode
-    const isCloud = mode === 'cloud';
-    const providerId = isCloud ? 'cloud' : (getSetting('aiProvider') || DEFAULT_PROVIDER);
-    let modelId = isCloud ? getSetting('cloudAiModel') : getSetting('aiModel');
+export async function sendMessage(projectPath, userMessage, mentions, webContents) {
+    const providerId = getSetting('aiProvider') || DEFAULT_PROVIDER;
+    let modelId = getSetting('aiModel');
 
-    log.info(`sendMessage → ${providerId}/${modelId}`, { mode, hasMentions: mentions?.length > 0 });
+    log.info(`sendMessage → ${providerId}/${modelId}`, { hasMentions: mentions?.length > 0 });
 
-    let credential;
-    let cloudProvider = null;
-    let cloudApiType = null;
-    if (isCloud) {
-        credential = loadToken();
-        if (!credential) {
-            webContents?.send('chat:error', {
-                projectPath,
-                message: 'Not signed in to CourseCode Cloud. Sign in from Settings or the Dashboard.'
-            });
-            return;
+    const apiKey = loadApiKey(providerId);
+    if (!apiKey) {
+        webContents?.send('chat:error', {
+            projectPath,
+            message: 'No API key configured. Go to Settings → AI to add your API key.'
+        });
+        return;
+    }
+
+    const providerModels = getProviderModels(providerId);
+    const modelIds = new Set((providerModels || []).map(m => m.id));
+    if (modelIds.size > 0 && !modelIds.has(modelId)) {
+        const defaultProviderModel = providerModels.find(m => m.default)?.id || providerModels[0]?.id;
+        if (defaultProviderModel) {
+            log.info('BYOK model not available for provider, falling back to provider default', { providerId, requested: modelId, fallback: defaultProviderModel });
+            modelId = defaultProviderModel;
         }
+    }
 
-        try {
-            const availableCloudModels = await getCloudModels(credential);
-            const availableIds = new Set((availableCloudModels || []).map(m => m.id));
-            if (!modelId && availableCloudModels.length > 0) {
-                modelId = availableCloudModels[0].id;
-                log.info('No cloud model configured, defaulting to first available cloud model', { fallback: modelId });
-            } else if (availableIds.size > 0 && !availableIds.has(modelId)) {
-                const fallbackCloudModel = availableCloudModels[0].id;
-                log.info('Cloud model not available, falling back to first available model', { requested: modelId, fallback: fallbackCloudModel });
-                modelId = fallbackCloudModel;
-            }
-
-            // Resolve the upstream provider for the selected cloud model
-            const selectedModel = (availableCloudModels || []).find(m => m.id === modelId);
-            if (selectedModel?.provider) {
-                cloudProvider = selectedModel.provider;
-                cloudApiType = selectedModel.apiType || null;
-                log.debug('Resolved cloud provider', { modelId, cloudProvider, cloudApiType });
-            }
-
-            if (!modelId) {
-                webContents?.send('chat:error', {
-                    projectPath,
-                    message: 'No cloud AI models are currently available for your account.'
-                });
-                return;
-            }
-        } catch (err) {
-            log.debug('Failed to validate cloud model against available models, continuing with configured/default model', err);
-            if (!modelId) {
-                webContents?.send('chat:error', {
-                    projectPath,
-                    message: 'Unable to load cloud AI models right now. Try again in a moment.'
-                });
-                return;
-            }
+    if (!modelId) {
+        modelId = providerModels.find(m => m.default)?.id || providerModels[0]?.id;
+        if (modelId) {
+            log.info('Using BYOK fallback model', { providerId, fallback: modelId });
         }
+    }
 
-        // If cloud model metadata couldn't be resolved (e.g., temporary model API failure),
-        // infer provider/api type from model ID so request formatting stays valid.
-        if (!cloudProvider && modelId) {
-            const inferredProvider = inferCloudProviderFromModelId(modelId);
-            const inferredApiType = inferCloudApiType(modelId, inferredProvider);
-            if (inferredProvider) {
-                cloudProvider = inferredProvider;
-                cloudApiType = inferredApiType;
-                log.warn('Cloud provider metadata unavailable; using model-id inference fallback', {
-                    modelId,
-                    cloudProvider,
-                    cloudApiType
-                });
-            } else {
-                log.warn('Cloud provider metadata unavailable and inference failed', { modelId });
-            }
-        }
-
-        if (!cloudProvider) {
-            webContents?.send('chat:error', {
-                projectPath,
-                message: 'Unable to determine cloud model format right now. Open Settings → AI and reselect your cloud model, then try again.'
-            });
-            return;
-        }
-    } else {
-        credential = loadApiKey(providerId);
-        if (!credential) {
-            webContents?.send('chat:error', {
-                projectPath,
-                message: 'No API key configured. Go to Settings → AI to add your API key.'
-            });
-            return;
-        }
-
-        const providerModels = getProviderModels(providerId);
-        const modelIds = new Set((providerModels || []).map(m => m.id));
-        if (modelIds.size > 0 && !modelIds.has(modelId)) {
-            const defaultProviderModel = providerModels.find(m => m.default)?.id || providerModels[0]?.id;
-            if (defaultProviderModel) {
-                log.info('BYOK model not available for provider, falling back to provider default', { providerId, requested: modelId, fallback: defaultProviderModel });
-                modelId = defaultProviderModel;
-            }
-        }
-
-        if (!modelId) {
-            modelId = providerModels.find(m => m.default)?.id || providerModels[0]?.id;
-            if (modelId) {
-                log.info('Using BYOK fallback model', { providerId, fallback: modelId });
-            }
-        }
-
-        if (!modelId) {
-            webContents?.send('chat:error', {
-                projectPath,
-                message: 'No AI models are available for this provider yet. Add a key and refresh models in Settings.'
-            });
-            return;
-        }
+    if (!modelId) {
+        webContents?.send('chat:error', {
+            projectPath,
+            message: 'No AI models are available for this provider yet. Add a key and refresh models in Settings.'
+        });
+        return;
     }
 
     // Load or init conversation
@@ -1643,7 +1327,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     }
 
     const sessionContext = {
-        mode: isCloud ? 'cloud' : 'byok',
         providerId,
         modelId,
         updatedAt: new Date().toISOString()
@@ -1653,7 +1336,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     log.info('Chat turn started', {
         projectPath,
         requestId,
-        mode: sessionContext.mode,
         providerId,
         modelId
     });
@@ -1664,7 +1346,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     messages.push(userTurn);
     persistConversation(projectPath, messages, sessionContext);
     trace('user-message-appended', {
-        mode: sessionContext.mode,
         providerId,
         modelId,
         mentionCount: Array.isArray(mentions) ? mentions.length : 0,
@@ -1681,30 +1362,17 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
     const projectContext = getProjectContext(projectPath);
 
     // Build API messages with truncation for efficiency
-    // For cloud models, translate to the upstream provider's wire format
     const maxContextChars = getMaxContextChars(getModelContextWindow(modelId));
-    let apiMessages;
-    if (cloudApiType === 'responses') {
-        apiMessages = prepareOpenAIResponsesInput(messages, maxContextChars);
-    } else if (cloudProvider === 'openai') {
-        apiMessages = prepareOpenAIMessages(messages, maxContextChars);
-    } else if (cloudProvider === 'google') {
-        apiMessages = prepareGoogleMessages(messages, maxContextChars);
-    } else {
-        apiMessages = prepareApiMessages(messages, maxContextChars);
-    }
+    const apiMessages = prepareApiMessages(messages, maxContextChars);
     trace('prepared-api-messages', {
-        mode: sessionContext.mode,
         providerId,
         modelId,
-        cloudProvider,
-        cloudApiType,
         totalMessages: apiMessages.length,
         recentMessages: apiMessages.slice(-4).map(summarizeApiMessage)
     });
 
     try {
-        const provider = await createProvider(providerId, credential, { cloudProvider, cloudApiType });
+        const provider = await createProvider(providerId, apiKey);
         let runtimeTools = [...FILE_TOOL_DEFINITIONS];
         let mcpInstructions = null;
         if (getPreviewStatus(projectPath) === 'running') {
@@ -1730,7 +1398,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         });
         let sessionInputTokens = 0;
         let sessionOutputTokens = 0;
-        let sessionCreditsCharged = 0;
         let sessionCacheCreation = 0;
         let sessionCacheRead = 0;
         let executedToolCount = 0;
@@ -1776,33 +1443,22 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 throw new Error('The AI requested too many consecutive tool steps without finishing. Please try again with a more specific request.');
             }
 
-            const MAX_TIMEOUT_RETRIES = 1;
-            let timeoutRetries = 0;
-            let didTimeout = false;
-
-            // Retry wrapper: re-issues the same LLM call on upstream timeout (once)
-            do {
-            didTimeout = false;
-
-            log.debug('Calling LLM', { messageCount: apiMessages.length, model: modelId, timeoutRetry: timeoutRetries > 0 ? timeoutRetries : undefined });
+            log.debug('Calling LLM', { messageCount: apiMessages.length, model: modelId });
             trace('llm-request-start', {
                 loopIteration,
-                mode: sessionContext.mode,
                 providerId,
                 modelId,
                 messageCount: apiMessages.length,
                 toolCount: runtimeTools.length,
                 tools: runtimeTools.map(t => t.name),
-                recentMessages: apiMessages.slice(-4).map(summarizeApiMessage),
-                timeoutRetry: timeoutRetries > 0 ? timeoutRetries : undefined
+                recentMessages: apiMessages.slice(-4).map(summarizeApiMessage)
             });
             const stream = provider.chat({
                 messages: apiMessages,
                 tools: runtimeTools,
                 system: systemPrompt,
                 model: modelId,
-                signal: controller.signal,
-                requestId
+                signal: controller.signal
             });
 
             let currentText = '';
@@ -1876,32 +1532,15 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 } else if (event.type === 'done') {
                     sessionInputTokens += event.usage?.inputTokens || 0;
                     sessionOutputTokens += event.usage?.outputTokens || 0;
-                    sessionCreditsCharged += event.creditsCharged || 0;
                     sessionCacheCreation += event.usage?.cacheCreationInputTokens || 0;
                     sessionCacheRead += event.usage?.cacheReadInputTokens || 0;
 
-                    // Cloud stream timeout — the upstream provider stopped responding.
-                    // Any timeout is an error: partial text from a truncated stream is unreliable.
-                    if (event.timedOut) {
-                        if (timeoutRetries < MAX_TIMEOUT_RETRIES) {
-                            timeoutRetries += 1;
-                            didTimeout = true;
-                            log.warn('Cloud stream timed out, retrying', { streamedChars: currentText.length, toolCalls: currentToolCalls.length, retry: timeoutRetries });
-                            // Clear any partial streamed text from the UI before retry
-                            webContents?.send('chat:stream', { projectPath, text: '', delta: '', retry: true });
-                            break; // break out of the event loop to re-issue the LLM call
-                        }
-                        log.warn('Cloud stream timed out after retry', { streamedChars: currentText.length, toolCalls: currentToolCalls.length });
-                        throw new Error('The AI service timed out before finishing its response. Try again.');
-                    }
-
-                    // Emit incremental usage so the UI can show cost/credits in real-time
+                    // Emit incremental usage so the UI can show cost in real-time
                     webContents?.send('chat:stepUsage', {
                         projectPath,
                         usage: event.usage || {},
-                        creditsCharged: event.creditsCharged || 0,
-                        estimatedCost: isCloud ? null : estimateCost(
-                            getSetting('aiProvider') || DEFAULT_PROVIDER,
+                        estimatedCost: estimateCost(
+                            providerId,
                             modelId,
                             event.usage?.inputTokens || 0,
                             event.usage?.outputTokens || 0
@@ -1910,10 +1549,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
                     trace('llm-response-complete', {
                         stopReason: event.stopReason,
-                        timedOut: Boolean(event.timedOut),
                         streamedChars: currentText.length,
                         usage: event.usage,
-                        creditsCharged: event.creditsCharged || 0,
                         assistantPreview: toPreviewText(currentText),
                         toolCalls: currentToolCalls.map(tc => ({
                             id: tc.id,
@@ -1950,56 +1587,11 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                             reason: toolReason(tc.name),
                             status: 'running'
                         })),
-                        _usage: { ...event.usage, creditsCharged: event.creditsCharged || 0 }
+                        _usage: event.usage
                     };
                     messages.push(assistantMsg);
                     if (assistantContent.length > 0) {
-                        if (cloudApiType === 'responses') {
-                            // Responses API format: separate items for text and function_calls
-                            const textParts = assistantContent.filter(b => b.type === 'text').map(b => b.text);
-                            const toolUses = assistantContent.filter(b => b.type === 'tool_use');
-                            if (textParts.length > 0) {
-                                apiMessages.push({ role: 'assistant', content: textParts.join('\n\n') });
-                            }
-                            for (const tc of toolUses) {
-                                apiMessages.push({
-                                    type: 'function_call',
-                                    call_id: tc.id,
-                                    name: tc.name,
-                                    arguments: JSON.stringify(tc.input || {})
-                                });
-                            }
-                        } else if (cloudProvider === 'openai') {
-                            // OpenAI format: tool_calls on the assistant message, text as string
-                            const toolUses = assistantContent.filter(b => b.type === 'tool_use');
-                            const textParts = assistantContent.filter(b => b.type === 'text').map(b => b.text);
-                            const openaiMsg = {
-                                role: 'assistant',
-                                content: textParts.length > 0 ? textParts.join('\n\n') : null
-                            };
-                            if (toolUses.length > 0) {
-                                openaiMsg.tool_calls = toolUses.map(tc => ({
-                                    id: tc.id,
-                                    type: 'function',
-                                    function: { name: tc.name, arguments: JSON.stringify(tc.input || {}) }
-                                }));
-                            }
-                            apiMessages.push(openaiMsg);
-                        } else if (cloudProvider === 'google') {
-                            // Gemini format: role 'model' with functionCall parts
-                            const parts = [];
-                            for (const block of assistantContent) {
-                                if (block.type === 'text' && block.text?.trim()) parts.push({ text: block.text });
-                                if (block.type === 'tool_use') {
-                                    const part = { functionCall: { name: block.name, args: block.input || {} } };
-                                    if (block.thought_signature) part.thoughtSignature = block.thought_signature;
-                                    parts.push(part);
-                                }
-                            }
-                            if (parts.length > 0) apiMessages.push({ role: 'model', parts });
-                        } else {
-                            apiMessages.push({ role: 'assistant', content: assistantContent });
-                        }
+                        apiMessages.push({ role: 'assistant', content: assistantContent });
                     }
                     persistConversation(projectPath, messages, sessionContext);
 
@@ -2263,101 +1855,23 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                         }
 
                         if (toolResultContents.length > 0) {
-                            if (cloudApiType === 'responses') {
-                                // Responses API format: each tool result is a function_call_output item
-                                for (const tr of toolResultContents) {
-                                    const output = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});
-                                    apiMessages.push({
-                                        type: 'function_call_output',
-                                        call_id: tr.tool_use_id,
-                                        output
-                                    });
-                                }
-                                // Inject screenshot images as a user message with input_image
-                                if (pendingScreenshots.length > 0) {
-                                    const parts = pendingScreenshots.map(img => ({
-                                        type: 'input_image',
-                                        image_url: `data:${img.mimeType || 'image/jpeg'};base64,${img.source?.data || img.data}`
-                                    }));
-                                    parts.unshift({ type: 'input_text', text: 'Screenshot of the current slide:' });
-                                    apiMessages.push({ role: 'user', content: parts });
-                                }
-                            } else if (cloudProvider === 'openai') {
-                                // OpenAI format: each tool result is a separate { role: 'tool' } message
-                                for (const tr of toolResultContents) {
-                                    const content = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});
-                                    apiMessages.push({
-                                        role: 'tool',
-                                        tool_call_id: tr.tool_use_id,
-                                        content
-                                    });
-                                }
-                                // Inject screenshot images as a user message with image_url
-                                if (pendingScreenshots.length > 0) {
-                                    const parts = pendingScreenshots.map(img => ({
-                                        type: 'image_url',
-                                        image_url: { url: `data:${img.mimeType || 'image/jpeg'};base64,${img.source?.data || img.data}` }
-                                    }));
-                                    parts.unshift({ type: 'text', text: 'Screenshot of the current slide:' });
-                                    apiMessages.push({ role: 'user', content: parts });
-                                }
-                            } else if (cloudProvider === 'google') {
-                                // Gemini format: functionResponse parts in a user message
-                                const parts = toolResultContents.map(tr => {
-                                    const raw = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || {});
-                                    let responseData;
-                                    try {
-                                        responseData = JSON.parse(raw);
-                                    } catch (err) {
-                                        responseData = { result: raw };
-                                        log.debug('Failed to parse tool result for Gemini follow-up payload, using raw fallback', {
-                                            toolUseId: tr.tool_use_id,
-                                            error: err?.message
-                                        });
+                            // Tool results stay in the internal Anthropic-style format;
+                            // each BYOK provider converts them to its own wire format.
+                            apiMessages.push({ role: 'user', content: toolResultContents });
+                            // Inject screenshot image blocks in a follow-up user message
+                            if (pendingScreenshots.length > 0) {
+                                const imageContent = pendingScreenshots.map(img => ({
+                                    type: 'image',
+                                    source: {
+                                        type: 'base64',
+                                        media_type: img.mimeType || 'image/jpeg',
+                                        data: img.source?.data || img.data
                                     }
-                                    const toolName = currentToolCalls.find(tc => tc.id === tr.tool_use_id)?.name || tr.tool_use_id;
-                                    return {
-                                        functionResponse: {
-                                            name: toolName,
-                                            response: responseData
-                                        }
-                                    };
-                                });
-                                // Inject screenshot images as inlineData parts
-                                for (const img of pendingScreenshots) {
-                                    parts.push({
-                                        inlineData: {
-                                            mimeType: img.mimeType || 'image/jpeg',
-                                            data: img.source?.data || img.data
-                                        }
-                                    });
-                                }
-                                apiMessages.push({ role: 'user', parts });
-                            } else {
-                                // Anthropic format: tool_result content blocks
-                                const anthropicResults = toolResultContents.map(tr => {
-                                    // For Anthropic, we can include image blocks natively in tool_result content
-                                    return tr;
-                                });
-                                // Inject screenshot image blocks into the tool results for Anthropic
-                                if (pendingScreenshots.length > 0) {
-                                    const imageContent = pendingScreenshots.map(img => ({
-                                        type: 'image',
-                                        source: {
-                                            type: 'base64',
-                                            media_type: img.mimeType || 'image/jpeg',
-                                            data: img.source?.data || img.data
-                                        }
-                                    }));
-                                    // Add images as additional content in a user message after tool results
-                                    apiMessages.push({ role: 'user', content: anthropicResults });
-                                    apiMessages.push({ role: 'user', content: [
-                                        { type: 'text', text: 'Screenshot of the current slide:' },
-                                        ...imageContent
-                                    ]});
-                                } else {
-                                    apiMessages.push({ role: 'user', content: anthropicResults });
-                                }
+                                }));
+                                apiMessages.push({ role: 'user', content: [
+                                    { type: 'text', text: 'Screenshot of the current slide:' },
+                                    ...imageContent
+                                ]});
                             }
                         }
 
@@ -2406,7 +1920,6 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
 
                 if (controller.signal.aborted) break;
             }
-            } while (didTimeout && !controller.signal.aborted);
 
             if (controller.signal.aborted) break;
         }
@@ -2468,8 +1981,8 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
         } catch (err) { log.debug('Post-AI snapshot failed', err); }
 
         // Done
-        const cost = isCloud ? null : estimateCost(
-            getSetting('aiProvider') || DEFAULT_PROVIDER,
+        const cost = estimateCost(
+            providerId,
             modelId,
             sessionInputTokens,
             sessionOutputTokens
@@ -2510,8 +2023,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 inputTokens: sessionInputTokens,
                 outputTokens: sessionOutputTokens,
                 totalTokens: sessionInputTokens + sessionOutputTokens,
-                estimatedCost: cost,
-                creditsCharged: isCloud ? sessionCreditsCharged : undefined
+                estimatedCost: cost
             }
         });
 
@@ -2522,8 +2034,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
                 inputTokens: sessionInputTokens,
                 outputTokens: sessionOutputTokens,
                 cacheCreation: sessionCacheCreation,
-                cacheRead: sessionCacheRead,
-                creditsCharged: sessionCreditsCharged
+                cacheRead: sessionCacheRead
             },
             assistantPreview: toPreviewText(messages.filter(m => m.role === 'assistant' && m.content).pop()?.content || '')
         });
@@ -2542,7 +2053,7 @@ export async function sendMessage(projectPath, userMessage, mentions, webContent
             errorCode: err?.errorCode
         });
         persistConversation(projectPath, messages);
-        const userMessage = translateChatError(err, isCloud);
+        const userMessage = translateChatError(err);
         webContents?.send('chat:error', { projectPath, message: userMessage });
     } finally {
         abortControllers.delete(projectPath);

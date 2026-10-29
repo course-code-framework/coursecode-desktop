@@ -3,7 +3,6 @@ import { updateSetting } from './settings.js';
 
 // Cost warning thresholds (mirrors main/ai-config.js)
 const COST_WARNING_THRESHOLDS = [2, 5, 10, 25];
-const CREDIT_LOW_THRESHOLD = 50;
 
 /** Chat messages array */
 export const messages = writable([]);
@@ -19,15 +18,6 @@ export const activeTools = writable([]);
 
 /** Session token usage */
 export const sessionUsage = writable({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
-
-/** Credits used in this session (cloud mode) */
-export const sessionCredits = writable(0);
-
-/** Current AI mode for this conversation: 'byok' or 'cloud' */
-export const aiMode = writable('byok');
-
-/** Cloud credit balance */
-export const credits = writable(null);
 
 /** Mention index for the current project */
 export const mentionIndex = writable({ slides: [], refs: [], interactions: [] });
@@ -57,13 +47,9 @@ let unsubApprovalsCleared = null;
 let unsubToolArgsDelta = null;
 let unsubStepUsage = null;
 
-let currentAiMode = 'byok';
 let activeProjectPath = null;
 let pendingScreenshots = [];
 let pendingChangeSummary = null;
-aiMode.subscribe((mode) => {
-    currentAiMode = mode;
-});
 
 /**
  * Drop events that don't belong to the currently active project.
@@ -77,27 +63,9 @@ function isForeignEvent(projectPath) {
     return projectPath !== activeProjectPath;
 }
 
-function toNumberOrNull(value) {
-    if (value == null) return null;
-    const num = Number(value);
-    return Number.isFinite(num) ? num : null;
-}
-
-function normalizeCloudUsage(payload) {
-    if (!payload || typeof payload !== 'object') return null;
-    return {
-        ...payload,
-        total_credits: toNumberOrNull(payload.total_credits)
-    };
-}
-
 export function subscribeToChatEvents() {
-    unsubStream = window.api.chat.onStream(({ projectPath, text, delta, retry }) => {
+    unsubStream = window.api.chat.onStream(({ projectPath, text, delta }) => {
         if (isForeignEvent(projectPath)) return;
-        if (retry) {
-            streamingText.set('');
-            return;
-        }
         if (typeof delta === 'string' && delta.length > 0) {
             streamingText.update(current => `${current}${delta}`);
             return;
@@ -218,37 +186,29 @@ export function subscribeToChatEvents() {
         pendingApprovals.set([]);
 
         // Usage is accumulated incrementally via stepUsage events.
-        // Here we only run end-of-message checks (cost warnings, credit refresh).
+        // Here we only run the end-of-message cost warning check.
         if (usage) {
-            // Check cost warning thresholds (BYOK mode)
-            if (currentAiMode === 'byok') {
-                let totalCost = 0;
-                sessionUsage.subscribe(s => totalCost = s.estimatedCost)();
-                costWarningsShown.update(shown => {
-                    const newShown = new Set(shown);
-                    // Find the highest threshold crossed that hasn't been shown yet
-                    let highestNewThreshold = null;
-                    for (const threshold of COST_WARNING_THRESHOLDS) {
-                        if (totalCost >= threshold && !shown.has(threshold)) {
-                            newShown.add(threshold);
-                            highestNewThreshold = threshold;
-                        }
+            let totalCost = 0;
+            sessionUsage.subscribe(s => totalCost = s.estimatedCost)();
+            costWarningsShown.update(shown => {
+                const newShown = new Set(shown);
+                // Find the highest threshold crossed that hasn't been shown yet
+                let highestNewThreshold = null;
+                for (const threshold of COST_WARNING_THRESHOLDS) {
+                    if (totalCost >= threshold && !shown.has(threshold)) {
+                        newShown.add(threshold);
+                        highestNewThreshold = threshold;
                     }
-                    if (highestNewThreshold !== null) {
-                        messages.update(msgs => [...msgs, {
-                            role: 'system',
-                            type: 'costWarning',
-                            content: `Session cost has reached $${highestNewThreshold}. Total so far: $${totalCost.toFixed(2)}.`
-                        }]);
-                    }
-                    return newShown;
-                });
-            }
-
-            // Check low credit warning (cloud mode)
-            if (currentAiMode === 'cloud') {
-                loadCredits();
-            }
+                }
+                if (highestNewThreshold !== null) {
+                    messages.update(msgs => [...msgs, {
+                        role: 'system',
+                        type: 'costWarning',
+                        content: `Session cost has reached $${highestNewThreshold}. Total so far: $${totalCost.toFixed(2)}.`
+                    }]);
+                }
+                return newShown;
+            });
         }
     });
 
@@ -287,7 +247,7 @@ export function subscribeToChatEvents() {
         pendingApprovals.set([]);
     });
 
-    unsubStepUsage = window.api.chat.onStepUsage?.(({ projectPath, usage, creditsCharged, estimatedCost }) => {
+    unsubStepUsage = window.api.chat.onStepUsage?.(({ projectPath, usage, estimatedCost }) => {
         if (isForeignEvent(projectPath)) return;
         if (usage) {
             sessionUsage.update(s => ({
@@ -295,33 +255,6 @@ export function subscribeToChatEvents() {
                 outputTokens: s.outputTokens + (usage.outputTokens || 0),
                 estimatedCost: (s.estimatedCost || 0) + (estimatedCost || 0)
             }));
-        }
-        if (creditsCharged != null && creditsCharged > 0) {
-            sessionCredits.update(c => c + creditsCharged);
-            credits.update((current) => {
-                if (!current || current.total_credits == null) return current;
-                return {
-                    ...current,
-                    total_credits: Math.max(0, current.total_credits - creditsCharged)
-                };
-            });
-
-            // Check low credit warning (cloud mode)
-            let currentCredits = null;
-            credits.subscribe(c => currentCredits = c)();
-            if (currentCredits?.total_credits != null && currentCredits.total_credits < CREDIT_LOW_THRESHOLD) {
-                costWarningsShown.update(shown => {
-                    if (shown.has('low_credits')) return shown;
-                    const newShown = new Set(shown);
-                    newShown.add('low_credits');
-                    messages.update(msgs => [...msgs, {
-                        role: 'system',
-                        type: 'costWarning',
-                        content: `Your cloud credits are running low (${currentCredits.total_credits.toFixed(0)} remaining).`
-                    }]);
-                    return newShown;
-                });
-            }
         }
     });
 }
@@ -359,14 +292,10 @@ export async function sendMessage(projectPath, text, mentions = []) {
     streaming.set(true);
     streamingText.set('');
     activeTools.set([]);
-    let mode;
-    aiMode.subscribe(v => mode = v)();
-    await window.api.settings.set('defaultAiMode', mode);
-    await window.api.settings.set('aiModeInitialized', true);
     // Fire-and-forget: sendMessage is async on the main process side but the
     // IPC handler doesn't await it. Errors are delivered via chat:error events,
     // not via the IPC return path.
-    await window.api.chat.send(projectPath, text, mentions, mode);
+    await window.api.chat.send(projectPath, text, mentions);
 }
 
 export async function stopGeneration(projectPath) {
@@ -386,19 +315,15 @@ export async function clearChat(projectPath) {
     activeTools.set([]);
     pendingScreenshots = [];
     sessionUsage.set({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
-    sessionCredits.set(0);
     activeConversationId.set(null);
     await refreshConversationList(projectPath);
 }
 
-/** Load cloud credit balance. */
-export async function loadCredits() {
-    try {
-        const usage = await window.api.ai.getCloudUsage();
-        credits.set(normalizeCloudUsage(usage));
-    } catch {
-        credits.set(null);
-    }
+/** Restore the provider and model a conversation was last run with. */
+async function applySessionContext(projectPath) {
+    const session = await window.api.chat.getSessionContext?.(projectPath);
+    if (session?.providerId) await updateSetting('aiProvider', session.providerId);
+    if (session?.modelId) await updateSetting('aiModel', session.modelId);
 }
 
 export async function loadChatHistory(projectPath) {
@@ -410,27 +335,7 @@ export async function loadChatHistory(projectPath) {
     refreshConversationList(projectPath);
 
     try {
-        const session = await window.api.chat.getSessionContext?.(projectPath);
-        if (session?.mode === 'cloud' || session?.mode === 'byok') {
-            aiMode.set(session.mode);
-            await updateSetting('defaultAiMode', session.mode);
-            await updateSetting('aiModeInitialized', true);
-
-            if (session.mode === 'byok') {
-                if (session.providerId) {
-                    await updateSetting('aiProvider', session.providerId);
-                }
-                if (session.modelId) {
-                    await updateSetting('aiModel', session.modelId);
-                }
-            } else if (session.mode === 'cloud' && session.modelId) {
-                await updateSetting('cloudAiModel', session.modelId);
-            }
-
-            if (session.mode === 'cloud') {
-                await loadCredits();
-            }
-        }
+        await applySessionContext(projectPath);
     } catch {
         // Backward compatibility: older app versions may not expose session context.
     }
@@ -456,21 +361,9 @@ export async function loadPastConversation(projectPath, conversationId) {
     messages.set(mergeToolMessages(history || []));
     activeConversationId.set(null); // now the active conversation, no longer archived
     sessionUsage.set({ inputTokens: 0, outputTokens: 0, estimatedCost: 0 });
-    sessionCredits.set(0);
 
     try {
-        const session = await window.api.chat.getSessionContext?.(projectPath);
-        if (session?.mode === 'cloud' || session?.mode === 'byok') {
-            aiMode.set(session.mode);
-            await updateSetting('defaultAiMode', session.mode);
-            if (session.mode === 'byok') {
-                if (session.providerId) await updateSetting('aiProvider', session.providerId);
-                if (session.modelId) await updateSetting('aiModel', session.modelId);
-            } else if (session.mode === 'cloud' && session.modelId) {
-                await updateSetting('cloudAiModel', session.modelId);
-            }
-            if (session.mode === 'cloud') await loadCredits();
-        }
+        await applySessionContext(projectPath);
     } catch {
         // Session context may not be available
     }

@@ -28,7 +28,7 @@ A standalone Electron app that gives instructional designers a native GUI for Co
 
 - `coursecode-desktop` and `coursecode` framework are open source and usable without cloud.
 - `coursecode-cloud` is closed source and optional.
-- All user-facing messaging must clearly label cloud capabilities as optional add-ons (hosting, auth, credits, collaboration).
+- All user-facing messaging must clearly label cloud capabilities as optional add-ons (hosting, auth, collaboration).
 - Desktop must keep local authoring and export workflows first-class even when the user is not signed in.
 
 ### Web and Repository Strategy
@@ -158,7 +158,7 @@ coursecode-desktop/
 │   ├── cloud-client.js           ← Cloud operations via CLI (auth, deploy, status)
 │   ├── ai-config.js              ← AI constants: file tool definitions, labels, safety sets
 │   ├── chat-engine.js            ← AI chat orchestration, agentic tool loop
-│   ├── llm-provider.js           ← LLM API abstraction (Anthropic, OpenAI, Cloud proxy)
+│   ├── llm-provider.js           ← LLM API abstraction (Anthropic, OpenAI, Google)
 │   ├── mcp-client.js             ← MCP tool discovery and invocation via stdio JSON-RPC
 │   ├── system-prompts.js         ← Dynamic system prompt assembly
 │   ├── ref-manager.js            ← Reference document ingestion and conversion
@@ -268,11 +268,11 @@ All communication between renderer and main process flows through typed IPC chan
 - `api.cloud.onDeployProgress(callback)` → `unsubscribe` — Stream deploy progress: `{ stage, message, log }`.
 
 ### Chat (AI)
-- `api.chat.send(projectPath, message, mentions, mode?)` → `void` — Send a user message to the AI. `mode` is `'byok'` or `'cloud'` (per-conversation). Triggers an agentic loop that streams responses and tool use events back to the renderer.
+- `api.chat.send(projectPath, message, mentions)` → `void` — Send a user message to the AI using the configured BYOK provider and model. Triggers an agentic loop that streams responses and tool use events back to the renderer.
 - `api.chat.stop(projectPath)` → `void` — Abort the current AI generation.
 - `api.chat.loadHistory(projectPath)` → `Message[]` — Load the active conversation's history from disk.
 - `api.chat.clear(projectPath)` → `void` — Archive the current conversation (if non-empty) and start a fresh one. Replaces the old destructive clear.
-- `api.chat.listConversations(projectPath)` → `ConversationSummary[]` — List all saved conversations for a project, newest first. Each summary includes `{ id, title, updatedAt, messageCount, mode }`.
+- `api.chat.listConversations(projectPath)` → `ConversationSummary[]` — List all saved conversations for a project, newest first. Each summary includes `{ id, title, updatedAt, messageCount }`.
 - `api.chat.loadConversation(projectPath, conversationId)` → `Message[]` — Load a specific past conversation by ID, making it the active conversation.
 - `api.chat.deleteConversation(projectPath, conversationId)` → `void` — Permanently delete a past conversation.
 - `api.chat.getMentions(projectPath)` → `MentionIndex` — Get available @mention targets (slides, refs, interactions).
@@ -291,14 +291,12 @@ All communication between renderer and main process flows through typed IPC chan
 
 ### AI Settings
 - `api.ai.getConfig()` → `{ providers, currentProvider, currentModel, hasKey }` — Get AI configuration including available providers, models, and key status.
-- `api.ai.getProviders()` → `Provider[]` — Get all registered providers with models and key status.
+- `api.ai.getProviders(options?)` → `Provider[]` — Get all registered providers with key status. Pass `{ includeModels: true }` to decrypt stored keys and fetch each provider's model list.
 - `api.ai.setProvider(providerId)` → `void` — Set the active AI provider.
 - `api.ai.setModel(modelId)` → `void` — Set the active AI model.
 - `api.ai.setApiKey(provider, key)` → `{ valid, error? }` — Validate, encrypt, and store an API key using Electron's `safeStorage`.
 - `api.ai.removeApiKey(provider)` → `void` — Remove a stored API key.
 - `api.ai.setCustomInstructions(text)` → `void` — Save custom AI instructions.
-- `api.ai.getCloudModels()` → `CloudModel[]` — Fetch available models from the cloud proxy (requires cloud auth).
-- `api.ai.getCloudUsage()` → `Usage | null` — Fetch credit balance and recent usage from the cloud proxy.
 
 ### Settings
 - `api.settings.get()` → `Settings` — Read all settings.
@@ -432,10 +430,9 @@ Preferences view accessible from the Dashboard header.
 
 **AI Assistant**
 
-Configuration for the built-in AI chat feature.
+Configuration for the built-in AI chat feature. AI chat is BYOK-only: it uses the user's own provider API key and does not require CourseCode Cloud.
 
 - **Enable AI Chat**: Toggle switch. When enabled, opening any course defaults to the AI chat workspace (chat on left, live preview on right) with preview auto-started. Default: off.
-- **Default AI Mode**: Segmented toggle — "Your Key" (BYOK) or "Cloud". Cloud option is disabled until the user signs in.
 - **Provider**: Dropdown to select AI provider (Anthropic, OpenAI, Google).
 - **Model**: Dropdown to select model (e.g., Claude Sonnet, GPT-5.4 Mini, Gemini 2.5 Pro).
 - **API Key**: Secure input for BYOK (Bring Your Own Key). Keys are encrypted at rest using Electron's `safeStorage`. Includes validation, save/remove, and error/success feedback.
@@ -457,7 +454,7 @@ Tools shown:
 Clicking any tool's action button runs the same logic as the Setup Assistant step for that tool. This makes the Setup Assistant revisitable without needing to re-run the wizard.
 
 **Cloud Account**
-- If signed in: Shows user email, org name, credit balance with "Top up" link, and a "Sign Out" button.
+- If signed in: Shows user email, org name, and a "Sign Out" button.
 - If not signed in: "Sign In to CourseCode Cloud" button.
 
 **About**
@@ -577,8 +574,8 @@ Reads and writes a JSON file at `app.getPath('userData')/settings.json`.
 - `aiModel`: `'claude-sonnet-4-20250514'` — selected AI model.
 - `aiCustomInstructions`: `''` — user-defined AI instructions.
 - `aiChatEnabled`: `false` — when `true`, courses open in chat workspace mode by default.
-- `defaultAiMode`: `'byok'` — `'byok'` or `'cloud'`, persisted active AI mode. Updated when the user selects a model; restored on app launch.
-- `cloudAiModel`: `null` — selected cloud AI model ID.
+
+Settings left over from the removed cloud AI mode (`defaultAiMode`, `aiModeInitialized`, `cloudAiModel`, `cloudModelCache`) are dropped on load, so a user who had selected it falls back to their BYOK provider, or to the "No API key configured" prompt if no key is saved.
 
 Cloud tokens are managed by the CLI at `~/.coursecode/credentials.json`, not in desktop settings.
 
@@ -792,7 +789,7 @@ When a course is deployed to CourseCode Cloud via GitHub (GitHub Actions integra
 
 ## AI Chat
 
-A built-in AI assistant that can create, modify, and debug courses through natural language conversation. Supports two modes: **BYOK** (Bring Your Own Key) for direct provider access, and **Cloud** for credit-based access through the CourseCode Cloud AI proxy.
+A built-in AI assistant that can create, modify, and debug courses through natural language conversation. AI chat is **BYOK** (Bring Your Own Key): requests go directly from the desktop main process to the user's chosen provider (Anthropic, OpenAI, or Google) using their own API key. CourseCode Cloud is not involved and is not required.
 
 ### Design Philosophy: Set the AI Up for Success
 
@@ -814,9 +811,9 @@ This philosophy aligns with how production AI IDEs (VS Code + Copilot, Cursor, W
 
 **Main process modules**:
 
-**`chat-engine.js`** — Orchestrates the AI conversation loop. Implements an agentic tool-use pattern: sends user messages to the LLM, processes tool calls, executes them, and loops until the LLM produces a final text response (no more tool requests). Streams response tokens and tool invocations back to the renderer via IPC events. Manages conversation history per project and persists it to disk. Accepts a `mode` parameter (`'byok'` or `'cloud'`) to select the provider path.
+**`chat-engine.js`** — Orchestrates the AI conversation loop. Implements an agentic tool-use pattern: sends user messages to the LLM, processes tool calls, executes them, and loops until the LLM produces a final text response (no more tool requests). Streams response tokens and tool invocations back to the renderer via IPC events. Manages conversation history per project and persists it to disk. The provider and model come from the `aiProvider` / `aiModel` settings.
 
-**`llm-provider.js`** — Abstracts LLM API calls across providers. Supports Anthropic (Claude), OpenAI (GPT), Google (Gemini), and CourseCode Cloud (proxy). The cloud proxy provider uses the cloud auth token (from `~/.coursecode/credentials.json`) to call the proxy's SSE endpoint, yielding the same event types as direct providers so the agentic loop works identically. Handles API key storage using Electron's `safeStorage` for BYOK keys. Also provides `getCloudModels(token)` and `getCloudUsage(token)` for fetching available cloud models and credit balances.
+**`llm-provider.js`** — Abstracts LLM API calls across providers. Supports Anthropic (Claude), OpenAI (GPT), and Google (Gemini). The agentic loop keeps conversation history in an internal Anthropic-style message format; each provider converts it to its own wire format and yields the same stream event types, so the loop works identically across providers. Handles API key storage using Electron's `safeStorage` and fetches each provider's model list (with output and context limits) from its API.
 
 **`ai-config.js`** — Centralized AI constants. Exports `FILE_TOOL_DEFINITIONS` (the four local file tools: `read_file`, `edit_file`, `create_file`, `list_files`), `TOOL_LABELS` (human-readable progress labels for all tools), and safety/classification sets (`SAFE_TOOLS`, `MUTATION_TOOLS`, `PREVIEW_TOOLS`, `PARALLELIZABLE_TOOLS`). Does **not** define MCP tool schemas; those are discovered at runtime from the framework's MCP server.
 
@@ -901,11 +898,11 @@ Tool invocations are displayed as interactive pills in the chat UI showing the t
 - Tool use pills with status indicators
 - Inline screenshots from tool use
 - @mention chips
-- Usage display (tokens for BYOK, credits for Cloud)
+- Usage display (token count)
 
 **`MentionDropdown.svelte`** — @mention autocomplete that groups suggestions by type (Slides, References, Interactions). Triggered by typing `@` in the chat input. Resolves mentions to file contents or context before sending to the LLM.
 
-**`ModelPicker.svelte`** — Provider and model selection dropdown. Groups models into two sections: **"Your Keys"** (BYOK providers) and **"CourseCode Cloud"** (fetched from the cloud proxy). Selecting a model sets the per-conversation `aiMode` (`'byok'` or `'cloud'`). Cloud models show credit cost per message instead of dollar estimates. Cloud section is gated behind authentication — shows "Sign in to use" if the user is not logged in.
+**`ModelPicker.svelte`** — Provider and model selection dropdown. Lists models under **"Your Keys"**, grouped by each provider that has a saved API key, with a relative cost tier. If no key is saved, it links to Settings to add one. Selecting a model updates the `aiProvider` and `aiModel` settings.
 
 **`RefsPanel.svelte`** — Reference document sidebar with drag-and-drop file conversion. Lists converted references with preview. Available as a standalone panel.
 
@@ -916,8 +913,6 @@ Manages reactive state for the chat UI:
 - `streaming` — Whether the AI is currently generating a response
 - `activeTools` — Currently executing tool invocations
 - `sessionUsage` — Token usage tracking: `{ inputTokens, outputTokens, estimatedCost }`
-- `aiMode` — Per-conversation mode: `'byok'` or `'cloud'`
-- `credits` — Cloud credit balance (populated via `loadCredits()`)
 - `conversationList` — Writable store of `ConversationSummary[]` for the history panel
 - `activeConversationId` — ID of the currently loaded conversation (null for a fresh unsaved conversation)
 
@@ -938,8 +933,7 @@ Conversations are stored per-project under `app.getPath('userData')/chat-history
     "id": "a1b2c3d4",
     "title": "Build a compliance training course",
     "updatedAt": "2026-04-09T14:30:00.000Z",
-    "messageCount": 24,
-    "mode": "byok"
+    "messageCount": 24
   }
 ]
 ```
@@ -960,7 +954,7 @@ A dropdown panel accessible from a clock/history icon button in the chat header,
 
 **Panel contents:**
 - Scrollable list of past conversations, newest first
-- Each row shows: title (truncated), relative timestamp ("2 hours ago", "Yesterday"), message count, and AI mode badge (BYOK/Cloud)
+- Each row shows: title (truncated), relative timestamp ("2 hours ago", "Yesterday"), and message count
 - Clicking a row loads that conversation into the chat view
 - Each row has a delete button (trash icon) that permanently removes the conversation after confirmation
 - Maximum height: 320px with overflow scroll
@@ -968,7 +962,7 @@ A dropdown panel accessible from a clock/history icon button in the chat header,
 **Loading a past conversation:**
 1. If the current conversation has unsaved messages, archive it first (same as "New Chat" step 1).
 2. Load the selected conversation's messages into the chat view.
-3. Restore the session context (AI mode, provider, model) from the loaded conversation.
+3. Restore the session context (provider, model) from the loaded conversation. Conversations saved with the removed cloud AI mode have no usable session context and keep the current settings.
 4. The loaded conversation becomes the active conversation. Further messages are appended to it.
 
 **Deleting a conversation:**
@@ -978,7 +972,7 @@ A dropdown panel accessible from a clock/history icon button in the chat header,
 4. If the deleted conversation was the active one, reset to an empty chat.
 ### Prompt Caching
 
-Prompt caching reduces input token costs and latency on multi-turn conversations by reusing previously processed prefix data (system prompt, tool definitions, older conversation history). Each provider handles caching differently; the desktop must apply the correct strategy per provider for both BYOK and cloud paths.
+Prompt caching reduces input token costs and latency on multi-turn conversations by reusing previously processed prefix data (system prompt, tool definitions, older conversation history). Each provider handles caching differently; the desktop must apply the correct strategy per provider.
 
 #### Anthropic — Explicit `cache_control` Markers
 
@@ -990,601 +984,30 @@ Anthropic requires explicit opt-in via `cache_control: { type: 'ephemeral' }` ma
 
 This strategy caches the entire static prefix (system + tools + older history) while keeping the last 2 messages (the most recent exchange) uncached since they change every turn.
 
-**BYOK path**: Markers are injected in `createAnthropicProvider` (`llm-provider.js`) before calling the Anthropic SDK.
-
-**Cloud path**: Markers are injected in `createCloudProxyProvider` (`llm-provider.js`) before building the request body. The proxy passes them through to Anthropic's API. The cloud path sends the system prompt as a content block array (not a plain string) so the `cache_control` marker reaches the API.
+Markers are injected in `createAnthropicProvider` (`llm-provider.js`) before calling the Anthropic SDK.
 
 **Cache metrics**: Anthropic reports `cache_creation_input_tokens` and `cache_read_input_tokens` in the usage response. These are forwarded through the `done` event and tracked in `sessionCacheCreation` / `sessionCacheRead`.
 
 #### OpenAI — Automatic Prefix Caching
 
-OpenAI automatically caches identical prompt prefixes ≥1,024 tokens. No client-side markers or opt-in are needed. The caching is server-side and applies to both Chat Completions and Responses API models.
+OpenAI automatically caches identical prompt prefixes ≥1,024 tokens server-side. No client-side markers or opt-in are needed. The `store: true` parameter (set on requests) enables OpenAI dashboard logging but does **not** affect prompt caching — caching is fully automatic regardless.
 
-**BYOK path**: No special handling required. The `store: true` parameter (set on BYOK requests) enables OpenAI dashboard logging but does **not** affect prompt caching — caching is fully automatic regardless.
-
-**Cloud path**: No special handling required. The proxy forwards messages as-is and OpenAI's server-side caching activates automatically.
-
-**Cache metrics**: OpenAI reports `prompt_tokens_details.cached_tokens` in the usage response. The BYOK provider extracts this and forwards it as `cacheReadInputTokens`.
+**Cache metrics**: OpenAI reports `prompt_tokens_details.cached_tokens` in the usage response. The provider extracts this and forwards it as `cacheReadInputTokens`.
 
 #### Google/Gemini — Implicit Server-Side Caching
 
 Gemini 2.5+ models automatically cache repeated content server-side. No client-side configuration is needed.
 
-**BYOK path**: No special handling required.
-
-**Cloud path**: No special handling required. The proxy forwards messages as-is.
-
-**Cache metrics**: Gemini reports `cachedContentTokenCount` in `usageMetadata`. The BYOK provider extracts this and forwards it as `cacheReadInputTokens`.
-
----
-
-## Cloud AI Proxy — Client Integration Protocol
-
-This section defines the complete client-side contract for integrating with the CourseCode Cloud AI proxy. The desktop app treats the proxy as a black box — it sends requests in the documented format and consumes the documented response stream. All implementation details below describe what the **desktop must do**, not how the cloud implements it.
-
-> **Base URL**: `https://coursecodecloud.com` (local dev: `http://localhost:3000`)
-
-### Authentication
-
-All cloud AI endpoints use **Bearer token auth** via the `Authorization` header:
-
-```
-Authorization: Bearer <token>
-```
-
-The token is the long-lived credential stored at `~/.coursecode/credentials.json`, created during `coursecode login`. The desktop reads this file to get the token — it does not manage token lifecycle, refresh, or JWT handling. The cloud resolves the token server-side.
-
-**Security rules:**
-- The token is **never** hardcoded, logged, or exposed to the renderer process.
-- The main process reads the credential file and adds the header in `llm-provider.js`. The renderer only knows whether cloud auth is available (boolean), never the token value.
-- If the credential file is missing or the token is rejected (HTTP 401), the desktop directs the user to sign in via `coursecode login`.
-
-### Endpoints
-
-#### 1. `POST /api/ai/chat` — Streaming Chat Completion
-
-The primary endpoint. Sends messages to an LLM and streams the response back via SSE.
-
-**The proxy is a pass-through.** The desktop must send messages and tool definitions in the correct format for the target provider (determined by the `provider` and `apiType` fields from `GET /api/ai/models`). The proxy handles only:
-- **System prompt mapping**: the top-level `system` field is mapped to each provider's native location.
-- **Output cap**: `max_tokens` is mapped to the provider's equivalent parameter name.
-- **Auth**: provider API keys are injected server-side — the desktop never sends provider API keys to the proxy.
-- **API routing**: OpenAI models are routed to the correct API based on `apiType`.
-
-##### Request
-
-```
-POST /api/ai/chat
-Authorization: Bearer <token>
-Content-Type: application/json
-```
-
-```typescript
-{
-  "model": string,         // Model ID from GET /api/ai/models (e.g. "claude-sonnet-4-5-20250929")
-  "messages": Message[],   // Provider-formatted messages (see Provider-Specific Formats)
-  "tools"?: ToolDef[],     // Provider-formatted tool definitions (see Provider-Specific Formats)
-  "system"?: string | ContentBlock[],  // System prompt — string or Anthropic content block array (for cache_control)
-  "max_tokens"?: number    // Optional output cap (capped at model's maxOutputTokens)
-}
-```
-
-##### Strict Request Contract (Server Validation)
-
-To avoid client/server drift and opaque `400 Invalid request body` failures, the cloud API should validate `/api/ai/chat` requests against a strict schema and return actionable validation details.
-
-**Allowed JSON body keys (exact allow-list):**
-- `model`
-- `messages`
-- `tools` (optional)
-- `system` (optional)
-- `max_tokens` (optional)
-
-Unknown top-level keys should be rejected with HTTP `400` and a validation detail message that identifies the offending key(s).
-
-**Routing hints (optional headers, not body keys):**
-- `X-CourseCode-Cloud-Provider: anthropic | openai | google`
-- `X-CourseCode-Cloud-Api-Type: chat | responses`
-
-These headers are advisory and may be used for routing, diagnostics, or consistency checks, but they must not be required when `model` metadata already resolves provider/api type.
-
-**Validation expectations by provider format:**
-- Anthropic: content-block tool loop shape (`tool_use`, `tool_result`)
-- OpenAI Chat: `tool_calls` + `role: tool` messages
-- OpenAI Responses: flat `function_call` / `function_call_output` items
-- Gemini: `parts` array with `functionCall` / `functionResponse` and preserved `thoughtSignature` where required
-
-When validation fails, the server should return:
-- `error`: stable short message (`Invalid request body`)
-- `detail`: specific rule violation (`Unknown key: cloud_provider`, `messages[2] missing call_id`, etc.)
-- `errorCode`: optional machine code for client classification
-
-> System prompts are sent via the top-level `system` field, **not** as a role message. The proxy maps it to each provider's convention: Anthropic `system` parameter, OpenAI Chat Completions system-role message, OpenAI Responses API `instructions`, Gemini `systemInstruction`.
-
-##### Response — Unified SSE Stream
-
-Content-Type: `text/event-stream`
-
-Each event is a JSON line prefixed with `data: `. The response format is **unified across all providers** — the proxy normalizes provider-specific streams into identical event types. The desktop does not need to handle provider-specific response formats.
-
-```
-data: {"type":"text","content":"Let me check the course..."}
-data: {"type":"text","content":" I'll look at the state."}
-data: {"type":"tool_use","id":"toolu_abc123","name":"coursecode_state","input":{},"thought_signature":"..."}
-data: {"type":"done","stop_reason":"tool_use","usage":{"input":1200,"output":85},"credits_charged":4}
-```
-
-| Event Type | Fields | Description |
-|------------|--------|-------------|
-| `text` | `content` | Streaming text chunk |
-| `tool_use` | `id`, `name`, `input`, `thought_signature`? | Complete tool-use block (emitted once per tool call) |
-| `done` | `stop_reason`, `usage`, `credits_charged` | Final event — always the last event in the stream |
-
-**`stop_reason` values:**
-- `"end_turn"` — model finished generating text
-- `"tool_use"` — model wants to call tool(s), client should execute and send results back
-- `"max_tokens"` — output was truncated
-
-**`usage` object:**
-- `input` — input tokens consumed
-- `output` — output tokens generated
-
-**`thought_signature` (Gemini 2.5+ models):** When present on a `tool_use` event, the desktop **must** preserve this value and include it as `thoughtSignature` on the corresponding `functionCall` part when building the model turn in subsequent request history. If omitted from the follow-up request, the Gemini API rejects with "missing thought signature in functioncall parts".
-
-##### SSE Parsing Pattern
-
-```typescript
-async function* streamChat(
-  token: string,
-  request: ChatRequest,
-): AsyncGenerator<StreamEvent> {
-  const res = await fetch(`${BASE_URL}/api/ai/chat`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(request),
-  })
-
-  if (!res.ok) {
-    const err = await res.json()
-    throw new Error(err.error ?? `HTTP ${res.status}`)
-  }
-
-  const reader = res.body!.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const event: StreamEvent = JSON.parse(line.slice(6))
-      yield event
-      if (event.type === 'done') return
-    }
-  }
-}
-```
-
-##### Error Responses
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `400` | `{"error": "Invalid request body", "detail": "...", "errorCode": "..."}` | Malformed JSON, unknown keys, or schema mismatch |
-| `400` | `{"error": "Unknown model: xyz"}` | Model ID not recognized or disabled |
-| `401` | `{"error": "Unauthorized"}` | Missing/invalid Bearer token |
-| `402` | `{"error": "Insufficient credits", "credits_required": N}` | Not enough credits — desktop shows "out of credits" with top-up link |
-| `502` | `{"error": "LLM provider error", "detail": "..."}` | Upstream provider failure |
-| `503` | `{"error": "Provider anthropic is not configured"}` | Server missing API key for provider |
-| `504` | `{"error": "Upstream provider timed out", "detail": "..."}` | Provider did not respond within 15s |
-
-#### 2. `GET /api/ai/models` — Available Models
-
-Returns models the user can access, filtered by provider availability and enabled status.
-
-```
-GET /api/ai/models
-Authorization: Bearer <token>
-```
-
-```json
-{
-  "models": [
-    {
-      "id": "claude-sonnet-4-5-20250929",
-      "name": "Claude Sonnet 4.5",
-      "provider": "anthropic",
-      "inputCreditsPerK": 4,
-      "outputCreditsPerK": 20,
-      "maxOutputTokens": 16384
-    },
-    {
-      "id": "gpt-5.3-codex",
-      "name": "GPT-5.3 Codex",
-      "provider": "openai",
-      "apiType": "responses",
-      "inputCreditsPerK": 3,
-      "outputCreditsPerK": 19,
-      "maxOutputTokens": 16384
-    },
-    {
-      "id": "gemini-2.5-pro",
-      "name": "Gemini 2.5 Pro",
-      "provider": "google",
-      "inputCreditsPerK": 2,
-      "outputCreditsPerK": 11,
-      "maxOutputTokens": 16384
-    }
-  ]
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `id` | Model identifier — pass as `model` in `/api/ai/chat` |
-| `name` | Human-readable display name |
-| `provider` | `"anthropic"`, `"openai"`, or `"google"` — **determines request message/tool format** |
-| `apiType` | _(OpenAI only)_ `"responses"` when the model uses the Responses API. Omitted for standard Chat Completions. **Determines which OpenAI message/tool format to use.** |
-| `inputCreditsPerK` | Credits charged per 1,000 input tokens |
-| `outputCreditsPerK` | Credits charged per 1,000 output tokens |
-| `maxOutputTokens` | Maximum output tokens the model supports |
-
-#### 3. `GET /api/ai/usage` — Credit Balance & Usage History
-
-```
-GET /api/ai/usage
-Authorization: Bearer <token>
-```
-
-```json
-{
-  "balances": [
-    {
-      "id": "uuid",
-      "credits_remaining": 4500,
-      "is_subscription": true,
-      "type": "subscription"
-    },
-    {
-      "id": "uuid",
-      "credits_remaining": 1000,
-      "is_subscription": false,
-      "type": "personal_topup"
-    }
-  ],
-  "total_credits": 5500,
-  "recent_usage": [
-    {
-      "id": "uuid",
-      "model": "claude-sonnet-4-5-20250929",
-      "credits_charged": 12,
-      "created_at": "2026-02-11T10:30:00Z"
-    }
-  ]
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `balances` | Array of credit sources, ordered subscription-first |
-| `balances[].type` | `"subscription"`, `"personal_topup"`, or `"org_topup"` |
-| `total_credits` | Sum of all `credits_remaining` |
-| `recent_usage` | Last 20 usage events (newest first) |
-
-### Provider-Specific Request Formats
-
-The desktop must format `messages` and `tools` according to the target provider. The `provider` field from `GET /api/ai/models` tells the desktop which format to use. The `apiType` field further disambiguates OpenAI models.
-
-> **Key principle**: The proxy is a pass-through for messages and tools. The desktop is responsible for constructing provider-correct payloads. Getting the format wrong produces a `400` error.
-
-#### Anthropic (`provider: "anthropic"`)
-
-**Tool definitions:**
-```json
-{
-  "name": "coursecode_state",
-  "description": "Get the current course state",
-  "input_schema": {
-    "type": "object",
-    "properties": { "include_toc": { "type": "boolean" } }
-  }
-}
-```
-
-**Messages (text only):**
-```json
-{ "role": "user", "content": "Help me with this course" }
-```
-
-**Messages (tool-use loop):**
-```json
-[
-  { "role": "user", "content": "Help me with this course" },
-  {
-    "role": "assistant",
-    "content": [
-      { "type": "text", "text": "Let me check the course..." },
-      { "type": "tool_use", "id": "toolu_abc123", "name": "coursecode_state", "input": {} }
-    ]
-  },
-  {
-    "role": "user",
-    "content": [
-      {
-        "type": "tool_result",
-        "tool_use_id": "toolu_abc123",
-        "content": "{\"slide\":\"intro\",\"toc\":[...]}"
-      }
-    ]
-  }
-]
-```
-
-#### OpenAI Chat Completions (`provider: "openai"`, `apiType` omitted or `"chat"`)
-
-**Tool definitions:**
-```json
-{
-  "type": "function",
-  "function": {
-    "name": "coursecode_state",
-    "description": "Get the current course state",
-    "parameters": {
-      "type": "object",
-      "properties": { "include_toc": { "type": "boolean" } }
-    }
-  }
-}
-```
-
-**Messages (text only):**
-```json
-{ "role": "user", "content": "Help me with this course" }
-```
-
-**Messages (tool-use loop):**
-```json
-[
-  { "role": "user", "content": "Help me with this course" },
-  {
-    "role": "assistant",
-    "content": "Let me check the course...",
-    "tool_calls": [
-      {
-        "id": "call_abc123",
-        "type": "function",
-        "function": { "name": "coursecode_state", "arguments": "{}" }
-      }
-    ]
-  },
-  {
-    "role": "tool",
-    "tool_call_id": "call_abc123",
-    "content": "{\"slide\":\"intro\",\"toc\":[...]}"
-  }
-]
-```
-
-#### OpenAI Responses API (`provider: "openai"`, `apiType: "responses"`)
-
-Used by Codex models (e.g. `gpt-5.3-codex`).
-
-**Tool definitions:**
-```json
-{
-  "type": "function",
-  "name": "coursecode_state",
-  "description": "Get the current course state",
-  "parameters": {
-    "type": "object",
-    "properties": { "include_toc": { "type": "boolean" } }
-  }
-}
-```
-
-**Messages (text only):**
-```json
-{ "role": "user", "content": "Help me with this course" }
-```
-
-**Messages (tool-use loop):**
-```json
-[
-  { "role": "user", "content": "Help me with this course" },
-  { "role": "assistant", "content": "Let me check the course..." },
-  { "type": "function_call", "call_id": "call_abc123", "name": "coursecode_state", "arguments": "{}" },
-  { "type": "function_call_output", "call_id": "call_abc123", "output": "{\"slide\":\"intro\",\"toc\":[...]}" }
-]
-```
-
-> Responses API uses flat `function_call` / `function_call_output` items in the input array instead of nested tool_calls on assistant messages. Tool definitions use a flat structure (`{ type, name, parameters }`) instead of the nested `{ type, function: { name, parameters } }` format.
-
-#### Google Gemini (`provider: "google"`)
-
-**Tool definitions:**
-```json
-{
-  "name": "coursecode_state",
-  "description": "Get the current course state",
-  "parameters": {
-    "type": "object",
-    "properties": { "include_toc": { "type": "boolean" } }
-  }
-}
-```
-
-> Gemini tools use `parameters` (same as OpenAI's `function.parameters`) but are **not** wrapped in `{ type: 'function', function: { ... } }`. The proxy wraps them in `tools[0].functionDeclarations` before forwarding.
-
-**Messages (text only):**
-```json
-{ "role": "user", "parts": [{ "text": "Help me with this course" }] }
-```
-
-**Messages (tool-use loop):**
-```json
-[
-  { "role": "user", "parts": [{ "text": "Help me with this course" }] },
-  {
-    "role": "model",
-    "parts": [
-      { "text": "Let me check the course..." },
-      { "functionCall": { "name": "coursecode_state", "args": {} }, "thoughtSignature": "..." }
-    ]
-  },
-  {
-    "role": "user",
-    "parts": [
-      {
-        "functionResponse": {
-          "name": "coursecode_state",
-          "response": { "slide": "intro", "toc": [] }
-        }
-      }
-    ]
-  }
-]
-```
-
-> **Gemini-specific rules:**
-> - Uses `role: "model"` instead of `role: "assistant"`.
-> - Uses `parts` array instead of `content`.
-> - `functionResponse.response` is a **parsed object**, not a JSON string.
-> - The `thoughtSignature` from the SSE `tool_use` event **must** be included on the `functionCall` part in the model turn when building subsequent request history. The Gemini API requires this for 2.5+ models and rejects without it.
-
-### Provider Format Switching in `llm-provider.js`
-
-The `llm-provider.js` module implements a format adapter layer. When in cloud mode, the format is selected based on the model metadata from `GET /api/ai/models`:
-
-1. Read `provider` and `apiType` from the selected model.
-2. Format `messages` and `tools` according to the provider's convention (see above).
-3. Pass the `system` prompt as a top-level field (the proxy maps it).
-4. Parse the unified SSE response stream (same format regardless of provider).
-
-**Resilience behavior (desktop-side):**
-- If `GET /api/ai/models` metadata is temporarily unavailable, `chat-engine.js` infers provider format from `modelId` as a fallback:
-  - `claude*` → `anthropic`
-  - `gemini*` → `google`
-  - `gpt*` / `codex*` / `o*` → `openai`
-- For inferred OpenAI models, `apiType` falls back to:
-  - `responses` for `codex` and `gpt-5*` model IDs
-  - `chat` otherwise
-- If provider format still cannot be determined, the client aborts before calling `/api/ai/chat` and surfaces a user-facing error instructing model reselection. This prevents malformed requests that return `400 Invalid request body`.
-
-The agentic tool loop in `chat-engine.js` reconstructs conversation history after tool execution. This reconstruction **must** use the correct provider format:
-- Anthropic: assistant message with content blocks → user message with tool_result blocks.
-- OpenAI Chat: assistant message with tool_calls → tool-role messages.
-- OpenAI Responses: flat function_call and function_call_output items.
-- Gemini: model message with functionCall parts (including `thoughtSignature`) → user message with functionResponse parts.
-
-### Credit System
-
-In cloud mode, AI usage is charged in credits. Credits are deducted **atomically before** each LLM call based on a pre-flight estimate (input size + max output tokens). Actual usage (from the `done` event's `credits_charged`) may differ from the estimate.
-
-| Concept | Detail |
-|---------|--------|
-| Baseline | 1 credit ≈ $0.001 (1/10th of a cent) |
-| Deduction order | Signup bonus (personal org) → Org subscription pool → Org top-ups |
-| Minimum charge | 1 credit per request |
-
-The `chat:done` IPC event includes `creditsCharged` when in cloud mode. The chat store tracks credit balance via `loadCredits()` which calls `GET /api/ai/usage`. The ModelPicker displays the current credit balance inline when cloud mode is active.
-
-Credit errors (HTTP 402) are translated to a friendly "You're out of credits" message with a link to top up.
-
-### TypeScript Types (Cloud Proxy)
-
-These types define the client-side contract with the cloud proxy:
-
-```typescript
-interface AiModel {
-  id: string
-  name: string
-  provider: 'anthropic' | 'openai' | 'google'
-  apiType?: 'chat' | 'responses'    // OpenAI only; omitted = 'chat'
-  inputCreditsPerK: number
-  outputCreditsPerK: number
-  maxOutputTokens: number
-}
-
-/** Chat request body — messages/tools are provider-formatted */
-interface ChatRequest {
-  model: string
-  messages: Record<string, unknown>[]
-  tools?: Record<string, unknown>[]
-  system?: string
-  max_tokens?: number
-}
-
-/** Optional cloud routing hint headers (never included in JSON body) */
-interface ChatRequestHeaders {
-  Authorization: `Bearer ${string}`
-  'Content-Type': 'application/json'
-  'X-CourseCode-Cloud-Provider'?: 'anthropic' | 'openai' | 'google'
-  'X-CourseCode-Cloud-Api-Type'?: 'chat' | 'responses'
-}
-
-/** Unified SSE events (same shape regardless of upstream provider) */
-interface TextEvent {
-  type: 'text'
-  content: string
-}
-
-interface ToolUseEvent {
-  type: 'tool_use'
-  id: string
-  name: string
-  input: Record<string, unknown>
-  thought_signature?: string  // Gemini 2.5+ — preserve and include as
-                              // `thoughtSignature` on the functionCall part
-                              // in subsequent Gemini request history
-}
-
-interface DoneEvent {
-  type: 'done'
-  stop_reason: 'end_turn' | 'tool_use' | 'max_tokens'
-  usage: { input: number; output: number }
-  credits_charged: number
-}
-
-type StreamEvent = TextEvent | ToolUseEvent | DoneEvent
-
-interface ModelsResponse {
-  models: AiModel[]
-}
-
-interface UsageResponse {
-  balances: Array<{
-    id: string
-    credits_remaining: number
-    is_subscription: boolean
-    type: 'subscription' | 'personal_topup' | 'org_topup'
-  }>
-  total_credits: number
-  recent_usage: Array<{
-    id: string
-    model: string
-    credits_charged: number
-    created_at: string
-  }>
-}
-```
+**Cache metrics**: Gemini reports `cachedContentTokenCount` in `usageMetadata`. The provider extracts this and forwards it as `cacheReadInputTokens`.
 
 ### Security
 
 - **BYOK API keys** are encrypted at rest using Electron's `safeStorage` API, stored in `app.getPath('userData')/ai-keys/`, and never exposed to the renderer process.
-- **Cloud auth tokens** are managed by the CLI at `~/.coursecode/credentials.json`. The desktop main process reads the token for API calls — the renderer only receives a boolean `isCloudAuthenticated` signal, never the token itself.
+- **Cloud auth tokens** are managed by the CLI at `~/.coursecode/credentials.json`. The desktop main process reads the token for Cloud API calls (deployment history and pointer management) — the renderer only receives a boolean `isCloudAuthenticated` signal, never the token itself. AI chat never uses the cloud token.
 - **No secrets in source**: Since this repo is open source, no API keys, tokens, cloud secrets, or server-side implementation details are committed. All credentials are runtime-only (user's credential file or safeStorage).
 - **Renderer isolation**: The renderer process cannot access the filesystem, spawn processes, or read credential files. All cloud and AI interactions flow through the preload bridge to the main process.
 - **Token transmission**: The Bearer token is sent only over HTTPS to the cloud base URL. The desktop validates the URL scheme before sending credentials — no token transmission over plain HTTP in production.
-- **Error opacity**: Cloud error responses may include a `detail` field for debugging. The desktop logs the detail at `debug` level but displays only the user-friendly `error` string to the user. Internal cloud state (provider configuration, rate limit internals, credit ledger details) is never surfaced in the UI.
-- **API errors are translated** into human-readable messages via `translateChatError()` in `errors.js`, with cloud-vs-BYOK context awareness.
+- **API errors are translated** into human-readable messages via `translateChatError()` in `errors.js`. A `401` from the provider is reported as an API key problem.
 
 ---
 
@@ -1612,7 +1035,6 @@ Zero-dependency logger providing scoped, leveled output. Every module creates a 
 The AI chat pipeline emits detailed structured debug traces in development to make provider/payload/tool-loop debugging straightforward.
 
 - Each chat turn gets a correlation ID (`requestId`) generated in `chat-engine.js`.
-- The same `requestId` is propagated into cloud proxy provider logs in `llm-provider.js`.
 - Trace events include request shaping, stream deltas, tool call start/finish, loop continuation, final usage, and terminal errors.
 - Traces are emitted only in development (`app.isPackaged === false`) and are written to both console and dev log file by default.
 
@@ -1629,13 +1051,13 @@ Example trace sequence:
 Centralizes mapping of raw errors to user-friendly messages with error codes:
 
 - `PORT_IN_USE` — "Another app is using that port."
-- `AUTH_EXPIRED` — Cloud vs BYOK context-aware messages
-- `CREDITS_EXHAUSTED`, `RATE_LIMITED`, `NETWORK_ERROR` — Self-explanatory user messages
+- `AUTH_EXPIRED` — Cloud session expired (chat errors use the API key message from `translateChatError`)
+- `RATE_LIMITED`, `NETWORK_ERROR` — Self-explanatory user messages
 - `UNKNOWN` — Fallback with original error message
 
 **`wrapIpcHandler(channel, fn)`** — wraps any IPC handler with automatic error logging and translation. Every IPC handler in `ipc-handlers.js` uses this.
 
-**`translateChatError(err, isCloud)`** — context-aware chat error translation used by `chat-engine.js`.
+**`translateChatError(err)`** — chat error translation used by `chat-engine.js`. Maps `401` to an API key message and delegates everything else to `translateError`.
 
 ### Error Handling UX
 
@@ -1737,8 +1159,8 @@ Unit tests use [Vitest](https://vitest.dev/) with v8 coverage to test main proce
 **Test isolation**: Tests that involve filesystem I/O (settings, projects, snapshots, refs, files) create isolated temporary directories via `mkdtemp` and clean up in `afterEach`. Heavy dependencies (CLI spawning, LLM network calls) are mocked out.
 
 **Modules tested**:
-- `errors.js` — all ERROR_MAP entries, rule priority ordering, null/empty errors, `translateChatError` cloud vs BYOK branching, `wrapIpcHandler` middleware
-- `settings.js` — load/save cycle, corrupt JSON recovery, default merging, projects directory creation
+- `errors.js` — all ERROR_MAP entries, rule priority ordering, null/empty errors, `translateChatError` 401 handling, `wrapIpcHandler` middleware
+- `settings.js` — load/save cycle, corrupt JSON recovery, default merging, removal of leftover cloud AI mode keys, projects directory creation
 - `project-manager.js` — project scanning, metadata extraction (title/format/version), edge cases (corrupt configs, missing dirs)
 - `node-env.js` — path resolution, env merging, CLI spawn arg construction, local mode toggle
 - `logger.js` — factory shape, all argument patterns (string, data, Error, undefined)
