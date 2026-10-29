@@ -17,25 +17,13 @@ const ERROR_MAP = [
     { match: (e) => e.code === 'ECONNREFUSED' || e.cause?.code === 'ECONNREFUSED', code: 'NETWORK_ERROR', message: "Couldn't reach the server. Check your internet connection." },
     { match: (e) => e.message?.includes('npm ERR!'), code: 'NPM_ERROR', message: 'Something went wrong installing dependencies. Click "Retry" to try again.' },
     { match: (e) => e.status === 401, code: 'AUTH_EXPIRED', message: 'Your session has expired. Sign in again.' },
-    {
-        match: (e) => e.status === 402 && (
-            e.code === 'NO_CREDITS'
-            || e.errorCode === 'no_credits'
-            || e.errorCode === 'credits_exhausted'
-            || e.errorCode === 'insufficient_credits'
-            || e.errorCode === 'out_of_credits'
-            || /out of credits|insufficient credits|not enough credits|credits exhausted|no credits/i.test(e.message || '')
-        ),
-        code: 'NO_CREDITS',
-        message: "You're out of credits. Top up at coursecodecloud.com"
-    },
     { match: (e) => e.status === 429, code: 'RATE_LIMITED', message: 'The service is busy. Try again in a moment.' },
     { match: (e) => e.status === 502, code: 'PROVIDER_ERROR', message: 'The AI provider rejected the request. Try a different model or check if the service is available.' },
     { match: (e) => e.status === 503, code: 'PROVIDER_UNAVAILABLE', message: 'This AI model is temporarily unavailable. Try a different model.' },
     { match: (e) => e.code === 'CLI_NOT_READY', code: 'CLI_NOT_READY', message: 'CourseCode tools are not installed or not working yet. Open Setup Assistant to install or repair them.' },
     { match: (e) => e.message?.includes('safeStorage') || e.message?.includes('encryption'), code: 'ENCRYPTION_UNAVAILABLE', message: 'System encryption is not available. Cannot securely store API key.' },
     { match: (e) => e.message?.includes('fetch') && (e.cause?.code === 'ENOTFOUND' || e.cause?.code === 'ETIMEDOUT'), code: 'NETWORK_ERROR', message: "Couldn't reach the server. Check your internet connection." },
-    { match: (e) => e.message?.includes('fetch failed') || e.message?.includes('timed out'), code: 'NETWORK_ERROR', message: "Couldn't reach the AI service. If using local mode, check that the cloud app is running." },
+    { match: (e) => e.message?.includes('fetch failed') || e.message?.includes('timed out'), code: 'NETWORK_ERROR', message: "Couldn't reach the AI service. Check your internet connection." },
     { match: (e) => e.message?.includes('Could not connect'), code: 'NETWORK_ERROR', message: "Couldn't connect to CourseCode Cloud. Check your internet connection." },
     { match: (e) => e.message?.includes('Not authenticated'), code: 'AUTH_EXPIRED', message: 'Your session has expired. Sign in again from Settings.' },
     { match: (e) => e.code === 'STALE_CLOUD_BINDING', code: 'STALE_CLOUD_BINDING', message: 'This project is still linked to a CourseCode Cloud course that no longer exists.' },
@@ -78,17 +66,14 @@ export function translateError(err) {
 
 /**
  * Translate a raw error into a chat-specific user-friendly message.
- * Handles cloud vs BYOK context for auth errors.
+ * A 401 during chat means the provider rejected the user's API key.
  *
  * @param {Error} err
- * @param {boolean} isCloud — whether the error occurred in cloud mode
  * @returns {string}
  */
-export function translateChatError(err, isCloud) {
+export function translateChatError(err) {
     if (err.status === 401) {
-        return isCloud
-            ? "Your cloud session has expired. Sign in again from the Dashboard."
-            : "Your API key doesn't seem to be working. Check Settings → AI.";
+        return "Your API key doesn't seem to be working. Check Settings → AI.";
     }
 
     const translated = translateError(err);

@@ -9,7 +9,6 @@ vi.mock('electron', () => import('../mocks/electron.js'));
 const providerFactory = vi.fn();
 const loadApiKey = vi.fn(() => 'test-key');
 const estimateCost = vi.fn(() => 0.01);
-const getCloudModels = vi.fn(async () => []);
 const getProviderModels = vi.fn(() => []);
 const getModelContextWindow = vi.fn(() => null);
 const mcpCallTool = vi.fn(async () => ({ content: [] }));
@@ -21,13 +20,8 @@ vi.mock('../../main/llm-provider.js', () => ({
     createProvider: providerFactory,
     loadApiKey,
     estimateCost,
-    getCloudModels,
     getProviderModels,
     getModelContextWindow
-}));
-
-vi.mock('../../main/cloud-client.js', () => ({
-    loadToken: vi.fn(() => null)
 }));
 
 const buildSystemPrompt = vi.fn(() => 'system prompt');
@@ -39,7 +33,6 @@ vi.mock('../../main/settings.js', () => ({
     getSetting: vi.fn((key) => {
         if (key === 'aiProvider') return 'anthropic';
         if (key === 'aiModel') return null;
-        if (key === 'cloudAiModel') return null;
         return null;
     })
 }));
@@ -70,7 +63,7 @@ vi.mock('../../main/errors.js', () => ({
     translateChatError: vi.fn((err) => err?.message || 'error')
 }));
 
-const { sendMessage, resolveToolApproval, loadHistory } = await import('../../main/chat-engine.js');
+const { sendMessage, resolveToolApproval, loadHistory, getSessionContext } = await import('../../main/chat-engine.js');
 const settingsModule = await import('../../main/settings.js');
 const previewModule = await import('../../main/preview-manager.js');
 const snapshotModule = await import('../../main/snapshot-manager.js');
@@ -81,7 +74,6 @@ const createSnapshotMock = snapshotModule.createSnapshot;
 function defaultSettingValue(key) {
     if (key === 'aiProvider') return 'anthropic';
     if (key === 'aiModel') return 'claude-sonnet-4-20250514';
-    if (key === 'cloudAiModel') return null;
     return null;
 }
 
@@ -144,11 +136,46 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Hi', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Hi', [], webContents);
 
         expect(existsSync(join(projectDir, '.chat'))).toBe(false);
         const chatFiles = listFilesRecursive(join(userDataDir, 'chat-history'));
         expect(chatFiles.some(file => file.endsWith('conversation.json'))).toBe(true);
+    });
+
+    it('records the BYOK provider and model as the session context', async () => {
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                yield { type: 'text', text: 'Hello from AI' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 10, outputTokens: 20 } };
+            }
+        });
+
+        await sendMessage(projectDir, 'Hi', [], createWebContentsMock());
+
+        expect(getSessionContext(projectDir)).toEqual(expect.objectContaining({
+            providerId: 'anthropic',
+            modelId: 'claude-sonnet-4-20250514'
+        }));
+    });
+
+    it('ignores session context saved by the removed cloud AI mode', async () => {
+        providerFactory.mockResolvedValue({
+            async *chat() {
+                yield { type: 'text', text: 'Hello from AI' };
+                yield { type: 'done', stopReason: 'stop', usage: { inputTokens: 10, outputTokens: 20 } };
+            }
+        });
+        await sendMessage(projectDir, 'Hi', [], createWebContentsMock());
+
+        const conversationFile = listFilesRecursive(join(userDataDir, 'chat-history'))
+            .find(file => file.endsWith('conversation.json'));
+        const saved = JSON.parse(readFileSync(conversationFile, 'utf-8'));
+        saved.session = { mode: 'cloud', providerId: 'cloud', modelId: 'claude-sonnet-4-5' };
+        writeFileSync(conversationFile, JSON.stringify(saved));
+
+        expect(loadHistory(projectDir).length).toBeGreaterThan(0);
+        expect(getSessionContext(projectDir)).toBeNull();
     });
 
     it('emits and persists the pre-chat restore point as soon as it is created', async () => {
@@ -165,7 +192,7 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Make a change', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Make a change', [], webContents);
 
         expect(webContents.send).toHaveBeenCalledWith('chat:restorePoint', expect.objectContaining({
             projectPath: projectDir,
@@ -193,7 +220,7 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Start then cancel', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Start then cancel', [], webContents);
 
         const history = loadHistory(projectDir);
         expect(history[0]).toEqual(expect.objectContaining({
@@ -227,7 +254,7 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Try writing outside', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Try writing outside', [], webContents);
 
         expect(existsSync(outsidePath)).toBe(false);
     });
@@ -254,7 +281,7 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Edit the file', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Edit the file', [], webContents);
 
         // File should be unchanged
         expect(readFileSync(join(projectDir, 'course', 'test.js'), 'utf-8')).toBe('const x = 1;');
@@ -275,7 +302,7 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Edit the file', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Edit the file', [], webContents);
 
         const conversationFile = listFilesRecursive(join(userDataDir, 'chat-history'))
             .find(file => file.endsWith('conversation.json'));
@@ -318,7 +345,7 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Edit the file', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Edit the file', [], webContents);
 
         const { readFileSync } = await import('fs');
         expect(readFileSync(join(projectDir, 'course', 'dup.js'), 'utf-8')).toBe('aaa\naaa\naaa');
@@ -346,7 +373,7 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'Create the file', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Create the file', [], webContents);
 
         const { readFileSync } = await import('fs');
         expect(readFileSync(join(projectDir, 'course', 'existing.js'), 'utf-8')).toBe('original');
@@ -384,7 +411,7 @@ describe('chat-engine storage and safety', () => {
         });
 
         const webContents = createWebContentsMock();
-        await sendMessage(projectDir, 'List files', [], webContents, 'byok');
+        await sendMessage(projectDir, 'List files', [], webContents);
 
         expect(toolResult).toBeTruthy();
         const parsed = JSON.parse(toolResult);
@@ -426,7 +453,7 @@ describe('chat-engine storage and safety', () => {
             }
         });
 
-        await sendMessage(projectDir, 'Regenerate narration', [], webContents, 'byok');
+        await sendMessage(projectDir, 'Regenerate narration', [], webContents);
 
         expect(webContents.send).toHaveBeenCalledWith('chat:toolUse', expect.objectContaining({
             tool: 'coursecode_narration',

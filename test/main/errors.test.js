@@ -66,33 +66,6 @@ describe('translateError', () => {
         expect(result.code).toBe('AUTH_EXPIRED');
     });
 
-    it('returns NO_CREDITS for 402 status when code indicates no credits', () => {
-        const err = new Error('Payment Required');
-        err.status = 402;
-        err.code = 'NO_CREDITS';
-        const result = translateError(err);
-        expect(result.code).toBe('NO_CREDITS');
-        expect(result.message).toContain('credits');
-    });
-
-    it('does not force NO_CREDITS for generic 402 responses', () => {
-        const err = new Error('Model not enabled for this plan');
-        err.status = 402;
-        err.code = 'BILLING_REQUIRED';
-        const result = translateError(err);
-        expect(result.code).toBe('INTERNAL');
-        expect(result.message).toContain('Model not enabled for this plan');
-    });
-
-    it('does not classify generic credit-card billing messages as NO_CREDITS', () => {
-        const err = new Error('Billing action required: add a credit card to continue');
-        err.status = 402;
-        err.code = 'BILLING_REQUIRED';
-        const result = translateError(err);
-        expect(result.code).toBe('INTERNAL');
-        expect(result.message).toContain('Billing action required');
-    });
-
     it('returns RATE_LIMITED for 429 status', () => {
         const err = new Error('Too Many Requests');
         err.status = 429;
@@ -234,18 +207,10 @@ describe('translateError', () => {
 
 describe('translateChatError', () => {
 
-    it('returns cloud-specific message for 401 in cloud mode', () => {
+    it('returns an API key message for 401', () => {
         const err = new Error('Unauthorized');
         err.status = 401;
-        const message = translateChatError(err, true);
-        expect(message).toContain('cloud session');
-        expect(message).toContain('Dashboard');
-    });
-
-    it('returns BYOK-specific message for 401 in BYOK mode', () => {
-        const err = new Error('Unauthorized');
-        err.status = 401;
-        const message = translateChatError(err, false);
+        const message = translateChatError(err);
         expect(message).toContain('API key');
         expect(message).toContain('Settings');
     });
@@ -253,7 +218,7 @@ describe('translateChatError', () => {
     it('delegates non-401 errors to translateError', () => {
         const err = new Error('fetch failed');
         err.cause = { code: 'ECONNREFUSED' };
-        const message = translateChatError(err, true);
+        const message = translateChatError(err);
         expect(message).toContain('server');
     });
 });

@@ -1,8 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { settings, updateSetting } from '../stores/settings.js';
-  import { user, login, logout, cloudReady, loginError } from '../stores/auth.js';
-  import { credits, loadCredits } from '../stores/chat.js';
+  import { user, login, logout, loginError } from '../stores/auth.js';
   import { showToast } from '../stores/toast.js';
   import ToolCard from '../components/ToolCard.svelte';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
@@ -20,7 +19,6 @@
   let setupStatus = $state(null);
   let appVersion = $state('');
   let aiProviders = $state([]);
-  let cloudModels = $state([]);
   let aiConfig = $state({});
   let apiKeyInput = $state('');
   let savingKey = $state(false);
@@ -29,59 +27,11 @@
   let updateStatus = $state(null);
   let checkingUpdates = $state(false);
   let refreshingModels = $state(false);
-  let cloudProviderFilter = $state('all');
-  let cloudModelLoadError = $state('');
-  let attemptedCloudRefresh = $state(false);
   let unsubUpdateStatus = null;
   let keychainNotice = $state(null);
   let keychainNoticeResolve = null;
 
-  let aiMode = $derived(($settings.defaultAiMode || 'byok'));
   let selectedByokProvider = $derived(aiProviders.find(p => p.id === ($settings.aiProvider || 'anthropic')));
-  let cachedCloudModels = $derived(Array.isArray($settings.cloudModelCache) ? $settings.cloudModelCache : []);
-  let effectiveCloudModels = $derived((cloudModels && cloudModels.length > 0) ? cloudModels : cachedCloudModels);
-
-  function cloudModelProvider(model) {
-    if (model.provider) return String(model.provider).toLowerCase();
-    if (model.vendor) return String(model.vendor).toLowerCase();
-    const id = String(model.id || '').toLowerCase();
-    if (id.startsWith('claude')) return 'anthropic';
-    if (id.startsWith('gpt') || /^o\d/.test(id)) return 'openai';
-    return 'other';
-  }
-
-  let cloudProviderOptions = $derived([
-    { value: 'all', label: 'All Providers' },
-    ...(Array.from(new Set(effectiveCloudModels.map(cloudModelProvider))).includes('anthropic')
-      ? [{ value: 'anthropic', label: 'Anthropic' }]
-      : []),
-    ...(Array.from(new Set(effectiveCloudModels.map(cloudModelProvider))).includes('openai')
-      ? [{ value: 'openai', label: 'OpenAI' }]
-      : [])
-  ]);
-
-  let filteredCloudModels = $derived(
-    cloudProviderFilter === 'all'
-      ? effectiveCloudModels
-      : effectiveCloudModels.filter(m => cloudModelProvider(m) === cloudProviderFilter)
-  );
-
-  $effect(() => {
-    if (aiMode !== 'cloud' || !$cloudReady) {
-      attemptedCloudRefresh = false;
-      return;
-    }
-    if (effectiveCloudModels.length > 0 || refreshingModels || attemptedCloudRefresh) return;
-    attemptedCloudRefresh = true;
-    refreshAvailableModels(false);
-  });
-
-  $effect(() => {
-    if (cloudProviderFilter === 'all') return;
-    if (effectiveCloudModels.length === 0) return;
-    if (filteredCloudModels.length > 0) return;
-    cloudProviderFilter = 'all';
-  });
 
   onMount(async () => {
     setupStatus = await window.api.setup.getStatus();
@@ -93,9 +43,6 @@
       updateStatus = status;
       checkingUpdates = status?.state === 'checking';
     });
-    if ($cloudReady) {
-      await loadCredits();
-    }
   });
 
   onDestroy(() => {
@@ -150,11 +97,6 @@
 
   function setTheme(theme) {
     updateSetting('theme', theme);
-  }
-
-  function setDefaultAiMode(mode) {
-    updateSetting('defaultAiMode', mode);
-    updateSetting('aiModeInitialized', true);
   }
 
   async function setAiProvider(provider) {
@@ -224,24 +166,9 @@
     }
 
     refreshingModels = true;
-    cloudModelLoadError = '';
     try {
       aiProviders = await window.api.ai.getProviders({ includeModels: includeByokModels });
       aiConfig = await window.api.ai.getConfig();
-      if ($cloudReady) {
-        try {
-          const fetched = (await window.api.ai.getCloudModels()) || [];
-          cloudModels = fetched;
-          if (fetched.length > 0) {
-            await updateSetting('cloudModelCache', fetched);
-          }
-        } catch (err) {
-          cloudModels = [];
-          cloudModelLoadError = err?.message || 'Could not refresh cloud models.';
-        }
-      } else {
-        cloudModels = [];
-      }
 
       const providerId = $settings.aiProvider || 'anthropic';
       const provider = aiProviders.find(p => p.id === providerId);
@@ -253,22 +180,12 @@
         updateSetting('aiModel', fallbackModel);
       }
 
-      if ($cloudReady) {
-        await loadCredits();
-      }
-
       const selectedProvider = aiProviders.find(p => p.id === ($settings.aiProvider || 'anthropic'));
       if (selectedProvider?.hasKey && selectedProvider?.modelFetchFailed) {
         showToast({
           type: 'error',
           message: selectedProvider.modelFetchError || `Could not fetch models from ${selectedProvider.name}. Check API key permissions and network.`
         });
-      }
-
-      const configuredCloudModel = $settings.cloudAiModel;
-      const hasConfiguredCloudModel = effectiveCloudModels.some(m => m.id === configuredCloudModel);
-      if (effectiveCloudModels.length > 0 && !hasConfiguredCloudModel) {
-        await updateSetting('cloudAiModel', effectiveCloudModels[0].id);
       }
     } catch (err) {
       showToast({ type: 'error', message: err?.message || 'Failed to refresh available models.' });
@@ -518,176 +435,89 @@
     <section class="settings-section">
       <h3 class="section-title">AI Assistant</h3>
 
-
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Default AI Mode</span>
-          <span class="setting-desc">Choose how AI chat connects by default.</span>
-        </div>
-        <div class="setting-control">
-          <div class="mode-toggle">
-            <button
-              class="mode-btn"
-              class:active={$settings.defaultAiMode === 'cloud'}
-              onclick={() => setDefaultAiMode('cloud')}
-              disabled={!$cloudReady}
-            >Cloud</button>
-            <button
-              class="mode-btn"
-              class:active={($settings.defaultAiMode || 'byok') === 'byok'}
-              onclick={() => setDefaultAiMode('byok')}
-            >Your Key</button>
-          </div>
-        </div>
-      </div>
-
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Provider</span>
-          <span class="setting-desc">
-            {#if aiMode === 'cloud'}
-              Filter cloud models by provider.
-            {:else}
-              Choose your AI provider.
-            {/if}
-          </span>
+          <span class="setting-desc">Choose your AI provider. AI chat uses your own API key (BYOK).</span>
         </div>
         <div class="setting-control">
-          {#if aiMode === 'cloud'}
-            <select value={cloudProviderFilter} onchange={(e) => cloudProviderFilter = e.target.value}>
-              {#each cloudProviderOptions as p}
-                <option value={p.value}>{p.label}</option>
-              {/each}
-            </select>
-          {:else}
-            <select value={$settings.aiProvider || 'anthropic'} onchange={(e) => setAiProvider(e.target.value)}>
-              {#if aiProviders.length === 0}
-                <option value="">No providers available</option>
-              {/if}
-              {#each aiProviders as p}
-                <option value={p.id}>{p.name}</option>
-              {/each}
-            </select>
-          {/if}
+          <select value={$settings.aiProvider || 'anthropic'} onchange={(e) => setAiProvider(e.target.value)}>
+            {#if aiProviders.length === 0}
+              <option value="">No providers available</option>
+            {/if}
+            {#each aiProviders as p}
+              <option value={p.id}>{p.name}</option>
+            {/each}
+          </select>
         </div>
       </div>
 
-      {#if aiMode !== 'cloud'}
-        <div class="setting-row">
-          <div class="setting-info">
-            <span class="setting-label">API Key</span>
-            <span class="setting-desc">
-              {#if aiConfig.hasKey}
-                ✅ Key configured.
-                <button class="btn-ghost text-sm" style="color: var(--error)" onclick={removeKey}>Remove</button>
-              {:else}
-                Get yours at <button type="button" class="provider-doc-link" onclick={() => window.api.setup.openDownloadPage($settings.aiProvider)}>
-                  {aiProviders.find(p => p.id === $settings.aiProvider)?.name || 'provider'} docs
-                </button>
-              {/if}
-            </span>
-          </div>
-          {#if !aiConfig.hasKey}
-            <div class="setting-control">
-              <div class="key-input-group">
-                <input
-                  type="password"
-                  bind:value={apiKeyInput}
-                  placeholder={aiProviders.find(p => p.id === $settings.aiProvider)?.keyPlaceholder || 'Enter API key'}
-                  class="key-input"
-                  onkeydown={(e) => e.key === 'Enter' && saveApiKey()}
-                />
-                <button class="btn-primary btn-sm" onclick={saveApiKey} disabled={savingKey || !apiKeyInput.trim()}>
-                  {savingKey ? 'Verifying…' : 'Save'}
-                </button>
-              </div>
-              {#if keyError}
-                <p class="key-error">{keyError}</p>
-              {/if}
-              {#if keySuccess}
-                <p class="key-success">{keySuccess}</p>
-              {/if}
-            </div>
-          {/if}
-        </div>
-      {:else}
-        <div class="setting-row">
-          <div class="setting-info">
-            <span class="setting-label">Cloud Account</span>
-            <span class="setting-desc">
-              {#if $cloudReady}
-                Using your signed-in CourseCode Cloud account for AI.
-              {:else}
-                Sign in to CourseCode Cloud to use cloud AI models.
-              {/if}
-            </span>
-          </div>
-          <div class="setting-control">
-            {#if !$cloudReady}
-              <button class="btn-primary btn-sm" onclick={startLogin} disabled={signingIn}>Sign In</button>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">API Key</span>
+          <span class="setting-desc">
+            {#if aiConfig.hasKey}
+              ✅ Key configured.
+              <button class="btn-ghost text-sm" style="color: var(--error)" onclick={removeKey}>Remove</button>
             {:else}
-              <span class="text-secondary text-sm">Connected</span>
+              Get yours at <button type="button" class="provider-doc-link" onclick={() => window.api.setup.openDownloadPage($settings.aiProvider)}>
+                {aiProviders.find(p => p.id === $settings.aiProvider)?.name || 'provider'} docs
+              </button>
+            {/if}
+          </span>
+        </div>
+        {#if !aiConfig.hasKey}
+          <div class="setting-control">
+            <div class="key-input-group">
+              <input
+                type="password"
+                bind:value={apiKeyInput}
+                placeholder={aiProviders.find(p => p.id === $settings.aiProvider)?.keyPlaceholder || 'Enter API key'}
+                class="key-input"
+                onkeydown={(e) => e.key === 'Enter' && saveApiKey()}
+              />
+              <button class="btn-primary btn-sm" onclick={saveApiKey} disabled={savingKey || !apiKeyInput.trim()}>
+                {savingKey ? 'Verifying…' : 'Save'}
+              </button>
+            </div>
+            {#if keyError}
+              <p class="key-error">{keyError}</p>
+            {/if}
+            {#if keySuccess}
+              <p class="key-success">{keySuccess}</p>
             {/if}
           </div>
-        </div>
-      {/if}
+        {/if}
+      </div>
 
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Model</span>
           <span class="setting-desc">Select the AI model to use.</span>
-          {#if aiMode === 'cloud' && !$cloudReady}
-            <span class="setting-desc">Sign in to CourseCode Cloud to load cloud models.</span>
-          {/if}
-          {#if aiMode !== 'cloud' && !selectedByokProvider?.hasKey}
+          {#if !selectedByokProvider?.hasKey}
             <span class="setting-desc">Add an API key to load models.</span>
           {/if}
-          {#if aiMode !== 'cloud' && selectedByokProvider?.hasKey && selectedByokProvider?.modelFetchFailed}
+          {#if selectedByokProvider?.hasKey && selectedByokProvider?.modelFetchFailed}
             <span class="setting-desc" style="color: var(--error)">Unable to load provider models. Click Refresh after fixing key/network.</span>
-          {/if}
-          {#if aiMode === 'cloud' && $cloudReady && effectiveCloudModels.length === 0}
-            <span class="setting-desc" style="color: var(--error)">No cloud models available yet. Refresh after first successful cloud connection.</span>
-          {/if}
-          {#if aiMode === 'cloud' && $cloudReady && effectiveCloudModels.length > 0 && filteredCloudModels.length === 0}
-            <span class="setting-desc" style="color: var(--error)">No cloud models available for this provider filter.</span>
-          {/if}
-          {#if aiMode === 'cloud' && $cloudReady && cloudModelLoadError && cachedCloudModels.length > 0}
-            <span class="setting-desc" style="color: var(--warning)">Cloud refresh failed, showing last known model list.</span>
           {/if}
         </div>
         <div class="setting-control">
           <div class="model-row">
-            {#if aiMode === 'cloud'}
-              <select
-                value={$settings.cloudAiModel || ''}
-                onchange={(e) => updateSetting('cloudAiModel', e.target.value)}
-                disabled={!$cloudReady || filteredCloudModels.length === 0}
-              >
-                {#if filteredCloudModels.length === 0}
-                  <option value="">No cloud models available</option>
-                {/if}
-                {#each filteredCloudModels as m}
-                  <option value={m.id}>{m.name || m.id}</option>
-                {/each}
-              </select>
-            {:else}
-              <select
-                value={$settings.aiModel || ''}
-                onchange={(e) => setAiModel(e.target.value)}
-                disabled={!selectedByokProvider?.hasKey || !(selectedByokProvider?.models?.length)}
-              >
-                {#if !selectedByokProvider?.hasKey}
-                  <option value="">Add API key to load models</option>
-                {:else if !(selectedByokProvider?.models?.length)}
-                  <option value="">No BYOK models available</option>
-                {/if}
-                {#each (selectedByokProvider?.models || []) as m}
-                  <option value={m.id}>{m.label}</option>
-                {/each}
-              </select>
-            {/if}
-            <button class="btn-secondary btn-sm" onclick={() => refreshAvailableModels(aiMode !== 'cloud')} disabled={refreshingModels}>
+            <select
+              value={$settings.aiModel || ''}
+              onchange={(e) => setAiModel(e.target.value)}
+              disabled={!selectedByokProvider?.hasKey || !(selectedByokProvider?.models?.length)}
+            >
+              {#if !selectedByokProvider?.hasKey}
+                <option value="">Add API key to load models</option>
+              {:else if !(selectedByokProvider?.models?.length)}
+                <option value="">No BYOK models available</option>
+              {/if}
+              {#each (selectedByokProvider?.models || []) as m}
+                <option value={m.id}>{m.label}</option>
+              {/each}
+            </select>
+            <button class="btn-secondary btn-sm" onclick={() => refreshAvailableModels()} disabled={refreshingModels}>
               {refreshingModels ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>
@@ -727,19 +557,6 @@
           </div>
           <button class="btn-secondary" onclick={logout}>Sign Out</button>
         </div>
-        {#if $credits?.total_credits != null}
-          <div class="credits-row">
-            <div class="credits-display">
-              <span class="credits-value">{Math.round($credits.total_credits)}</span>
-              <span class="credits-label">credits remaining</span>
-            </div>
-            <a
-              href="https://coursecodecloud.com/account/credits"
-              target="_blank"
-              class="btn-ghost text-sm"
-            >Top up →</a>
-          </div>
-        {/if}
       {:else}
         <button class="btn-primary" onclick={startLogin} disabled={signingIn}>Sign In to CourseCode Cloud</button>
 
@@ -1066,66 +883,6 @@
   .btn-sm {
     padding: var(--sp-xs) var(--sp-md);
     font-size: var(--text-sm);
-  }
-
-  .mode-toggle {
-    display: flex;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-  }
-
-  .mode-btn {
-    flex: 1;
-    padding: var(--sp-xs) var(--sp-md);
-    background: var(--bg-primary);
-    border: none;
-    color: var(--text-secondary);
-    font-size: var(--text-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--duration-fast) var(--ease);
-  }
-
-  .mode-btn + .mode-btn {
-    border-left: 1px solid var(--border);
-  }
-
-  .mode-btn.active {
-    background: var(--accent-subtle);
-    color: var(--accent);
-  }
-
-  .mode-btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  .credits-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-top: var(--sp-md);
-    padding: var(--sp-md);
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-  }
-
-  .credits-display {
-    display: flex;
-    align-items: baseline;
-    gap: var(--sp-sm);
-  }
-
-  .credits-value {
-    font-size: var(--text-xl);
-    font-weight: 700;
-    color: var(--accent);
-  }
-
-  .credits-label {
-    font-size: var(--text-sm);
-    color: var(--text-secondary);
   }
 
   .provider-doc-link {

@@ -173,7 +173,7 @@ contextBridge.exposeInMainWorld('api', {
 
     // --- AI Chat ---
     chat: {
-        send: (projectPath, message, mentions, mode) => ipcRenderer.invoke('chat:send', projectPath, message, mentions, mode),
+        send: (projectPath, message, mentions) => ipcRenderer.invoke('chat:send', projectPath, message, mentions),
         stop: (projectPath) => ipcRenderer.invoke('chat:stop', projectPath),
         clear: (projectPath) => ipcRenderer.invoke('chat:clear', projectPath),
         listConversations: (projectPath) => ipcRenderer.invoke('chat:listConversations', projectPath),
@@ -266,8 +266,6 @@ contextBridge.exposeInMainWorld('api', {
         setApiKey: (provider, apiKey) => ipcRenderer.invoke('ai:setApiKey', provider, apiKey),
         removeApiKey: (provider) => ipcRenderer.invoke('ai:removeApiKey', provider),
         setCustomInstructions: (text) => ipcRenderer.invoke('ai:setCustomInstructions', text),
-        getProviders: () => ipcRenderer.invoke('ai:getProviders'),
-        getCloudModels: () => ipcRenderer.invoke('ai:getCloudModels'),
-        getCloudUsage: () => ipcRenderer.invoke('ai:getCloudUsage')
+        getProviders: (options) => ipcRenderer.invoke('ai:getProviders', options)
     }
 });

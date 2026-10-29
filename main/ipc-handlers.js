@@ -11,8 +11,7 @@ import {
     listConversations, loadPastConversation, deleteConversation, deleteAllConversations
 } from './chat-engine.js';
 import { listRefs, readRef, convertRef } from './ref-manager.js';
-import { getProviders, saveApiKey, removeApiKey, hasApiKey, getCloudModels, getCloudUsage } from './llm-provider.js';
-import { loadToken } from './cloud-client.js';
+import { getProviders, saveApiKey, removeApiKey, hasApiKey } from './llm-provider.js';
 import { listSnapshots, createSnapshot, restoreSnapshot, getChanges, diffSnapshot, diffSnapshotFile, applySnapshotFileVersion, hasRepo } from './snapshot-manager.js';
 import { runWorkflow, cancelWorkflow } from './workflow-runner.js';
 import { readProjectFile, writeProjectFile, listDirectory } from './file-manager.js';
@@ -103,8 +102,8 @@ export function registerIpcHandlers() {
     });
 
     // --- Chat ---
-    handle('chat:send', (e, projectPath, message, mentions, mode) => {
-        sendMessage(projectPath, message, mentions, e.sender, mode);
+    handle('chat:send', (e, projectPath, message, mentions) => {
+        sendMessage(projectPath, message, mentions, e.sender);
     });
     handle('chat:stop', (_e, projectPath) => stopGeneration(projectPath));
     handle('chat:clear', (_e, projectPath) => clearConversation(projectPath));
@@ -153,16 +152,6 @@ export function registerIpcHandlers() {
     handle('ai:removeApiKey', (_e, provider) => removeApiKey(provider));
     handle('ai:setCustomInstructions', (_e, text) => saveSetting('aiCustomInstructions', text));
     handle('ai:getProviders', (_e, options) => getProviders(options));
-    handle('ai:getCloudModels', async () => {
-        const token = loadToken();
-        if (!token) return [];
-        return await getCloudModels(token);
-    });
-    handle('ai:getCloudUsage', async () => {
-        const token = loadToken();
-        if (!token) return null;
-        return await getCloudUsage(token);
-    });
 
     // --- App ---
     handle('app:getVersion', () => app.getVersion());

@@ -54,6 +54,24 @@ describe('settings', () => {
             expect(getSetting('defaultFormat')).toBe('cmi5');
         });
 
+        it('drops leftover cloud AI mode settings', () => {
+            const settingsPath = join(tempDir, 'settings.json');
+            writeFileSync(settingsPath, JSON.stringify({
+                aiProvider: 'openai',
+                defaultAiMode: 'cloud',
+                aiModeInitialized: true,
+                cloudAiModel: 'claude-sonnet-4-5',
+                cloudModelCache: [{ id: 'claude-sonnet-4-5' }]
+            }));
+            loadSettings();
+            const all = getAllSettings();
+            expect(all).not.toHaveProperty('defaultAiMode');
+            expect(all).not.toHaveProperty('aiModeInitialized');
+            expect(all).not.toHaveProperty('cloudAiModel');
+            expect(all).not.toHaveProperty('cloudModelCache');
+            expect(getSetting('aiProvider')).toBe('openai');
+        });
+
         it('creates projects directory if it does not exist', () => {
             const projectsDir = join(tempDir, 'test-projects');
             const settingsPath = join(tempDir, 'settings.json');

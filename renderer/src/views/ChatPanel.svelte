@@ -10,10 +10,10 @@
   import { showToast } from '../stores/toast.js';
   import {
     messages, streaming, streamingText, activeTools,
-    sessionUsage, sessionCredits, mentionIndex, aiMode, credits,
+    sessionUsage, mentionIndex,
     conversationList, pendingApprovals,
     subscribeToChatEvents, unsubscribeFromChatEvents,
-    sendMessage, stopGeneration, clearChat, loadChatHistory, loadCredits,
+    sendMessage, stopGeneration, clearChat, loadChatHistory,
     refreshMentionIndex, formatTokens, formatCost,
     loadPastConversation, deletePastConversation, deleteAllPastConversations,
     approveToolCall, rejectToolCall
@@ -110,9 +110,6 @@
     historyReady = false;
     await loadChatHistory(projectPath);
     await refreshMentionIndex(projectPath);
-    if ($aiMode === 'cloud') {
-      await loadCredits();
-    }
     historyReady = true;
     scrollToBottom();
 
@@ -419,10 +416,8 @@
     const text = inputText.trim();
     if (!text || $streaming) return;
 
-    if ($aiMode !== 'cloud') {
-      const confirmed = await showKeychainNotice();
-      if (!confirmed) return;
-    }
+    const confirmed = await showKeychainNotice();
+    if (!confirmed) return;
 
     // Push to input history (dedupe consecutive identical messages, cap at 50)
     if (inputHistory.length === 0 || inputHistory[inputHistory.length - 1] !== text) {
@@ -875,9 +870,6 @@
                 <span class="history-meta">
                   <span class="history-time">{formatRelativeTime(conv.updatedAt)}</span>
                   <span class="history-count-badge">{conv.messageCount} msgs</span>
-                  {#if conv.mode === 'cloud'}
-                    <span class="history-mode-badge cloud">Cloud</span>
-                  {/if}
                 </span>
               </button>
               <button class="history-delete-btn" onclick={() => confirmDeleteId = conv.id} title="Delete conversation">
@@ -1403,12 +1395,7 @@
     <div class="input-footer">
       <div class="input-footer-left">
         <ModelPicker />
-        {#if $aiMode === 'cloud' && ($credits != null || $sessionCredits > 0)}
-          <span class="credit-badge">
-            <span class="credit-dot"></span>
-            {#if $credits?.total_credits != null}{Math.round($credits.total_credits)} remaining{/if}{#if $sessionCredits > 0}{$credits?.total_credits != null ? ' · ' : ''}{Math.round($sessionCredits)} credits used{/if}
-          </span>
-        {:else if $sessionUsage.inputTokens > 0}
+        {#if $sessionUsage.inputTokens > 0}
           <span class="usage-badge">
             {formatTokens($sessionUsage.inputTokens + $sessionUsage.outputTokens)} · {formatCost($sessionUsage.estimatedCost)}
           </span>
@@ -1643,11 +1630,6 @@
     opacity: 0.7;
   }
 
-  .history-mode-badge.cloud {
-    color: var(--accent);
-    font-weight: 500;
-  }
-
   .history-delete-btn {
     display: flex;
     align-items: center;
@@ -1733,26 +1715,6 @@
     padding: 2px 8px;
     border-radius: var(--radius-pill);
     background: var(--bg-secondary);
-  }
-
-  .credit-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: var(--text-xs);
-    color: var(--accent);
-    padding: 2px 8px;
-    border-radius: var(--radius-pill);
-    background: var(--accent-subtle);
-    font-weight: 500;
-  }
-
-  .credit-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 4px var(--accent);
   }
 
   .icon-btn {

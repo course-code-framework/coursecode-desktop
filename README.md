@@ -1,6 +1,6 @@
 # CourseCode Desktop
 
-**Open-source, local-first desktop app for CourseCode authoring — the easiest way to create, preview, export, and optionally deploy courses without dealing with Node.js or terminal setup.**
+**Open-source, local-first desktop app for CourseCode authoring. Create, preview, export, and optionally deploy courses without Node.js or terminal setup.**
 
 If you want the guided, button-based workflow, start on the Desktop site:
 
@@ -32,7 +32,7 @@ Use Desktop if you want:
 
 - a guided workflow with buttons instead of terminal commands
 - local preview and LMS export without Node.js setup
-- optional AI-assisted authoring (BYOK or Cloud credits)
+- optional AI-assisted authoring with your own provider API key (BYOK)
 - optional one-click deploy to CourseCode Cloud
 
 Desktop uses the same project format as the CourseCode Framework, so your files stay portable.
@@ -41,7 +41,7 @@ Desktop uses the same project format as the CourseCode Framework, so your files 
 
 - **CourseCode Desktop**: open-source, local-first app
 - **CourseCode Framework**: open-source framework + CLI
-- **CourseCode Cloud**: optional hosted service for deployment, sharing, analytics, and managed AI credits
+- **CourseCode Cloud**: optional hosted service for deployment, sharing, and analytics
 
 Cloud is optional. Desktop and Framework remain useful for local authoring and export without Cloud.
 
@@ -49,7 +49,7 @@ Cloud is optional. Desktop and Framework remain useful for local authoring and e
 
 - **Prefer the easiest setup:** Start with the Desktop site and install guide: [coursecodedesktop.com/docs/install](https://coursecodedesktop.com/docs/install)
 - **Want the full Desktop walkthrough:** See the repo guide: [`USER_GUIDE.md`](./USER_GUIDE.md)
-- **Prefer editing files and running commands:** Use the Framework repo: [coursecode](https://github.com/course-code-framework/coursecode)
+- **Using Claude Code, Codex, or another AI coding tool, or prefer the command line:** Use [CourseCode Framework](https://github.com/course-code-framework/coursecode) directly. New projects open ready in those tools.
 - **Need hosted sharing/deploy workflows:** See [CourseCode Cloud](https://coursecodecloud.com)
 
 ## For Contributors / Developers

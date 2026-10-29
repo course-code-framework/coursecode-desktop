@@ -4,7 +4,7 @@
  * Corporate machines with SSL-inspecting proxies (Zscaler, Netskope, etc.)
  * use custom root CAs that Node.js doesn't trust by default. This module
  * injects the OS certificate store into Node's TLS context so HTTPS calls
- * from the main process (LLM providers, cloud proxy, auto-updater) succeed.
+ * from the main process (LLM providers, auto-updater) succeed.
  *
  * Platform strategy (mirrors the coursecode framework's cloud-certs.js):
  *   - Windows: win-ca native addon calls CryptoAPI, patches tls in-process.
