@@ -1,5 +1,7 @@
 # CourseCode Desktop
 
+> **For new courses, use [CourseCode Framework](https://github.com/course-code-framework/coursecode)** with Claude Code, Codex, or another AI tool that supports MCP. CourseCode Desktop stays available for existing users, but it is no longer promoted and may not receive further releases.
+
 **Open-source, local-first desktop app for CourseCode authoring. Create, preview, export, and optionally deploy courses without Node.js or terminal setup.**
 
 If you want the guided, button-based workflow, start on the Desktop site:
@@ -15,16 +17,14 @@ Use the Desktop site for the current installers, release notes, and checksums:
 - **Latest downloads:** [coursecodedesktop.com/download](https://coursecodedesktop.com/download)
 - **GitHub Releases:** [course-code-framework/coursecode-desktop/releases](https://github.com/course-code-framework/coursecode-desktop/releases)
 
-## Temporary Beta Note (Unsigned Apps)
+## Beta Note (Unsigned Apps)
 
-CourseCode Desktop is currently in **beta testing**, and the installers are **not code signed / notarized yet**.
+CourseCode Desktop is a **beta**, and the installers are **not code signed or notarized**.
 
 - macOS and Windows may show security warnings during install or first launch
 - this is expected for the current beta builds
 - install only from **[coursecodedesktop.com](https://coursecodedesktop.com)** or the official **[GitHub Releases](https://github.com/course-code-framework/coursecode-desktop/releases)**
 - verify checksums from the release page if you want extra assurance
-
-This note is temporary and will be removed once signed/notarized builds are available.
 
 ## What Desktop Is For
 

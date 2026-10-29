@@ -9,7 +9,7 @@ A standalone Electron app that gives instructional designers a native GUI for Co
 | Product | Audience | Role |
 |---------|----------|------|
 | **coursecode** | Developers, AI agents | Framework + CLI (MIT, open source) |
-| **coursecode-desktop** | Instructional designers | GUI on-ramp, deploy button (MIT, open source) |
+| **coursecode-desktop** | Existing Desktop users | De-listed GUI over the CLI, deploy button (MIT, open source) |
 | **coursecode-cloud** | All users | Hosting, analytics, team features (paid SaaS) |
 
 ### User Workflows
@@ -56,9 +56,7 @@ A standalone Electron app that gives instructional designers a native GUI for Co
   - checksums
   - links to release notes
   - guidance to install only from official domain/repository
-- Code signing/notarization is required for production trust once certificates are available:
-  - Apple Developer ID + notarization (macOS)
-  - Windows code-signing certificate (NSIS installer)
+- Desktop was de-listed on 2026-10-29: it stays downloadable, but new users are sent to CourseCode Framework through their AI tool, and code signing is not planned. Signing would need an Apple Developer ID with notarization (macOS) and a Windows code-signing certificate (NSIS installer).
 
 ### Release and Channel Strategy
 
